@@ -42,6 +42,8 @@ requiring Docker or another container runtime.
 - Capture stdout and stderr in independent persistent logs and bounded live buffers.
 - Render ANSI output with xterm.js search, selection, links, wrapping, and scrollback.
 - Inspect listening ports and safely terminate their owning processes with PID/port verification.
+- Configure multiple Jenkins controllers, switch between instance items, browse folders and jobs,
+  inspect queues/builds/logs, and trigger, stop, or cancel work without leaving the desktop app.
 - Discover new desktop releases automatically, verify an Ed25519-signed manifest and package SHA-256,
   then install and restart only after explicit confirmation.
 - Discover the current user's running processes, including workers without ports, and prefill service
@@ -77,6 +79,25 @@ the next time Service Console starts the saved command.
 
 Filter by port, expand grouped TCP/UDP listeners, create a service from the owning process, or
 terminate it after Service Console verifies both the PID and expected port.
+
+### Manage multiple Jenkins instances
+
+Open **Jenkins** in the main sidebar to add one or more controllers. Each instance appears as a
+separate item with its display name, host, enabled state, and current connection result. Selecting an
+item switches the folder/job list, build history, queue, details, and console log to that controller;
+the most recently selected instance is restored on the same computer. On narrow windows, the same
+workspace uses single-panel tabs instead of rendering several heavy panels at once.
+
+The Jenkins workspace supports job search, Folder navigation, ordinary and parameterized builds,
+build status/history, stop, queue cancellation, and progressive console output. These records are
+queried on demand through the local Service Console controller; they are not copied into a second
+local Jenkins database. Switching the UI item never changes an in-flight MCP operation because every
+Jenkins API and MCP call carries an explicit instance ID.
+
+Parameterized builds preserve Jenkins defaults: leave a password parameter blank to omit it from the
+request and let Jenkins apply its configured default. Jenkins file parameters are detected but are
+not uploaded by this release; jobs containing one are marked unsupported and cannot be triggered
+from Service Console. Use Jenkins directly when a build requires a file upload.
 
 ### Persist appearance preferences
 
@@ -167,6 +188,28 @@ a restricted process from **Ports and processes** opens the same manual-completi
 with the current user's permissions by default, so Administrator mode is not required merely to
 import a process; Windows can still restrict metadata for another account or a high-integrity process.
 
+### Configure Jenkins connections
+
+Use **Jenkins → Add instance** to configure a display name, base URL, username, API token, optional CA
+bundle, enabled state, and request timeout. Existing instances can be edited, copied, deleted, or
+connection-tested independently. The API token is write-only in the UI: it is stored by the operating
+system credential backend through Python `keyring` (Keychain on macOS and Credential Locker on
+Windows), while the ordinary JSON configuration stores only non-sensitive instance fields. On Linux,
+only a secure Secret Service, KWallet, or libsecret backend is accepted. If no secure credential
+backend is available, the token remains in process memory only and must be entered again after a
+restart. API responses expose only `token_present`; neither the browser nor MCP tool results receive
+the token, and Service Console never falls back to a plaintext token file.
+
+Create a dedicated Jenkins user or API token with only the permissions needed by the enabled actions.
+Read-only use normally needs `Overall/Read` and `Job/Read`; triggering builds adds `Job/Build`, while
+stopping builds or cancelling queued items adds `Job/Cancel`. Service Console must still be able to
+reach every configured Jenkins URL, and a private CA must be supplied explicitly when the system trust
+store does not contain it.
+
+Prefer an HTTPS Jenkins URL. Plain HTTP remains available for legacy or isolated internal
+controllers, but Basic authentication sends the username and API token without transport
+encryption, so it should be used only on a trusted network.
+
 ## CLI reference
 
 | Operation | Command |
@@ -242,6 +285,27 @@ services. An AI agent can then use `service_restart`, `service_status`, and `ser
 a code change. The bridge also exposes service lifecycle/configuration tools, port inspection, running
 process discovery/import, and explicit process termination. Mutating tools carry MCP annotations so
 clients can apply their normal confirmation policy.
+
+### Jenkins tools for AI
+
+Call `jenkins_instance_list` first, then pass the selected `instance_id` to every other Jenkins tool.
+The UI's currently selected item is intentionally not an implicit default, so an operator switching
+instances cannot redirect an AI operation.
+
+| Purpose | MCP tools |
+|---|---|
+| Browse instances and jobs | `jenkins_instance_list`, `jenkins_job_list`, `jenkins_job_status` |
+| Inspect builds and bounded logs | `jenkins_build_list`, `jenkins_build_status`, `jenkins_build_logs` |
+| Inspect the queue | `jenkins_queue_list` |
+| Start work | `jenkins_build_trigger` |
+| Stop or cancel work | `jenkins_build_stop`, `jenkins_queue_cancel` |
+
+`jenkins_build_logs` reads one finite progressive-text chunk. Its output is capped by `max_bytes`
+(64 KiB by default, 1 MiB maximum); use the returned `next_offset` for another explicit read rather
+than opening an endless stream. Build triggering is non-idempotent and the bridge never retries it
+automatically after a transport failure. Stop and queue-cancel tools are marked destructive, while
+the browse/status/log tools are read-only. Jenkins tokens are not MCP inputs and are never returned
+to the AI—the local controller resolves the selected instance's credential from the system keyring.
 
 ## Browser controller
 

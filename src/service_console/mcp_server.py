@@ -17,7 +17,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 from urllib.parse import quote
 
 import httpx
@@ -285,11 +285,17 @@ class ControllerBridge:
         *,
         params: Mapping[str, object] | None = None,
         json_body: Mapping[str, object] | None = None,
+        retry_on_failure: bool = True,
     ) -> dict[str, object]:
-        """Call the controller, re-reading its descriptor once after connection/token failure."""
+        """Call the controller, optionally retrying once after connection/token failure.
+
+        Retrying is disabled for non-idempotent operations such as triggering a Jenkins build:
+        the controller may have accepted the first request even if its response was lost.
+        """
 
         last_error: BaseException | None = None
-        for attempt in range(2):
+        attempts = 2 if retry_on_failure else 1
+        for attempt in range(attempts):
             connection = await self.ensure_controller()
             try:
                 response = await self._send(
@@ -301,14 +307,14 @@ class ControllerBridge:
                 )
             except httpx.RequestError as exc:
                 last_error = exc
-                if attempt == 0:
+                if retry_on_failure and attempt == 0:
                     await asyncio.sleep(self.poll_interval)
                     continue
                 raise MCPBridgeError(
                     f"Unable to reach Service Console at {connection.base_url}: {exc}"
                 ) from exc
 
-            if response.status_code in (401, 403) and attempt == 0:
+            if response.status_code in (401, 403) and retry_on_failure and attempt == 0:
                 last_error = MCPBridgeError(
                     f"Controller rejected the runtime token: {_response_detail(response)}"
                 )
@@ -491,7 +497,9 @@ mcp = MCPServer(
         "contains .service-console.json, call project_apply_config with its absolute path before "
         "lifecycle operations. After start or restart, call service_status and service_logs to "
         "verify readiness. Prefer managed lifecycle tools over raw shell starts so duplicate "
-        "instances are not created."
+        "instances are not created. Jenkins tools operate on configured Jenkins instances; call "
+        "jenkins_instance_list first and pass the selected instance_id explicitly to every other "
+        "Jenkins tool. Never request or expose Jenkins API tokens."
     ),
     log_level="WARNING",
 )
@@ -659,6 +667,203 @@ async def process_terminate(
         "POST",
         f"/api/processes/{pid}/terminate",
         json_body={"expected_port": expected_port, "force": force, "timeout": timeout},
+    )
+
+
+def _jenkins_instance_path(instance_id: str) -> str:
+    normalized = instance_id.strip()
+    if not normalized:
+        raise MCPBridgeError("Jenkins instance_id must not be empty")
+    return f"/api/jenkins/instances/{quote(normalized, safe='')}"
+
+
+def _jenkins_job_params(job: str) -> dict[str, object]:
+    normalized = job.strip()
+    if not normalized:
+        raise MCPBridgeError("Jenkins job must not be empty")
+    return {"job": normalized}
+
+
+def _bounded_jenkins_log(
+    payload: Mapping[str, object],
+    *,
+    max_bytes: int,
+) -> dict[str, object]:
+    """Bound one progressive Jenkins log response without following it indefinitely."""
+
+    log = _object_from_payload(payload, "log")
+    text = log.get("text")
+    if not isinstance(text, str):
+        raise MCPBridgeError("Service Console response is missing the Jenkins log text")
+    encoded = text.encode("utf-8")
+    bounded = dict(log)
+    if len(encoded) <= max_bytes:
+        bounded["returned_bytes"] = len(encoded)
+        bounded["truncated"] = False
+        return {"log": bounded}
+
+    # Keep a valid UTF-8 prefix and expose the exact resumable byte offset.  The next call can
+    # continue from next_offset without either repeating output or skipping a partial code point.
+    visible = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    returned_bytes = len(visible.encode("utf-8"))
+    offset = bounded.get("offset")
+    if isinstance(offset, bool) or not isinstance(offset, int):
+        raise MCPBridgeError("Service Console response is missing the Jenkins log offset")
+    bounded.update(
+        {
+            "text": visible,
+            "next_offset": offset + returned_bytes,
+            "more": True,
+            "complete": False,
+            "returned_bytes": returned_bytes,
+            "truncated": True,
+        }
+    )
+    return {"log": bounded}
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def jenkins_instance_list() -> dict[str, object]:
+    """List configured Jenkins instances without returning stored API tokens."""
+
+    return await _bridge.request("GET", "/api/jenkins/instances")
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def jenkins_job_list(
+    instance_id: Annotated[str, Field(min_length=1, max_length=200)],
+    folder: Annotated[str, Field(max_length=1_000)] = "",
+    query: Annotated[str, Field(max_length=200)] = "",
+) -> dict[str, object]:
+    """List jobs for one Jenkins instance, optionally within a folder and filtered by text."""
+
+    params: dict[str, object] = {}
+    if folder.strip():
+        params["folder"] = folder.strip()
+    if query.strip():
+        params["query"] = query.strip()
+    return await _bridge.request(
+        "GET",
+        f"{_jenkins_instance_path(instance_id)}/jobs",
+        params=params or None,
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def jenkins_job_status(
+    instance_id: Annotated[str, Field(min_length=1, max_length=200)],
+    job: Annotated[str, Field(min_length=1, max_length=1_000)],
+) -> dict[str, object]:
+    """Return one Jenkins job's current status from the selected instance."""
+
+    return await _bridge.request(
+        "GET",
+        f"{_jenkins_instance_path(instance_id)}/job",
+        params=_jenkins_job_params(job),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def jenkins_build_list(
+    instance_id: Annotated[str, Field(min_length=1, max_length=200)],
+    job: Annotated[str, Field(min_length=1, max_length=1_000)],
+    limit: Annotated[int, Field(ge=1, le=100)] = 30,
+) -> dict[str, object]:
+    """List a bounded number of recent builds for one Jenkins job."""
+
+    return await _bridge.request(
+        "GET",
+        f"{_jenkins_instance_path(instance_id)}/builds",
+        params={**_jenkins_job_params(job), "limit": limit},
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def jenkins_build_status(
+    instance_id: Annotated[str, Field(min_length=1, max_length=200)],
+    job: Annotated[str, Field(min_length=1, max_length=1_000)],
+    number: Annotated[int, Field(ge=1)],
+) -> dict[str, object]:
+    """Return status and metadata for one Jenkins build."""
+
+    return await _bridge.request(
+        "GET",
+        f"{_jenkins_instance_path(instance_id)}/builds/{number}",
+        params=_jenkins_job_params(job),
+    )
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def jenkins_build_logs(
+    instance_id: Annotated[str, Field(min_length=1, max_length=200)],
+    job: Annotated[str, Field(min_length=1, max_length=1_000)],
+    number: Annotated[int, Field(ge=1)],
+    start: Annotated[int, Field(ge=0)] = 0,
+    max_bytes: Annotated[int, Field(ge=4, le=1_048_576)] = 65_536,
+) -> dict[str, object]:
+    """Read one bounded progressive log chunk; use next_offset to request a later chunk."""
+
+    payload = await _bridge.request(
+        "GET",
+        f"{_jenkins_instance_path(instance_id)}/builds/{number}/log",
+        params={**_jenkins_job_params(job), "start": start},
+    )
+    return _bounded_jenkins_log(payload, max_bytes=max_bytes)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def jenkins_queue_list(
+    instance_id: Annotated[str, Field(min_length=1, max_length=200)],
+) -> dict[str, object]:
+    """List the current Jenkins queue for one configured instance."""
+
+    return await _bridge.request("GET", f"{_jenkins_instance_path(instance_id)}/queue")
+
+
+@mcp.tool(annotations=NON_IDEMPOTENT_WRITE)
+async def jenkins_build_trigger(
+    instance_id: Annotated[str, Field(min_length=1, max_length=200)],
+    job: Annotated[str, Field(min_length=1, max_length=1_000)],
+    parameters: dict[str, str | int | float | bool] | None = None,
+) -> dict[str, object]:
+    """Trigger one Jenkins build. This non-idempotent request is never retried automatically."""
+
+    return await _bridge.request(
+        "POST",
+        f"{_jenkins_instance_path(instance_id)}/builds",
+        params=_jenkins_job_params(job),
+        json_body={"parameters": dict(parameters or {})},
+        retry_on_failure=False,
+    )
+
+
+@mcp.tool(annotations=STOP_WRITE)
+async def jenkins_build_stop(
+    instance_id: Annotated[str, Field(min_length=1, max_length=200)],
+    job: Annotated[str, Field(min_length=1, max_length=1_000)],
+    number: Annotated[int, Field(ge=1)],
+) -> dict[str, object]:
+    """Stop one running Jenkins build."""
+
+    return await _bridge.request(
+        "POST",
+        f"{_jenkins_instance_path(instance_id)}/builds/{number}/stop",
+        params=_jenkins_job_params(job),
+        retry_on_failure=False,
+    )
+
+
+@mcp.tool(annotations=DESTRUCTIVE_WRITE)
+async def jenkins_queue_cancel(
+    instance_id: Annotated[str, Field(min_length=1, max_length=200)],
+    queue_id: Annotated[int, Field(ge=1)],
+) -> dict[str, object]:
+    """Cancel one queued Jenkins item before it starts."""
+
+    return await _bridge.request(
+        "POST",
+        f"{_jenkins_instance_path(instance_id)}/queue/{queue_id}/cancel",
+        retry_on_failure=False,
     )
 
 

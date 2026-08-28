@@ -41,7 +41,9 @@ uv run --locked --group desktop pyinstaller `
     --icon $IconPath `
     --paths (Join-Path $RootDir "src") `
     --copy-metadata service-console `
+    --copy-metadata keyring `
     --collect-data service_console `
+    --collect-all keyring `
     --collect-all webview `
     --hidden-import webview.platforms.edgechromium `
     (Join-Path $RootDir "src/service_console/desktop.py")

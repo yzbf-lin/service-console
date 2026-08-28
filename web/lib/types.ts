@@ -11,7 +11,7 @@ export type ServiceState = (typeof SERVICE_STATES)[number];
 export type ServiceStatus = ServiceState | "UNKNOWN";
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = Exclude<ThemePreference, "system">;
-export type ViewId = "services" | "ports" | "settings";
+export type ViewId = "services" | "ports" | "jenkins" | "settings";
 export type ConnectionState = "pending" | "ok" | "error";
 
 export const APP_UPDATE_STATES = [
@@ -210,6 +210,110 @@ export interface ProcessTerminateResult {
   force: boolean;
   terminated: boolean;
   exit_code: number | null;
+}
+
+export interface JenkinsInstance {
+  id: string;
+  name: string;
+  baseUrl: string;
+  username: string;
+  caBundle: string;
+  enabled: boolean;
+  requestTimeout: number;
+  tokenPresent: boolean;
+  credentialError: string | null;
+}
+
+export interface JenkinsInstanceInput {
+  name: string;
+  base_url: string;
+  username: string;
+  ca_bundle: string;
+  enabled: boolean;
+  request_timeout: number;
+  token?: string;
+}
+
+export interface JenkinsConnectionResult {
+  ok: boolean;
+  version: string | null;
+  url: string;
+}
+
+export interface JenkinsLastBuild {
+  number: number;
+  url: string;
+  building: boolean;
+  result: string | null;
+  status: string;
+}
+
+export interface JenkinsJobParameter {
+  name: string;
+  type: string;
+  rawType?: string;
+  description: string;
+  defaultValue: string | number | boolean | null;
+  choices: string[];
+}
+
+export interface JenkinsJob {
+  name: string;
+  fullName: string;
+  url: string;
+  kind: string;
+  color: string;
+  status: string;
+  buildable: boolean;
+  inQueue: boolean;
+  description: string;
+  parameters: JenkinsJobParameter[];
+  lastBuild: JenkinsLastBuild | null;
+}
+
+export interface JenkinsBuild {
+  number: number;
+  url: string;
+  displayName: string;
+  fullDisplayName: string;
+  building: boolean;
+  result: string | null;
+  status: string;
+  timestamp: number | null;
+  duration: number;
+  estimatedDuration: number;
+  queueId: number | null;
+  description: string;
+}
+
+export interface JenkinsQueueItem {
+  id: number;
+  url: string;
+  blocked: boolean;
+  buildable: boolean;
+  stuck: boolean;
+  why: string;
+  taskName: string;
+  taskFullName: string;
+  taskUrl: string;
+  executableNumber: number | null;
+  executableUrl: string;
+}
+
+export interface JenkinsBuildTriggerResult {
+  id: number | null;
+  url: string;
+  location: string;
+}
+
+export interface JenkinsLogChunk {
+  job: string;
+  number: number;
+  offset: number;
+  nextOffset: number;
+  text: string;
+  more: boolean;
+  complete: boolean;
 }
 
 export interface WsStatusEvent {

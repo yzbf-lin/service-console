@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
@@ -150,6 +148,38 @@ async def test_request_rereads_descriptor_and_retries_transport_failure(
     assert sent == [old, new]
 
 
+async def test_request_does_not_retry_a_non_idempotent_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bridge = ControllerBridge(tmp_path / "controller.json", poll_interval=0)
+    current = connection()
+    ensures = 0
+    sends = 0
+
+    async def ensure() -> RuntimeConnection:
+        nonlocal ensures
+        ensures += 1
+        return current
+
+    async def send(*_args: object, **_kwargs: object) -> httpx.Response:
+        nonlocal sends
+        sends += 1
+        raise httpx.ConnectError("response was lost after the request may have been accepted")
+
+    monkeypatch.setattr(bridge, "ensure_controller", ensure)
+    monkeypatch.setattr(bridge, "_send", send)
+
+    with pytest.raises(MCPBridgeError, match="Unable to reach Service Console"):
+        await bridge.request(
+            "POST",
+            "/api/jenkins/instances/ci/builds",
+            retry_on_failure=False,
+        )
+    assert ensures == 1
+    assert sends == 1
+
+
 async def test_mcp_registers_complete_tool_surface() -> None:
     tools = {tool.name: tool for tool in await mcp_module.mcp.list_tools()}
 
@@ -166,11 +196,32 @@ async def test_mcp_registers_complete_tool_surface() -> None:
         "process_import",
         "process_terminate",
         "project_apply_config",
+        "jenkins_instance_list",
+        "jenkins_job_list",
+        "jenkins_job_status",
+        "jenkins_build_list",
+        "jenkins_build_status",
+        "jenkins_build_logs",
+        "jenkins_queue_list",
+        "jenkins_build_trigger",
+        "jenkins_build_stop",
+        "jenkins_queue_cancel",
     }
     assert tools["service_list"].annotations.read_only_hint is True
     assert tools["service_restart"].annotations.destructive_hint is True
     assert tools["process_terminate"].annotations.destructive_hint is True
     assert tools["project_apply_config"].annotations.idempotent_hint is True
+    assert tools["jenkins_build_logs"].annotations.read_only_hint is True
+    assert tools["jenkins_build_trigger"].annotations.idempotent_hint is False
+    assert tools["jenkins_build_stop"].annotations.destructive_hint is True
+    assert tools["jenkins_queue_cancel"].annotations.destructive_hint is True
+
+    jenkins_tools = {name: tool for name, tool in tools.items() if name.startswith("jenkins_")}
+    for name, tool in jenkins_tools.items():
+        schema = tool.input_schema
+        assert "token" not in json.dumps(schema).lower()
+        if name != "jenkins_instance_list":
+            assert "instance_id" in schema.get("required", [])
 
 
 async def test_service_tools_use_structured_controller_endpoints(
@@ -273,6 +324,126 @@ async def test_process_tools_import_safe_process_definition(
         "force": False,
         "timeout": 2,
     }
+
+
+async def test_jenkins_tools_use_explicit_instance_routes_and_bounded_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(method: str, path: str, kwargs: dict[str, object]) -> dict[str, object]:
+        if path == "/api/jenkins/instances":
+            return {
+                "instances": [
+                    {
+                        "id": "jenkins one",
+                        "name": "Team CI",
+                        "base_url": "https://ci.example.test",
+                        "username": "builder",
+                        "token_present": True,
+                    }
+                ]
+            }
+        if path.endswith("/jobs"):
+            return {"folder": "team", "jobs": [{"name": "backend"}]}
+        if path.endswith("/job"):
+            return {"job": {"name": "team/backend", "color": "blue"}}
+        if path.endswith("/builds") and method == "GET":
+            return {"job": "team/backend", "builds": [{"number": 8}]}
+        if path.endswith("/builds") and method == "POST":
+            return {"queue": {"id": 17, "url": "https://ci/queue/item/17/"}}
+        if path.endswith("/builds/8/log"):
+            return {
+                "log": {
+                    "job": "team/backend",
+                    "number": 8,
+                    "offset": 20,
+                    "next_offset": 99,
+                    "text": "hello世界more",
+                    "more": False,
+                    "complete": True,
+                }
+            }
+        if path.endswith("/builds/8/stop"):
+            return {"build": {"job": "team/backend", "number": 8, "stopped": True}}
+        if path.endswith("/builds/8"):
+            return {"build": {"job": "team/backend", "number": 8, "building": True}}
+        if path.endswith("/queue/17/cancel"):
+            return {"queue": {"id": 17, "cancelled": True}}
+        if path.endswith("/queue"):
+            return {"queue": [{"id": 17}]}
+        raise AssertionError((method, path, kwargs))
+
+    fake = RecordingBridge(handler)
+    monkeypatch.setattr(mcp_module, "_bridge", fake)
+
+    instances = await mcp_module.jenkins_instance_list()
+    jobs = await mcp_module.jenkins_job_list("jenkins one", " team ", " backend ")
+    job = await mcp_module.jenkins_job_status("jenkins one", " team/backend ")
+    builds = await mcp_module.jenkins_build_list("jenkins one", "team/backend", 10)
+    build = await mcp_module.jenkins_build_status("jenkins one", "team/backend", 8)
+    log = await mcp_module.jenkins_build_logs("jenkins one", "team/backend", 8, 20, 8)
+    queue = await mcp_module.jenkins_queue_list("jenkins one")
+    triggered = await mcp_module.jenkins_build_trigger(
+        "jenkins one",
+        "team/backend",
+        {"BRANCH": "main", "RETRIES": 2, "CLEAN": True},
+    )
+    stopped = await mcp_module.jenkins_build_stop("jenkins one", "team/backend", 8)
+    cancelled = await mcp_module.jenkins_queue_cancel("jenkins one", 17)
+
+    assert instances["instances"][0]["token_present"] is True  # type: ignore[index]
+    assert jobs["folder"] == "team"
+    assert job["job"]["name"] == "team/backend"  # type: ignore[index]
+    assert builds["builds"] == [{"number": 8}]
+    assert build["build"]["building"] is True  # type: ignore[index]
+    assert log == {
+        "log": {
+            "job": "team/backend",
+            "number": 8,
+            "offset": 20,
+            "next_offset": 28,
+            "text": "hello世",
+            "more": True,
+            "complete": False,
+            "returned_bytes": 8,
+            "truncated": True,
+        }
+    }
+    assert queue == {"queue": [{"id": 17}]}
+    assert triggered["queue"]["id"] == 17  # type: ignore[index]
+    assert stopped["build"]["stopped"] is True  # type: ignore[index]
+    assert cancelled["queue"]["cancelled"] is True  # type: ignore[index]
+
+    prefix = "/api/jenkins/instances/jenkins%20one"
+    assert fake.calls == [
+        ("GET", "/api/jenkins/instances", {}),
+        ("GET", f"{prefix}/jobs", {"params": {"folder": "team", "query": "backend"}}),
+        ("GET", f"{prefix}/job", {"params": {"job": "team/backend"}}),
+        ("GET", f"{prefix}/builds", {"params": {"job": "team/backend", "limit": 10}}),
+        ("GET", f"{prefix}/builds/8", {"params": {"job": "team/backend"}}),
+        (
+            "GET",
+            f"{prefix}/builds/8/log",
+            {"params": {"job": "team/backend", "start": 20}},
+        ),
+        ("GET", f"{prefix}/queue", {}),
+        (
+            "POST",
+            f"{prefix}/builds",
+            {
+                "params": {"job": "team/backend"},
+                "json_body": {
+                    "parameters": {"BRANCH": "main", "RETRIES": 2, "CLEAN": True}
+                },
+                "retry_on_failure": False,
+            },
+        ),
+        (
+            "POST",
+            f"{prefix}/builds/8/stop",
+            {"params": {"job": "team/backend"}, "retry_on_failure": False},
+        ),
+        ("POST", f"{prefix}/queue/17/cancel", {"retry_on_failure": False}),
+    ]
 
 
 async def test_project_apply_config_validates_then_creates_updates_and_skips(

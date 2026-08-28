@@ -6,8 +6,28 @@ import {
   normalizeProcessCandidate,
   normalizeService,
 } from "./service-logic";
+import {
+  extractJenkinsBuilds,
+  extractJenkinsInstances,
+  extractJenkinsJobs,
+  extractJenkinsQueue,
+  normalizeJenkinsBuild,
+  normalizeJenkinsConnection,
+  normalizeJenkinsInstance,
+  normalizeJenkinsJob,
+  normalizeJenkinsLog,
+  normalizeJenkinsTrigger,
+} from "./jenkins";
 import type {
   AppUpdateStatus,
+  JenkinsBuild,
+  JenkinsBuildTriggerResult,
+  JenkinsConnectionResult,
+  JenkinsInstance,
+  JenkinsInstanceInput,
+  JenkinsJob,
+  JenkinsLogChunk,
+  JenkinsQueueItem,
   McpIntegrationStatus,
   NormalizedLogEntry,
   NormalizedPortRow,
@@ -73,6 +93,24 @@ export interface ServiceConsoleApiClient {
   installMcpIntegration(): Promise<McpIntegrationStatus>;
   testMcpIntegration(): Promise<McpIntegrationStatus>;
   removeMcpIntegration(): Promise<McpIntegrationStatus>;
+  listJenkinsInstances(): Promise<JenkinsInstance[]>;
+  createJenkinsInstance(input: JenkinsInstanceInput): Promise<JenkinsInstance>;
+  updateJenkinsInstance(id: string, input: JenkinsInstanceInput): Promise<JenkinsInstance>;
+  deleteJenkinsInstance(id: string): Promise<void>;
+  testJenkinsInstance(id: string): Promise<JenkinsConnectionResult>;
+  listJenkinsJobs(id: string, folder?: string, query?: string): Promise<JenkinsJob[]>;
+  getJenkinsJob(id: string, job: string): Promise<JenkinsJob>;
+  listJenkinsBuilds(id: string, job: string, limit?: number): Promise<JenkinsBuild[]>;
+  getJenkinsBuild(id: string, job: string, number: number): Promise<JenkinsBuild>;
+  triggerJenkinsBuild(
+    id: string,
+    job: string,
+    parameters: Record<string, string | number | boolean>,
+  ): Promise<JenkinsBuildTriggerResult>;
+  stopJenkinsBuild(id: string, job: string, number: number): Promise<void>;
+  listJenkinsQueue(id: string): Promise<JenkinsQueueItem[]>;
+  cancelJenkinsQueueItem(id: string, queueId: number): Promise<void>;
+  getJenkinsBuildLog(id: string, job: string, number: number, start?: number): Promise<JenkinsLogChunk>;
 }
 
 function responseRecord(payload: unknown, key: string): Record<string, unknown> {
@@ -85,6 +123,19 @@ function responseRecord(payload: unknown, key: string): Record<string, unknown> 
 function joinUrl(baseUrl: string, path: string): string {
   if (!baseUrl) return path;
   return new URL(path, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`).toString();
+}
+
+function jenkinsPath(instanceId: string, suffix = ""): string {
+  return `/api/jenkins/instances/${encodeURIComponent(instanceId)}${suffix}`;
+}
+
+function withQuery(path: string, values: Record<string, string | number | undefined>): string {
+  const query = new URLSearchParams();
+  Object.entries(values).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") query.set(key, String(value));
+  });
+  const encoded = query.toString();
+  return encoded ? `${path}?${encoded}` : path;
 }
 
 export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleApiClient {
@@ -247,6 +298,60 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
     async removeMcpIntegration() {
       const payload = await request<unknown>("/api/mcp-integration", { method: "DELETE" });
       return responseRecord(payload, "mcp") as unknown as McpIntegrationStatus;
+    },
+    async listJenkinsInstances() {
+      return extractJenkinsInstances(await request<unknown>("/api/jenkins/instances"));
+    },
+    async createJenkinsInstance(input) {
+      const payload = await request<unknown>("/api/jenkins/instances", { method: "POST", body: input });
+      return normalizeJenkinsInstance(responseRecord(payload, "instance"));
+    },
+    async updateJenkinsInstance(id, input) {
+      const payload = await request<unknown>(jenkinsPath(id), { method: "PUT", body: input });
+      return normalizeJenkinsInstance(responseRecord(payload, "instance"));
+    },
+    async deleteJenkinsInstance(id) {
+      await request<unknown>(jenkinsPath(id), { method: "DELETE" });
+    },
+    async testJenkinsInstance(id) {
+      return normalizeJenkinsConnection(await request<unknown>(jenkinsPath(id, "/test"), { method: "POST" }));
+    },
+    async listJenkinsJobs(id, folder = "", query = "") {
+      return extractJenkinsJobs(await request<unknown>(withQuery(jenkinsPath(id, "/jobs"), { folder, query })));
+    },
+    async getJenkinsJob(id, job) {
+      const payload = await request<unknown>(withQuery(jenkinsPath(id, "/job"), { job }));
+      return normalizeJenkinsJob(responseRecord(payload, "job"));
+    },
+    async listJenkinsBuilds(id, job, limit = 30) {
+      return extractJenkinsBuilds(await request<unknown>(withQuery(jenkinsPath(id, "/builds"), { job, limit })));
+    },
+    async getJenkinsBuild(id, job, number) {
+      return normalizeJenkinsBuild(await request<unknown>(withQuery(
+        jenkinsPath(id, `/builds/${number}`),
+        { job },
+      )));
+    },
+    async triggerJenkinsBuild(id, job, parameters) {
+      return normalizeJenkinsTrigger(await request<unknown>(withQuery(jenkinsPath(id, "/builds"), { job }), {
+        method: "POST",
+        body: { parameters },
+      }));
+    },
+    async stopJenkinsBuild(id, job, number) {
+      await request<unknown>(withQuery(jenkinsPath(id, `/builds/${number}/stop`), { job }), { method: "POST" });
+    },
+    async listJenkinsQueue(id) {
+      return extractJenkinsQueue(await request<unknown>(jenkinsPath(id, "/queue")));
+    },
+    async cancelJenkinsQueueItem(id, queueId) {
+      await request<unknown>(jenkinsPath(id, `/queue/${queueId}/cancel`), { method: "POST" });
+    },
+    async getJenkinsBuildLog(id, job, number, start = 0) {
+      return normalizeJenkinsLog(await request<unknown>(withQuery(
+        jenkinsPath(id, `/builds/${number}/log`),
+        { job, start },
+      )));
     },
   };
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import secrets
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -20,10 +21,12 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from .jenkins import CredentialStore, JenkinsApiError, JenkinsGateway, JenkinsService
 from .manager import ServiceManager
 from .mcp_integration import McpIntegrationManager
 from .models import ServiceDefinition
@@ -68,6 +71,44 @@ class UiPreferencesRequest(BaseModel):
     theme: Literal["system", "light", "dark"]
 
 
+class JenkinsInstanceRequest(BaseModel):
+    """Create or fully replace one Jenkins controller definition."""
+
+    name: str = Field(min_length=1, max_length=100)
+    base_url: str = Field(min_length=1, max_length=2_048)
+    username: str = Field(min_length=1, max_length=256)
+    token: str | None = Field(default=None, min_length=1, max_length=4_096)
+    ca_bundle: str | None = Field(default=None, max_length=4_096)
+    enabled: bool = True
+    request_timeout: float = Field(default=15.0, ge=1, le=120, allow_inf_nan=False)
+
+
+JenkinsParameterValue = str | int | float | bool
+
+
+class JenkinsBuildRequest(BaseModel):
+    """Parameters passed to a normal or parameterized Jenkins build."""
+
+    parameters: dict[str, JenkinsParameterValue] = Field(default_factory=dict)
+
+    @field_validator("parameters")
+    @classmethod
+    def validate_parameters(
+        cls,
+        parameters: dict[str, JenkinsParameterValue],
+    ) -> dict[str, JenkinsParameterValue]:
+        if len(parameters) > 200:
+            raise ValueError("at most 200 Jenkins build parameters are supported")
+        for name, value in parameters.items():
+            if not name.strip() or len(name) > 256 or any(ord(character) < 32 for character in name):
+                raise ValueError("Jenkins build parameter names must be printable and non-empty")
+            if isinstance(value, str) and len(value) > 16_384:
+                raise ValueError("Jenkins build parameter values must not exceed 16384 characters")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("Jenkins build parameter values must be finite")
+        return parameters
+
+
 def _definition(name: str, body: ServiceCreateRequest | ServiceUpdateRequest) -> ServiceDefinition:
     values = body.model_dump()
     values["name"] = name
@@ -80,6 +121,9 @@ def create_app(
     manager: ServiceManager | None = None,
     port_inspector: PortInspector | None = None,
     process_inspector: ProcessInspector | None = None,
+    jenkins_service: JenkinsService | None = None,
+    jenkins_credential_store: CredentialStore | None = None,
+    jenkins_gateway: JenkinsGateway | None = None,
     update_manager: UpdateManager | None = None,
     mcp_integration: McpIntegrationManager | None = None,
     on_update_ready: Callable[[], None] | None = None,
@@ -91,6 +135,11 @@ def create_app(
     service_manager = manager or ServiceManager(selected_data_dir)
     port_tool = port_inspector if port_inspector is not None else PortInspector()
     process_tool = process_inspector or ProcessInspector(port_tool)
+    jenkins_tool = jenkins_service or JenkinsService(
+        selected_data_dir,
+        credential_store=jenkins_credential_store,
+        gateway=jenkins_gateway,
+    )
     ui_preferences = UiPreferencesStore(selected_data_dir)
     update_tool = update_manager or UpdateManager(
         selected_data_dir,
@@ -107,14 +156,17 @@ def create_app(
         app.state.manager = service_manager
         await service_manager.initialize()
         try:
+            await jenkins_tool.initialize()
             yield
         finally:
+            await jenkins_tool.shutdown()
             await service_manager.shutdown()
 
     app = FastAPI(title="Service Console", lifespan=lifespan)
     app.state.manager = service_manager
     app.state.port_inspector = port_tool
     app.state.process_inspector = process_tool
+    app.state.jenkins = jenkins_tool
     app.state.update_manager = update_tool
     app.state.mcp_integration = mcp_tool
     app.state.token = token
@@ -150,6 +202,27 @@ def create_app(
     @app.exception_handler(RuntimeError)
     async def handle_runtime_error(_request: object, exc: RuntimeError) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(JenkinsApiError)
+    async def handle_jenkins_error(_request: object, exc: JenkinsApiError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation_error(
+        _request: object,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        # Pydantic includes the rejected input by default. Omitting it prevents API tokens
+        # and password-like build parameters from being reflected in validation responses.
+        detail = [
+            {
+                "type": error.get("type", "value_error"),
+                "loc": error.get("loc", ()),
+                "msg": error.get("msg", "Invalid request"),
+            }
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": detail})
 
     api = APIRouter(prefix="/api", dependencies=[Depends(require_token)])
 
@@ -198,6 +271,127 @@ def create_app(
     @api.delete("/mcp-integration")
     async def remove_mcp_integration() -> dict[str, dict[str, object]]:
         return {"mcp": await asyncio.to_thread(mcp_tool.remove)}
+
+    @api.get("/jenkins/instances")
+    async def list_jenkins_instances() -> dict[str, list[dict[str, object]]]:
+        return {"instances": await jenkins_tool.list_instances()}
+
+    @api.post("/jenkins/instances", status_code=201)
+    async def create_jenkins_instance(
+        body: JenkinsInstanceRequest,
+    ) -> dict[str, dict[str, object]]:
+        return {"instance": await jenkins_tool.create_instance(**body.model_dump())}
+
+    @api.put("/jenkins/instances/{instance_id}")
+    async def update_jenkins_instance(
+        instance_id: str,
+        body: JenkinsInstanceRequest,
+    ) -> dict[str, dict[str, object]]:
+        return {"instance": await jenkins_tool.update_instance(instance_id, **body.model_dump())}
+
+    @api.delete("/jenkins/instances/{instance_id}")
+    async def delete_jenkins_instance(instance_id: str) -> dict[str, str]:
+        await jenkins_tool.delete_instance(instance_id)
+        return {"deleted": instance_id}
+
+    @api.post("/jenkins/instances/{instance_id}/test")
+    async def test_jenkins_instance(instance_id: str) -> dict[str, dict[str, object]]:
+        return {"connection": await jenkins_tool.test_connection(instance_id)}
+
+    @api.get("/jenkins/instances/{instance_id}/jobs")
+    async def list_jenkins_jobs(
+        instance_id: str,
+        folder: Annotated[str, Query(max_length=1_000)] = "",
+        query: Annotated[str | None, Query(max_length=200)] = None,
+    ) -> dict[str, object]:
+        return {
+            "folder": folder.strip().strip("/"),
+            "jobs": await jenkins_tool.list_jobs(instance_id, folder=folder, query=query),
+        }
+
+    @api.get("/jenkins/instances/{instance_id}/job")
+    async def get_jenkins_job(
+        instance_id: str,
+        job: Annotated[str, Query(min_length=1, max_length=1_000)],
+    ) -> dict[str, dict[str, object]]:
+        return {"job": await jenkins_tool.get_job(instance_id, job=job)}
+
+    @api.get("/jenkins/instances/{instance_id}/builds")
+    async def list_jenkins_builds(
+        instance_id: str,
+        job: Annotated[str, Query(min_length=1, max_length=1_000)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 30,
+    ) -> dict[str, object]:
+        return {
+            "job": job.strip().strip("/"),
+            "builds": await jenkins_tool.list_builds(instance_id, job=job, limit=limit),
+        }
+
+    @api.get("/jenkins/instances/{instance_id}/builds/{number}")
+    async def get_jenkins_build(
+        instance_id: str,
+        number: int,
+        job: Annotated[str, Query(min_length=1, max_length=1_000)],
+    ) -> dict[str, dict[str, object]]:
+        if number < 1:
+            raise HTTPException(status_code=422, detail="build number must be positive")
+        return {"build": await jenkins_tool.get_build(instance_id, job=job, number=number)}
+
+    @api.post("/jenkins/instances/{instance_id}/builds", status_code=202)
+    async def trigger_jenkins_build(
+        instance_id: str,
+        body: JenkinsBuildRequest,
+        job: Annotated[str, Query(min_length=1, max_length=1_000)],
+    ) -> dict[str, dict[str, object]]:
+        return {
+            "queue": await jenkins_tool.trigger_build(
+                instance_id,
+                job=job,
+                parameters=body.parameters,
+            )
+        }
+
+    @api.post("/jenkins/instances/{instance_id}/builds/{number}/stop")
+    async def stop_jenkins_build(
+        instance_id: str,
+        number: int,
+        job: Annotated[str, Query(min_length=1, max_length=1_000)],
+    ) -> dict[str, dict[str, object]]:
+        if number < 1:
+            raise HTTPException(status_code=422, detail="build number must be positive")
+        await jenkins_tool.stop_build(instance_id, job=job, number=number)
+        return {"build": {"job": job.strip().strip("/"), "number": number, "stopped": True}}
+
+    @api.get("/jenkins/instances/{instance_id}/queue")
+    async def list_jenkins_queue(instance_id: str) -> dict[str, list[dict[str, object]]]:
+        return {"queue": await jenkins_tool.list_queue(instance_id)}
+
+    @api.post("/jenkins/instances/{instance_id}/queue/{queue_id}/cancel")
+    async def cancel_jenkins_queue_item(
+        instance_id: str,
+        queue_id: int,
+    ) -> dict[str, dict[str, object]]:
+        if queue_id < 1:
+            raise HTTPException(status_code=422, detail="queue id must be positive")
+        await jenkins_tool.cancel_queue_item(instance_id, queue_id=queue_id)
+        return {"queue": {"id": queue_id, "cancelled": True}}
+
+    @api.get("/jenkins/instances/{instance_id}/builds/{number}/log")
+    async def get_jenkins_build_log(
+        instance_id: str,
+        number: int,
+        job: Annotated[str, Query(min_length=1, max_length=1_000)],
+        start: Annotated[int, Query(ge=0)] = 0,
+    ) -> dict[str, dict[str, object]]:
+        if number < 1:
+            raise HTTPException(status_code=422, detail="build number must be positive")
+        log = await jenkins_tool.progressive_log(
+            instance_id,
+            job=job,
+            number=number,
+            start=start,
+        )
+        return {"log": {"job": job.strip().strip("/"), "number": number, **log}}
 
     @api.get("/services")
     async def list_services() -> dict[str, list[dict[str, object]]]:

@@ -20,7 +20,6 @@ from mcp.client.stdio import StdioServerParameters
 
 from .runtime import load_runtime_connection, runtime_path
 
-
 MCP_SERVER_NAME = "service-console"
 MCP_TOOL_NAMES = (
     "project_apply_config",
@@ -35,6 +34,16 @@ MCP_TOOL_NAMES = (
     "process_list",
     "process_import",
     "process_terminate",
+    "jenkins_instance_list",
+    "jenkins_job_list",
+    "jenkins_job_status",
+    "jenkins_build_list",
+    "jenkins_build_status",
+    "jenkins_build_logs",
+    "jenkins_queue_list",
+    "jenkins_build_trigger",
+    "jenkins_build_stop",
+    "jenkins_queue_cancel",
 )
 _CODEX_CONFIGURATION_FIELDS = {
     "name",
