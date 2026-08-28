@@ -30,6 +30,7 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 - 分服务持久化 stdout/stderr，并通过 WebSocket 实时推送。
 - 使用 xterm.js 显示 ANSI 日志，支持搜索、复制、链接、换行和滚动历史。
 - 查看监听端口及占用进程，并通过 PID/端口二次校验安全终止进程。
+- 自动发现桌面端新版本，验证 Ed25519 签名清单与安装包 SHA-256，并在用户确认后安装重启。
 - 搜索当前用户的运行中进程（包括无端口 Worker），自动提取 `uv`/`pnpm` 启动命令和工作目录并填入服务配置。
 - 使用 Next.js、React、TypeScript、Tailwind CSS、shadcn/ui、Radix UI 与 Lucide React
   构建紧凑控制台，并支持可持久化的浅色/深色主题。
@@ -60,11 +61,11 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 ### 保存外观偏好
 
 <p align="center">
-  <img src="docs/assets/screenshots/settings.png" width="100%" alt="Service Console 主题和连接设置">
+  <img src="docs/assets/screenshots/settings.png" width="100%" alt="Service Console 主题、签名更新和连接设置">
 </p>
 
-支持跟随系统、浅色和深色主题，选择结果会持久化。Supabase 云端连接保持可选，并不影响本地
-FastAPI 控制器提供的启动、停止、日志与端口功能。
+支持跟随系统、浅色和深色主题，选择结果会持久化。同一页面会显示当前版本、检查签名更新并引导下载
+和重启。Supabase 云端连接保持可选，并不影响本地 FastAPI 控制器提供的启动、停止、日志与端口功能。
 
 ### 外观与主题
 
@@ -160,6 +161,20 @@ uv run service-console serve --host 127.0.0.1 --port 8787
 注册命令属于受信任本地配置，并以控制器相同的系统权限运行。需要远程访问时，必须配置高强度 Token，
 并在控制器前终止 TLS。不要把无鉴权控制器暴露到不可信网络。
 
+## 桌面端自动更新
+
+打包后的桌面应用会立即读取当前版本，并在启动约 2.5 秒后检查 GitHub Releases 的最新稳定版本。只有
+当 `latest-update.json` 能通过应用内置公钥的 Ed25519 验签时，版本信息和下载地址才会被信任；下载的
+平台安装包还必须与签名清单中的文件名、字节数和 SHA-256 完全一致。
+
+打开“设置 → 应用更新”可以手动检查、下载更新，并选择“安装并重启”。安装不会静默执行：确认窗口会
+明确提示关闭 Service Console 将优雅停止全部受管服务；新版本重新打开后，启用了 `auto_start` 的服务
+会再次启动。
+
+自动替换仅用于正式打包的 macOS arm64 与 Windows x64 Release，且安装目录必须可写。源码运行、纯
+浏览器控制器或不支持的架构仍能发现版本，但会引导前往 Release 下载页。首个内置更新公钥的版本需要
+手动安装，从它之后发布的版本才能在应用内更新。
+
 ## 打包 macOS 应用
 
 需要 macOS、Xcode Command Line Tools、Node.js、pnpm 和 uv：
@@ -201,12 +216,17 @@ pwsh ./scripts/build-windows-app.ps1
 ## 发布 Release 包
 
 仓库的 `Release` GitHub Actions 工作流会构建 Apple Silicon macOS ZIP 和 Windows x64 ZIP。推送与
-`pyproject.toml` 版本一致的标签后，会将两个安装包和 `SHA256SUMS.txt` 发布到 GitHub Releases：
+`pyproject.toml` 版本一致的标签后，会将两个安装包、`SHA256SUMS.txt`、`latest-update.json` 和
+`latest-update.json.sig` 发布到 GitHub Releases：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
+
+清单签名使用受保护的 `SERVICE_CONSOLE_UPDATE_PRIVATE_KEY_B64` Actions Secret；仓库和客户端只保存
+对应公钥。发布过程先写入可恢复的 Draft，再显式标记为 Latest；工作流会拒绝覆盖已经发布的同名
+Release。若需要由 GitHub 强制保护标签和资产，还应在仓库设置中启用 Immutable Releases。
 
 也可以手动运行该工作流，只生成可下载的 Actions 构建产物而不创建 GitHub Release。
 

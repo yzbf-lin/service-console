@@ -42,6 +42,8 @@ requiring Docker or another container runtime.
 - Capture stdout and stderr in independent persistent logs and bounded live buffers.
 - Render ANSI output with xterm.js search, selection, links, wrapping, and scrollback.
 - Inspect listening ports and safely terminate their owning processes with PID/port verification.
+- Discover new desktop releases automatically, verify an Ed25519-signed manifest and package SHA-256,
+  then install and restart only after explicit confirmation.
 - Discover the current user's running processes, including workers without ports, and prefill service
   definitions from restored `uv`/`pnpm` commands and working directories.
 - Use the same controller through the desktop app, Web UI, CLI, TUI, HTTP, or WebSocket.
@@ -77,11 +79,12 @@ terminate it after Service Console verifies both the PID and expected port.
 ### Persist appearance preferences
 
 <p align="center">
-  <img src="docs/assets/screenshots/settings.png" width="100%" alt="Service Console theme and connection settings">
+  <img src="docs/assets/screenshots/settings.png" width="100%" alt="Service Console theme, signed updates, and connection settings">
 </p>
 
-Follow the operating system or select a persistent light or dark theme. Optional Supabase connection
-settings remain separate from the local FastAPI controller and are not required for local operation.
+Follow the operating system or select a persistent light or dark theme. The same page shows the
+installed version, checks for signed updates, and guides download and restart. Optional Supabase
+connection settings remain separate from the local FastAPI controller and are not required locally.
 
 ### Appearance
 
@@ -203,6 +206,23 @@ service-console \
 
 Never expose an unauthenticated controller to an untrusted network.
 
+## Desktop updates
+
+The packaged desktop app reads its local version immediately and checks for a newer stable GitHub
+Release shortly after launch. A release is trusted only when its `latest-update.json` payload passes
+Ed25519 verification with the public key embedded in the app. The selected platform package must
+also match the signed filename, byte size, and SHA-256 digest.
+
+Open **Settings → Application update** to check manually, download an available package, and choose
+**Install and restart**. Installation is never silent: confirmation warns that closing Service
+Console gracefully stops its managed services. After the updated app opens, services with
+`auto_start` enabled start again.
+
+Automatic replacement is available only in frozen macOS arm64 and Windows x64 Release builds and
+requires a writable install directory. Source runs, browser-only controllers, and unsupported
+architectures still discover a release but direct the user to its download page. The first version
+that contains this updater must be installed manually; subsequent releases can update in-app.
+
 ## Build the macOS application
 
 ```bash
@@ -250,13 +270,18 @@ until the project is configured with a trusted code-signing certificate.
 ## Publish release packages
 
 The `Release` GitHub Actions workflow builds an Apple Silicon macOS ZIP and a Windows x64 ZIP. A tag
-matching the version in `pyproject.toml` publishes both packages and `SHA256SUMS.txt` to GitHub
-Releases:
+matching the version in `pyproject.toml` publishes both packages, `SHA256SUMS.txt`, and the signed
+`latest-update.json` / `latest-update.json.sig` pair to GitHub Releases:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
+
+Signing uses the protected `SERVICE_CONSOLE_UPDATE_PRIVATE_KEY_B64` Actions secret; only the matching
+public key is committed. Publishing is staged through a recoverable draft, explicitly marks the
+release as Latest, and refuses to overwrite an already-published release. Enable GitHub Immutable
+Releases in the repository settings when platform-enforced tag and asset immutability is required.
 
 The workflow can also be started manually to build downloadable Actions artifacts without creating
 a GitHub Release.
