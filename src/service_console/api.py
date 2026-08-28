@@ -329,16 +329,19 @@ def create_app(
 
     static_dir = Path(__file__).with_name("static")
     index_template = (static_dir / "index.html").read_text(encoding="utf-8")
+    theme_placeholder = "__SERVICE_CONSOLE_THEME__"
     app.mount("/static", StaticFiles(directory=static_dir, check_dir=False), name="static")
 
     @app.get("/", include_in_schema=False)
     async def index() -> HTMLResponse:
         theme = await asyncio.to_thread(ui_preferences.load_theme)
-        html = index_template.replace(
+        html = index_template.replace(theme_placeholder, theme)
+        html = html.replace(
             'data-theme-preference="system"',
             f'data-theme-preference="{theme}"',
-            1,
         )
+        if "data-theme-preference=" not in html:
+            html = html.replace("<html", f'<html data-theme-preference="{theme}"', 1)
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     return app

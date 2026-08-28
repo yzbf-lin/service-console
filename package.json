@@ -1,18 +1,48 @@
 {
-  "name": "service-console-web-assets",
+  "name": "service-console-web",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
+    "dev:web": "next dev web",
+    "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
+    "lint:web": "eslint --config web/eslint.config.mjs web",
+    "test:web": "vitest run --config web/vitest.config.ts",
+    "build:web": "next build --webpack web",
     "build:web-assets": "node scripts/build-web-assets.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.112.4",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-search": "0.16.0",
     "@xterm/addon-web-links": "0.12.0",
     "@xterm/xterm": "6.0.0",
-    "@tabler/core": "1.4.0"
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "lucide-react": "1.34.0",
+    "next": "16.3.3",
+    "radix-ui": "1.6.7",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tailwind-merge": "3.6.0"
   },
   "devDependencies": {
-    "esbuild": "0.28.2"
+    "@tailwindcss/postcss": "4.3.3",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.6",
+    "@types/node": "26.4.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.3",
+    "jsdom": "30.0.1",
+    "postcss": "8.5.26",
+    "tailwindcss": "4.3.3",
+    "tinyrainbow": "3.1.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
   }
 }

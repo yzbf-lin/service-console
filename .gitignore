@@ -10,6 +10,8 @@ htmlcov/
 .ruff_cache/
 .venv/
 node_modules/
+web/.next/
+web/out/
 __pycache__/
 *.py[cod]
 *.egg-info/

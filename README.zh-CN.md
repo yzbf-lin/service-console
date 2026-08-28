@@ -22,15 +22,21 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 - 分服务持久化 stdout/stderr，并通过 WebSocket 实时推送。
 - 使用 xterm.js 显示 ANSI 日志，支持搜索、复制、链接、换行和滚动历史。
 - 查看监听端口及占用进程，并通过 PID/端口二次校验安全终止进程。
-- 使用 Tabler 紧凑控制台，并支持可持久化的浅色/深色主题。
+- 使用 Next.js、React、TypeScript、Tailwind CSS、shadcn/ui、Radix UI 与 Lucide React
+  构建紧凑控制台，并支持可持久化的浅色/深色主题。
 - 桌面端使用随机回环端口、临时 Token 和权限为 `0600` 的运行描述文件。
 
 ### 外观与主题
 
-控制台在本地打包 `@tabler/core` 1.4 组件库，不依赖 CDN。可通过顶栏太阳/月亮按钮即时切换浅色和
+控制台是静态导出的 Next.js 应用。通用组件遵循 shadcn/ui 结构，交互基础使用 Radix UI，无障碍样式
+和主题 token 由 Tailwind CSS 管理，图标使用 Lucide React。可通过顶栏太阳/月亮按钮即时切换浅色和
 深色主题。首次打开会跟随操作系统配色，手动选择后会保存到控制器数据目录中的
 `ui-preferences.json`，因此桌面端重启或随机回环端口变化后仍能保留；日志终端和页面主题色元数据会
 同步更新。
+
+Supabase 是可选云端适配器。构建时提供 `NEXT_PUBLIC_SUPABASE_URL` 和
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` 后，可供后续远程认证或状态同步使用。本地启动、停止、重启、日志和
+端口操作始终由 FastAPI 控制器执行，不配置 Supabase 也可完整离线使用。
 
 ## 快速开始
 
@@ -105,8 +111,8 @@ uv run service-console serve --host 127.0.0.1 --port 8787
 open "dist/Service Console.app"
 ```
 
-脚本会从 `assets/service-console-icon-1024.png` 生成多分辨率 ICNS 图标，构建本地 Tabler 与
-xterm.js 资源，再用 PyInstaller 打包 CPython、pywebview、FastAPI 和完整界面。Bundle 版本自动与
+脚本会从 `assets/service-console-icon-1024.png` 生成多分辨率 ICNS 图标，静态导出 Next.js 与
+xterm.js 界面，再用 PyInstaller 打包 CPython、pywebview、FastAPI 和完整界面。Bundle 版本自动与
 `pyproject.toml` 同步并进行 ad-hoc 签名。
 
 产物匹配构建机器架构，目前已在 Apple Silicon 上验证。它尚未使用 Apple Developer ID 签名和公证，
@@ -122,6 +128,9 @@ xterm.js 资源，再用 PyInstaller 打包 CPython、pywebview、FastAPI 和完
 ```bash
 uv sync --group dev
 pnpm install --frozen-lockfile
+pnpm run typecheck:web
+pnpm run lint:web
+pnpm run test:web
 pnpm run build:web-assets
 uv run pytest
 ```
