@@ -35,6 +35,7 @@ uv run --group desktop pyinstaller \
   --osx-bundle-identifier "dev.service-console.desktop" \
   --icon "$ICON_PATH" \
   --paths "$ROOT_DIR/src" \
+  --copy-metadata service-console \
   --collect-data service_console \
   --collect-all webview \
   --hidden-import webview.platforms.cocoa \

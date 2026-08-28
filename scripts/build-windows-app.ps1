@@ -36,6 +36,7 @@ uv run --group desktop pyinstaller `
     --name "Service Console" `
     --icon $IconPath `
     --paths (Join-Path $RootDir "src") `
+    --copy-metadata service-console `
     --collect-data service_console `
     --collect-all webview `
     --hidden-import webview.platforms.edgechromium `

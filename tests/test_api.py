@@ -167,6 +167,47 @@ class FakeProcessInspector:
         return self.process(pid)
 
 
+class FakeUpdateManager:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    @staticmethod
+    def snapshot(state: str, *, restart_required: bool = False) -> dict[str, object]:
+        return {
+            "state": state,
+            "current_version": "0.1.0",
+            "latest_version": "0.2.0" if state != "idle" else None,
+            "release_url": "https://github.com/yzbf-lin/service-console/releases/tag/v0.2.0",
+            "published_at": None,
+            "notes": None,
+            "platform": "darwin-arm64",
+            "platform_supported": True,
+            "can_install": True,
+            "reason": None,
+            "error": None,
+            "downloaded_bytes": 0,
+            "total_bytes": None,
+            "download_progress": None,
+            "restart_required": restart_required,
+        }
+
+    def status(self) -> dict[str, object]:
+        self.calls.append("status")
+        return self.snapshot("idle")
+
+    def check(self) -> dict[str, object]:
+        self.calls.append("check")
+        return self.snapshot("available")
+
+    def download(self) -> dict[str, object]:
+        self.calls.append("download")
+        return self.snapshot("downloaded")
+
+    def install(self) -> dict[str, object]:
+        self.calls.append("install")
+        return self.snapshot("restarting", restart_required=True)
+
+
 def test_authenticated_service_lifecycle() -> None:
     manager = FakeManager()
     app = create_app(token="secret", manager=manager)
@@ -200,6 +241,32 @@ def test_authenticated_service_lifecycle() -> None:
         assert client.post("/api/services/api/start", headers=headers).status_code == 404
 
     assert manager.shutdown_called
+
+
+def test_authenticated_app_update_lifecycle_runs_restart_callback() -> None:
+    manager = FakeManager()
+    updater = FakeUpdateManager()
+    restart_requests: list[bool] = []
+    app = create_app(
+        token="secret",
+        manager=manager,
+        update_manager=updater,  # type: ignore[arg-type]
+        on_update_ready=lambda: restart_requests.append(True),
+    )
+    headers = {"Authorization": "Bearer secret"}
+
+    with TestClient(app) as client:
+        assert client.get("/api/app-update").status_code == 401
+        assert client.get("/api/app-update", headers=headers).json()["update"]["state"] == "idle"
+        checked = client.post("/api/app-update/check", headers=headers)
+        assert checked.json()["update"]["state"] == "available"
+        downloaded = client.post("/api/app-update/download", headers=headers)
+        assert downloaded.json()["update"]["state"] == "downloaded"
+        installed = client.post("/api/app-update/install", headers=headers)
+
+    assert installed.json()["update"]["state"] == "restarting"
+    assert updater.calls == ["status", "check", "download", "install"]
+    assert restart_requests == [True]
 
 
 def test_authenticated_service_definition_update() -> None:

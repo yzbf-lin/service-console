@@ -20,6 +20,7 @@ import { SettingsView } from "@/components/settings-view";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { ToastProvider, useToast } from "@/components/toast-provider";
 import { Topbar } from "@/components/topbar";
+import { useAppUpdate } from "@/hooks/use-app-update";
 import { useHashView } from "@/hooks/use-hash-view";
 import { useServices } from "@/hooks/use-services";
 import { useTheme } from "@/hooks/use-theme";
@@ -47,6 +48,7 @@ function ServiceConsoleContent() {
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<NormalizedService | null>(null);
   const processImportRequestId = useRef(0);
+  const notifiedUpdateVersionsRef = useRef(new Set<string>());
 
   const showError = useCallback((title: string, message: string) => {
     notify(title, message, "error");
@@ -62,6 +64,30 @@ function ServiceConsoleContent() {
   );
 
   const serviceState = useServices({ token, enabled: true, onError: showError });
+  const appUpdate = useAppUpdate({ api: serviceState.api, onError: showError });
+  const latestVersion = appUpdate.status?.latest_version ?? null;
+  const updateAvailable = Boolean(
+    latestVersion
+      && latestVersion !== appUpdate.status?.current_version
+      && !["idle", "checking", "up_to_date"].includes(appUpdate.status?.state ?? "idle"),
+  );
+
+  useEffect(() => {
+    const status = appUpdate.status;
+    if (
+      !latestVersion
+      || !updateAvailable
+      || !["available", "unsupported", "downloaded"].includes(status?.state ?? "idle")
+      || notifiedUpdateVersionsRef.current.has(latestVersion)
+    ) return;
+
+    notifiedUpdateVersionsRef.current.add(latestVersion);
+    notify(
+      `发现新版本 v${latestVersion}`,
+      status?.can_install ? "前往设置下载并安装更新。" : "前往设置查看适合当前平台的 Release 安装包。",
+      "info",
+    );
+  }, [appUpdate.status, latestVersion, notify, updateAvailable]);
 
   const cancelProcessImport = useCallback(() => {
     processImportRequestId.current += 1;
@@ -197,7 +223,12 @@ function ServiceConsoleContent() {
       <SettingsView
         preference={preference}
         resolvedTheme={resolvedTheme}
+        updateStatus={appUpdate.status}
+        updateOperation={appUpdate.operation}
         onPreferenceChange={(nextPreference) => void setPreference(nextPreference)}
+        onCheckForUpdates={() => void appUpdate.checkForUpdates()}
+        onDownloadUpdate={() => void appUpdate.downloadUpdate()}
+        onInstallUpdate={() => void appUpdate.installUpdate()}
       />
     );
   } else {
@@ -238,7 +269,11 @@ function ServiceConsoleContent() {
       />
 
       <div className="service-console-body" data-view={activeView}>
-        <SidebarNav activeView={activeView} onViewChange={changeView}>
+        <SidebarNav
+          activeView={activeView}
+          updateAvailable={updateAvailable}
+          onViewChange={changeView}
+        >
           {activeView === "services" ? (
             <ServiceListPanel
               services={serviceState.services}

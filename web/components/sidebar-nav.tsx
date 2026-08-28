@@ -9,6 +9,7 @@ import type { ViewId } from "@/lib/types";
 interface SidebarNavProps {
   activeView: ViewId;
   children?: ReactNode;
+  updateAvailable?: boolean;
   onViewChange: (view: ViewId) => void;
 }
 
@@ -25,7 +26,7 @@ const primaryItems: NavigationItem[] = [
 ];
 
 const secondaryItems: NavigationItem[] = [
-  { id: "settings", label: "设置", description: "外观与连接偏好", icon: Settings },
+  { id: "settings", label: "设置", description: "外观、更新与连接偏好", icon: Settings },
 ];
 
 function NavigationButton({
@@ -34,8 +35,11 @@ function NavigationButton({
   label,
   description,
   icon: Icon,
+  showUpdateIndicator = false,
   onViewChange,
-}: Omit<SidebarNavProps, "children"> & NavigationItem) {
+}: Omit<SidebarNavProps, "children" | "updateAvailable"> & NavigationItem & {
+  showUpdateIndicator?: boolean;
+}) {
   const active = activeView === id;
   return (
     <button
@@ -65,11 +69,26 @@ function NavigationButton({
         <span className="block truncate leading-none">{label}</span>
         <span className="mt-1 block truncate text-[9px] font-normal text-muted-foreground max-[767px]:hidden">{description}</span>
       </span>
+      {showUpdateIndicator ? (
+        <>
+          <span
+            className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-primary shadow-[0_0_0_2px_var(--sidebar)] max-[767px]:shadow-[0_0_0_2px_var(--card)]"
+            data-update-indicator
+            aria-hidden="true"
+          />
+          <span className="sr-only">有可用更新</span>
+        </>
+      ) : null}
     </button>
   );
 }
 
-export function SidebarNav({ activeView, children, onViewChange }: SidebarNavProps) {
+export function SidebarNav({
+  activeView,
+  children,
+  updateAvailable = false,
+  onViewChange,
+}: SidebarNavProps) {
   return (
     <aside
       className={cn(
@@ -98,7 +117,13 @@ export function SidebarNav({ activeView, children, onViewChange }: SidebarNavPro
           data-nav-section="secondary"
         >
           {secondaryItems.map((item) => (
-            <NavigationButton key={item.id} {...item} activeView={activeView} onViewChange={onViewChange} />
+            <NavigationButton
+              key={item.id}
+              {...item}
+              activeView={activeView}
+              showUpdateIndicator={item.id === "settings" && updateAvailable}
+              onViewChange={onViewChange}
+            />
           ))}
         </div>
       </nav>

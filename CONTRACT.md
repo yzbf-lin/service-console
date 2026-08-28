@@ -20,8 +20,22 @@
 - `POST /api/services/{name}/stop`
 - `POST /api/services/{name}/restart`
 - `GET /api/services/{name}/logs?tail=500`
+- `GET /api/ports?port=PORT`
+- `GET /api/processes?query=QUERY&limit=100`
+- `GET /api/processes/{pid}`
+- `POST /api/processes/{pid}/terminate`
+- `GET /api/app-update`: cached local update state; never performs network I/O.
+- `POST /api/app-update/check`: fetch and verify the signed stable-release manifest.
+- `POST /api/app-update/download`: download and verify the selected platform package.
+- `POST /api/app-update/install`: stage the verified package and schedule the desktop restart; the GUI
+  asks for confirmation before invoking this endpoint.
 - `WS /ws/events`: JSON events with `type=status|log`, `service`, and `data`.
 - Optional bearer token for HTTP; WebSocket accepts `?token=`.
+
+Update responses expose `state`, `can_install`, `downloaded`, `downloaded_bytes`, `total_bytes`,
+`download_progress`, and `restart_required`. `download_progress` is a percentage from `0` to `100`;
+`state` is one of `idle`, `checking`, `available`, `unsupported`, `up_to_date`, `downloading`,
+`downloaded`, `installing`, `restarting`, or `error`.
 
 ## Module map
 
@@ -30,4 +44,5 @@
 - `api.py`: HTTP and WebSocket controller surface.
 - `cli.py`, `tui.py`: command-line and terminal clients.
 - `desktop.py`, `runtime.py`: native window lifecycle and private local discovery.
+- `update.py`: signed release discovery, package verification, staging, replacement, and rollback.
 - `static/`: responsive dashboard and bundled terminal assets.

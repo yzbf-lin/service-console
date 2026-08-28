@@ -7,6 +7,7 @@ import {
   normalizeService,
 } from "./service-logic";
 import type {
+  AppUpdateStatus,
   NormalizedLogEntry,
   NormalizedPortRow,
   NormalizedProcessCandidate,
@@ -63,6 +64,10 @@ export interface ServiceConsoleApiClient {
   getProcess(pid: number): Promise<NormalizedProcessCandidate>;
   terminateProcess(pid: number, input: ProcessTerminateInput): Promise<ProcessTerminateResult>;
   updateTheme(theme: ThemePreference): Promise<ThemePreference>;
+  getAppUpdateStatus(): Promise<AppUpdateStatus>;
+  checkAppUpdate(): Promise<AppUpdateStatus>;
+  downloadAppUpdate(): Promise<AppUpdateStatus>;
+  installAppUpdate(): Promise<AppUpdateStatus>;
 }
 
 function responseRecord(payload: unknown, key: string): Record<string, unknown> {
@@ -205,6 +210,22 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
       return isRecord(payload) && ["system", "light", "dark"].includes(String(payload.theme))
         ? payload.theme as ThemePreference
         : theme;
+    },
+    async getAppUpdateStatus() {
+      const payload = await request<unknown>("/api/app-update");
+      return responseRecord(payload, "update") as unknown as AppUpdateStatus;
+    },
+    async checkAppUpdate() {
+      const payload = await request<unknown>("/api/app-update/check", { method: "POST" });
+      return responseRecord(payload, "update") as unknown as AppUpdateStatus;
+    },
+    async downloadAppUpdate() {
+      const payload = await request<unknown>("/api/app-update/download", { method: "POST" });
+      return responseRecord(payload, "update") as unknown as AppUpdateStatus;
+    },
+    async installAppUpdate() {
+      const payload = await request<unknown>("/api/app-update/install", { method: "POST" });
+      return responseRecord(payload, "update") as unknown as AppUpdateStatus;
     },
   };
 }

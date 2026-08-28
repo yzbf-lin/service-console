@@ -44,4 +44,13 @@ describe("SidebarNav information architecture", () => {
     expect(onViewChange).toHaveBeenCalledOnce();
     expect(onViewChange).toHaveBeenCalledWith("settings");
   });
+
+  it("marks Settings when an application update is available", () => {
+    const { container } = render(
+      <SidebarNav activeView="services" updateAvailable onViewChange={vi.fn()} />,
+    );
+
+    expect(container.querySelector("[data-update-indicator]")).not.toBeNull();
+    expect(screen.getByRole("button", { name: /设置.*有可用更新/ })).toBeTruthy();
+  });
 });

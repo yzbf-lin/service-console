@@ -14,6 +14,40 @@ export type ResolvedTheme = Exclude<ThemePreference, "system">;
 export type ViewId = "services" | "ports" | "settings";
 export type ConnectionState = "pending" | "ok" | "error";
 
+export const APP_UPDATE_STATES = [
+  "idle",
+  "checking",
+  "up_to_date",
+  "available",
+  "unsupported",
+  "downloading",
+  "downloaded",
+  "installing",
+  "restarting",
+  "error",
+] as const;
+
+export type AppUpdateState = (typeof APP_UPDATE_STATES)[number];
+
+export interface AppUpdateStatus {
+  state: AppUpdateState;
+  current_version: string;
+  latest_version: string | null;
+  release_url: string | null;
+  published_at: string | null;
+  notes: string | null;
+  platform: string;
+  platform_supported: boolean;
+  can_install: boolean;
+  reason: string | null;
+  error: string | null;
+  downloaded_bytes: number;
+  total_bytes: number | null;
+  download_progress: number | null;
+  downloaded: boolean;
+  restart_required: boolean;
+}
+
 export interface ServiceDefinition {
   name: string;
   command: string;

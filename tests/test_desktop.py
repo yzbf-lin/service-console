@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
+import sys
+import time
 from urllib.parse import parse_qs, urlparse
 
+import service_console.desktop as desktop_module
 from service_console.desktop import DesktopController
 from service_console.runtime import load_runtime_connection
+from service_console.update import UPDATE_RESTART_ARGUMENTS_ENV, encode_restart_arguments
 
 
 def test_desktop_controller_uses_environment_token(monkeypatch, tmp_path) -> None:
@@ -73,3 +78,103 @@ def test_desktop_stop_continues_when_runtime_cleanup_fails(monkeypatch, tmp_path
     controller.stop()
 
     assert server.should_exit is True
+
+
+def test_desktop_update_exit_closes_window_and_stops_server(tmp_path) -> None:
+    controller = DesktopController(tmp_path)
+
+    class FakeServer:
+        should_exit = False
+
+    class FakeWindow:
+        destroyed = False
+
+        def destroy(self) -> None:
+            self.destroyed = True
+
+    server = FakeServer()
+    window = FakeWindow()
+    controller._server = server
+    controller.attach_window(window)
+
+    controller._close_for_update()
+
+    assert window.destroyed is True
+    assert server.should_exit is True
+
+
+def test_desktop_marks_update_ready_after_shown_window_is_stable(tmp_path) -> None:
+    ready_file = tmp_path / "updates with spaces" / "install-update.ready"
+    controller = DesktopController(
+        tmp_path,
+        update_ready_file=ready_file,
+        update_ready_delay=0,
+    )
+
+    class FakeServer:
+        should_exit = False
+
+    class FakeThread:
+        def is_alive(self) -> bool:
+            return True
+
+    controller._server = FakeServer()  # type: ignore[assignment]
+    controller._thread = FakeThread()  # type: ignore[assignment]
+
+    controller.mark_application_ready()
+
+    deadline = time.monotonic() + 2
+    while not ready_file.is_file() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    payload = json.loads(ready_file.read_text(encoding="utf-8"))
+    assert payload["pid"] > 0
+    assert payload["version"]
+    assert payload["ready_at"]
+
+
+def test_desktop_does_not_mark_update_ready_after_shutdown(tmp_path) -> None:
+    ready_file = tmp_path / "install-update.ready"
+    controller = DesktopController(
+        tmp_path,
+        update_ready_file=ready_file,
+        update_ready_delay=60,
+    )
+
+    class FakeServer:
+        should_exit = False
+
+    controller._server = FakeServer()  # type: ignore[assignment]
+    controller.mark_application_ready()
+    controller.stop()
+
+    assert not ready_file.exists()
+
+
+def test_desktop_main_restores_helper_arguments_with_spaces(monkeypatch, tmp_path) -> None:
+    arguments = [
+        "--data-dir",
+        str(tmp_path / "data directory"),
+        "--runtime-file",
+        str(tmp_path / "runtime descriptor.json"),
+        "--debug",
+    ]
+    monkeypatch.setenv(UPDATE_RESTART_ARGUMENTS_ENV, encode_restart_arguments(arguments))
+    monkeypatch.setattr(sys, "argv", ["Service Console"])
+    captured: dict[str, object] = {}
+
+    def fake_run_desktop(data_dir, **kwargs) -> None:
+        captured["data_dir"] = data_dir
+        captured.update(kwargs)
+
+    monkeypatch.setattr(desktop_module, "run_desktop", fake_run_desktop)
+
+    assert desktop_module.main() == 0
+    assert captured == {
+        "data_dir": str(tmp_path / "data directory"),
+        "width": 1440,
+        "height": 900,
+        "debug": True,
+        "runtime_file": str(tmp_path / "runtime descriptor.json"),
+    }
+    assert sys.argv[1:] == arguments
+    assert UPDATE_RESTART_ARGUMENTS_ENV not in desktop_module.os.environ

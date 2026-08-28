@@ -1,11 +1,12 @@
 [project]
 name = "service-console"
-version = "0.1.0"
+version = "0.2.0"
 description = "Native process supervisor with web and terminal interfaces"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
+  "cryptography>=46,<47",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
   "psutil>=7,<8",

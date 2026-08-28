@@ -14,16 +14,16 @@ jobs:
     name: Build macOS arm64
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
           python-version: "3.12"
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 11.7.0
           run_install: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: pnpm
@@ -56,7 +56,7 @@ jobs:
           cp LICENSE README.md README.zh-CN.md "$STAGE/"
           ditto -c -k --sequesterRsrc --keepParent "$STAGE" \
             "release/Service-Console-v${VERSION}-macOS-arm64.zip"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: service-console-macos-arm64
           path: release/Service-Console-*.zip
@@ -67,16 +67,16 @@ jobs:
     name: Build Windows x64
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
           python-version: "3.12"
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 11.7.0
           run_install: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: pnpm
@@ -121,7 +121,7 @@ jobs:
           Copy-Item LICENSE, README.md, README.zh-CN.md -Destination $appDir
           New-Item -ItemType Directory -Force -Path release | Out-Null
           Compress-Archive -Path $appDir -DestinationPath "release/Service-Console-v$version-Windows-x64.zip"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: service-console-windows-x64
           path: release/Service-Console-*.zip
@@ -134,7 +134,8 @@ jobs:
     needs: [build-macos, build-windows]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: service-console-*
           merge-multiple: true
@@ -143,16 +144,44 @@ jobs:
         run: |
           cd release
           sha256sum Service-Console-*.zip > SHA256SUMS.txt
-      - name: Create or update release
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Prepare locked signing dependencies
+        run: uv sync --frozen --no-dev --no-install-project
+      - name: Create signed update manifest
+        env:
+          UPDATE_PRIVATE_KEY_B64: ${{ secrets.SERVICE_CONSOLE_UPDATE_PRIVATE_KEY_B64 }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          test -n "$UPDATE_PRIVATE_KEY_B64"
+          uv run --frozen --no-sync \
+            python scripts/create_update_manifest.py \
+              --version "$VERSION" \
+              --repository "$GITHUB_REPOSITORY" \
+              --published-at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+      - name: Publish signed release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release/* --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" release/* \
+          RELEASE_STATE="$(
+            gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' 2>/dev/null || true
+          )"
+          if [[ "$RELEASE_STATE" == "false" ]]; then
+            echo "Published release $GITHUB_REF_NAME already exists; refusing to overwrite it." >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_STATE" != "true" ]]; then
+            gh release create "$GITHUB_REF_NAME" \
+              --draft \
               --verify-tag \
               --generate-notes \
               --title "Service Console $GITHUB_REF_NAME"
           fi
+          gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          gh release edit "$GITHUB_REF_NAME" \
+            --draft=false \
+            --latest \
+            --verify-tag

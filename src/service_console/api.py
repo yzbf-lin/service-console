@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     FastAPI,
     Header,
@@ -28,6 +29,7 @@ from .models import ServiceDefinition
 from .ports import PortInspector
 from .processes import ProcessInspector
 from .settings import UiPreferencesStore
+from .update import UpdateManager
 
 
 class ServiceCreateRequest(BaseModel):
@@ -77,6 +79,8 @@ def create_app(
     manager: ServiceManager | None = None,
     port_inspector: PortInspector | None = None,
     process_inspector: ProcessInspector | None = None,
+    update_manager: UpdateManager | None = None,
+    on_update_ready: Callable[[], None] | None = None,
 ) -> FastAPI:
     """Create an application and own the supplied manager for its lifespan."""
 
@@ -85,6 +89,10 @@ def create_app(
     port_tool = port_inspector if port_inspector is not None else PortInspector()
     process_tool = process_inspector or ProcessInspector(port_tool)
     ui_preferences = UiPreferencesStore(selected_data_dir)
+    update_tool = update_manager or UpdateManager(
+        selected_data_dir,
+        install_enabled=on_update_ready is not None,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -99,6 +107,7 @@ def create_app(
     app.state.manager = service_manager
     app.state.port_inspector = port_tool
     app.state.process_inspector = process_tool
+    app.state.update_manager = update_tool
     app.state.token = token
 
     async def managed_processes() -> dict[int, str]:
@@ -143,6 +152,27 @@ def create_app(
     async def update_ui_preferences(body: UiPreferencesRequest) -> dict[str, str]:
         await asyncio.to_thread(ui_preferences.save_theme, body.theme)
         return {"theme": body.theme}
+
+    @api.get("/app-update")
+    async def app_update_status() -> dict[str, dict[str, object]]:
+        return {"update": update_tool.status()}
+
+    @api.post("/app-update/check")
+    async def check_app_update() -> dict[str, dict[str, object]]:
+        return {"update": await asyncio.to_thread(update_tool.check)}
+
+    @api.post("/app-update/download")
+    async def download_app_update() -> dict[str, dict[str, object]]:
+        return {"update": await asyncio.to_thread(update_tool.download)}
+
+    @api.post("/app-update/install")
+    async def install_app_update(
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, dict[str, object]]:
+        update = await asyncio.to_thread(update_tool.install)
+        if bool(update.get("restart_required")) and on_update_ready is not None:
+            background_tasks.add_task(on_update_ready)
+        return {"update": update}
 
     @api.get("/services")
     async def list_services() -> dict[str, list[dict[str, object]]]:

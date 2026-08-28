@@ -3,11 +3,12 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ServiceConsole } from "@/components/service-console";
-import type { NormalizedProcessCandidate, ViewId } from "@/lib/types";
+import type { AppUpdateStatus, NormalizedProcessCandidate, ViewId } from "@/lib/types";
 
 const mocks = vi.hoisted(() => ({
   getProcess: vi.fn(),
   notify: vi.fn(),
+  appUpdateStatus: null as AppUpdateStatus | null,
 }));
 
 vi.mock("@/components/ports-view", () => ({
@@ -24,8 +25,16 @@ vi.mock("@/components/service-form-dialog", () => ({
 vi.mock("@/components/service-list-panel", () => ({ ServiceListPanel: () => null }));
 vi.mock("@/components/settings-view", () => ({ SettingsView: () => <div>设置视图</div> }));
 vi.mock("@/components/sidebar-nav", () => ({
-  SidebarNav: ({ children, onViewChange }: { children?: ReactNode; onViewChange: (view: ViewId) => void }) => (
-    <aside>
+  SidebarNav: ({
+    children,
+    updateAvailable,
+    onViewChange,
+  }: {
+    children?: ReactNode;
+    updateAvailable?: boolean;
+    onViewChange: (view: ViewId) => void;
+  }) => (
+    <aside data-testid="sidebar" data-update-available={String(Boolean(updateAvailable))}>
       {children}
       <button type="button" onClick={() => onViewChange("services")}>切换服务页</button>
     </aside>
@@ -55,6 +64,17 @@ vi.mock("@/hooks/use-theme", () => ({
     resolvedTheme: "light",
     setPreference: vi.fn(),
     toggleTheme: vi.fn(),
+  }),
+}));
+vi.mock("@/hooks/use-app-update", () => ({
+  useAppUpdate: () => ({
+    status: mocks.appUpdateStatus,
+    operation: null,
+    busy: false,
+    refreshStatus: vi.fn(),
+    checkForUpdates: vi.fn(),
+    downloadUpdate: vi.fn(),
+    installUpdate: vi.fn(),
   }),
 }));
 vi.mock("@/hooks/use-services", () => ({
@@ -98,6 +118,27 @@ function processFixture(): NormalizedProcessCandidate {
   };
 }
 
+function availableUpdateFixture(): AppUpdateStatus {
+  return {
+    state: "available",
+    current_version: "0.1.0",
+    latest_version: "0.2.0",
+    release_url: "https://github.com/yzbf-lin/service-console/releases/tag/v0.2.0",
+    published_at: null,
+    notes: "更新说明",
+    platform: "darwin-arm64",
+    platform_supported: true,
+    can_install: true,
+    reason: null,
+    error: null,
+    downloaded_bytes: 0,
+    total_bytes: 1_000,
+    download_progress: 0,
+    downloaded: false,
+    restart_required: false,
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((nextResolve) => { resolve = nextResolve; });
@@ -108,6 +149,7 @@ describe("ServiceConsole process shortcut coordination", () => {
   beforeEach(() => {
     mocks.getProcess.mockReset();
     mocks.notify.mockReset();
+    mocks.appUpdateStatus = null;
   });
 
   it("does not replace a manually opened form with a late process response", async () => {
@@ -133,5 +175,29 @@ describe("ServiceConsole process shortcut coordination", () => {
     await act(async () => pending.resolve(processFixture()));
 
     await waitFor(() => expect(screen.queryByTestId("service-form")).toBeNull());
+  });
+
+  it("announces each discovered update once and marks the Settings navigation", async () => {
+    mocks.appUpdateStatus = availableUpdateFixture();
+    render(<ServiceConsole />);
+
+    await waitFor(() => expect(mocks.notify).toHaveBeenCalledOnce());
+    expect(mocks.notify).toHaveBeenCalledWith(
+      "发现新版本 v0.2.0",
+      "前往设置下载并安装更新。",
+      "info",
+    );
+    expect(screen.getByTestId("sidebar").getAttribute("data-update-available")).toBe("true");
+
+    mocks.appUpdateStatus = {
+      ...availableUpdateFixture(),
+      state: "downloaded",
+      downloaded_bytes: 1_000,
+      download_progress: 100,
+      downloaded: true,
+    };
+    fireEvent.click(screen.getByRole("button", { name: "切换服务页" }));
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.notify).toHaveBeenCalledOnce();
   });
 });

@@ -31,7 +31,7 @@ const connectionCopy: Record<ConnectionState, { api: string; socket: string }> =
 const viewCopy: Record<ViewId, { title: string; description: string }> = {
   services: { title: "服务控制", description: "进程与实时日志" },
   ports: { title: "端口进程", description: "监听端口与占用进程" },
-  settings: { title: "设置", description: "外观与连接偏好" },
+  settings: { title: "设置", description: "外观、更新与连接偏好" },
 };
 
 function ConnectionItem({ kind, state }: { kind: "api" | "socket"; state: ConnectionState }) {
