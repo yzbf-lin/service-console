@@ -171,6 +171,15 @@ JSON 配置只保存非敏感实例字段。Linux 仅接受安全的 Secret Serv
 `Job/Cancel`。本机仍需能够访问每个 Jenkins 地址；若系统信任库不包含私有 CA，需要为该实例显式提供
 CA 证书包。
 
+#### 排查 Jenkins `403` 响应
+
+使用用户名和密码认证时，Service Console 会在每次写操作前自动获取 Jenkins CSRF crumb，并在实际
+请求中复用同一会话 Cookie。API Token 认证通常不需要 crumb，也更适合自动化场景，建议优先使用。
+
+`403` 仍可能有多种原因。若连接测试和只读请求也失败，应检查用户名与凭据；若浏览正常但构建、停止或
+队列操作失败，应检查 `Job/Build` 或 `Job/Cancel` 权限；若 Jenkins 明确报告 crumb 缺失或无效，应检查
+控制器的 CSRF 配置以及反向代理是否正确保留会话 Cookie。Service Console 不会跨不同会话复用 crumb。
+
 Jenkins 地址应优先使用 HTTPS。为兼容旧版或隔离内网控制器，应用仍支持 HTTP，但 Basic Auth 会在缺少
 传输加密时明文发送用户名和 API Token，因此只应在受信任网络中使用。
 
