@@ -252,6 +252,14 @@ uv run service-console serve --host 127.0.0.1 --port 8787
 浏览器控制器或不支持的架构仍能发现版本，但会引导前往 Release 下载页。首个内置更新公钥的版本需要
 手动安装，从它之后发布的版本才能在应用内更新。
 
+Windows Release 会内置原生 `Service Console Updater.exe`。桌面端关闭前，程序先把更新器复制到安装
+目录之外，并等待它写入启动确认；更新器随后等待原桌面进程准确退出、替换应用目录、启动新版本，并在
+新窗口报告 ready 前保留旧版本备份。新版本启动失败时会恢复并重新打开旧版本。诊断日志位于
+`%USERPROFILE%\.service-console\updates\vVERSION\install-update.log`。
+
+Windows 0.2.0 和 0.2.1 使用旧更新启动器。如果这两个版本点击“安装并重启”后只关闭应用，请手动下载
+并解压安装一次 0.2.2 或更高版本；完成这次迁移后，后续应用内更新会使用上述原生更新器和回滚流程。
+
 ## 打包 macOS 应用
 
 需要 macOS、Xcode Command Line Tools、Node.js、pnpm 和 uv：
@@ -288,7 +296,8 @@ pwsh ./scripts/build-windows-app.ps1
 ```
 
 脚本会生成多分辨率 ICO 图标、构建同一套离线界面，并在 `dist/Service Console` 生成 PyInstaller
-目录包和 `Service Console MCP.exe`。Windows 10/11 需要安装 Microsoft Edge WebView2 Runtime。
+目录包、`Service Console MCP.exe` 和单文件原生 `Service Console Updater.exe`。Windows 10/11 需要
+安装 Microsoft Edge WebView2 Runtime。
 当前 Windows 可执行文件未进行
 商业代码签名，在配置可信代码签名证书前可能出现 SmartScreen 提示。
 
