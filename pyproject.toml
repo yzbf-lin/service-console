@@ -1,0 +1,64 @@
+[project]
+name = "service-console"
+version = "0.1.0"
+description = "Native process supervisor with web and terminal interfaces"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "psutil>=7,<8",
+  "textual>=5,<8",
+  "uvicorn[standard]>=0.35,<1",
+  "websockets>=15,<17",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: MacOS X",
+  "Environment :: Console",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: System :: Systems Administration",
+]
+
+[project.urls]
+Homepage = "https://github.com/yzbf-lin/service-console"
+Repository = "https://github.com/yzbf-lin/service-console.git"
+Issues = "https://github.com/yzbf-lin/service-console/issues"
+
+[project.scripts]
+service-console = "service_console.cli:main"
+service-console-desktop = "service_console.desktop:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<10",
+  "pytest-asyncio>=1.1,<2",
+]
+icon = [
+  "pillow>=11,<13",
+]
+desktop = [
+  "pyinstaller>=6.21,<7",
+  "pywebview>=6.2,<7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/service_console"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"

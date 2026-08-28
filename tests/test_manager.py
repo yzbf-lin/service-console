@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import shlex
+import sys
+import time
+from pathlib import Path
+
+import psutil
+import pytest
+
+from service_console.manager import ServiceManager
+from service_console.models import ServiceDefinition
+
+
+def python_command(source: str) -> str:
+    return shlex.join([sys.executable, "-u", "-c", source])
+
+
+async def wait_for_state(
+    manager: ServiceManager,
+    name: str,
+    expected: set[str],
+    timeout: float = 5.0,
+) -> dict[str, object]:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        service = await manager.get_service(name)
+        if service["state"] in expected:
+            return service
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"service {name} did not reach one of {expected}")
+
+
+@pytest.mark.asyncio
+async def test_definitions_and_logs_persist(tmp_path: Path) -> None:
+    manager = ServiceManager(tmp_path, log_buffer_size=2, monitor_interval=0.05)
+    definition = ServiceDefinition(
+        name="echo",
+        command=python_command("import sys; print('one'); print('two'); print('problem', file=sys.stderr)"),
+        cwd=str(tmp_path),
+    )
+    await manager.add_service(definition)
+    await manager.start("echo")
+    exited = await wait_for_state(manager, "echo", {"EXITED"})
+    assert exited["exit_code"] == 0
+
+    # A tail larger than the in-memory ring is served from the persistent JSONL log.
+    logs = await manager.get_logs("echo", tail=10)
+    assert {(entry["stream"], entry["message"]) for entry in logs} == {
+        ("stdout", "one"),
+        ("stdout", "two"),
+        ("stderr", "problem"),
+    }
+    assert len(manager._services["echo"].logs) == 2
+    await manager.shutdown()
+
+    restored = ServiceManager(tmp_path, log_buffer_size=2)
+    await restored.initialize()
+    service = await restored.get_service("echo")
+    assert service["command"] == definition.command
+    assert service["state"] == "STOPPED"
+    assert {entry["message"] for entry in await restored.get_logs("echo", 10)} == {
+        "one",
+        "two",
+        "problem",
+    }
+    await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_events_follow_status_and_both_output_streams(tmp_path: Path) -> None:
+    manager = ServiceManager(tmp_path, monitor_interval=0.05)
+    queue = manager.subscribe()
+    await manager.add_service(
+        ServiceDefinition(
+            name="events",
+            command=python_command("import sys; print('out'); print('err', file=sys.stderr)"),
+            cwd=str(tmp_path),
+        )
+    )
+    await manager.start("events")
+    await wait_for_state(manager, "events", {"EXITED"})
+
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    assert all(set(event) == {"type", "service", "data"} for event in events)
+    assert {event["data"]["message"] for event in events if event["type"] == "log"} == {"out", "err"}
+    states = [event["data"]["state"] for event in events if event["type"] == "status"]
+    assert "STARTING" in states
+    assert "RUNNING" in states
+    assert "EXITED" in states
+    manager.unsubscribe(queue)
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_lifecycle_calls_are_serialized(tmp_path: Path) -> None:
+    manager = ServiceManager(tmp_path, monitor_interval=0.05)
+    await manager.add_service(
+        ServiceDefinition(
+            name="sleep",
+            command=python_command("import time; time.sleep(30)"),
+            cwd=str(tmp_path),
+            stop_timeout=0.5,
+        )
+    )
+
+    started = await asyncio.gather(*(manager.start("sleep") for _ in range(5)))
+    first_pid = started[0]["pid"]
+    assert first_pid is not None
+    assert {service["pid"] for service in started} == {first_pid}
+    assert {service["restart_count"] for service in started} == {0}
+    await asyncio.sleep(0.02)
+    assert (await manager.get_service("sleep"))["uptime_seconds"] > 0
+
+    restarted = await manager.restart("sleep")
+    assert restarted["state"] == "RUNNING"
+    assert restarted["pid"] != first_pid
+    assert restarted["restart_count"] == 1
+
+    stopped = await asyncio.gather(*(manager.stop("sleep") for _ in range(3)))
+    assert {service["state"] for service in stopped} == {"STOPPED"}
+    assert all(service["pid"] is None for service in stopped)
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_running_service_update_applies_on_restart_and_persists(tmp_path: Path) -> None:
+    manager = ServiceManager(tmp_path, monitor_interval=0.05)
+    await manager.add_service(
+        ServiceDefinition(
+            name="editable",
+            command=python_command("import time; time.sleep(30)"),
+            cwd=str(tmp_path),
+            stop_timeout=0.5,
+        )
+    )
+    running = await manager.start("editable")
+    original_pid = running["pid"]
+    replacement = ServiceDefinition(
+        name="editable",
+        command=python_command("import os; print('updated=' + os.environ['EDIT_VALUE'], flush=True)"),
+        cwd=str(tmp_path),
+        env={"EDIT_VALUE": "yes"},
+        auto_start=False,
+        stop_timeout=0.75,
+    )
+
+    updated = await manager.update_service("editable", replacement)
+    assert updated["state"] == "RUNNING"
+    assert updated["pid"] == original_pid
+    assert updated["command"] == replacement.command
+    with pytest.raises(ValueError, match="renaming a service is not supported"):
+        await manager.update_service(
+            "editable",
+            ServiceDefinition(name="renamed", command=replacement.command, cwd=str(tmp_path)),
+        )
+
+    await manager.restart("editable")
+    await wait_for_state(manager, "editable", {"EXITED"})
+    assert any(entry["message"] == "updated=yes" for entry in await manager.get_logs("editable", 20))
+    await manager.shutdown()
+
+    restored = ServiceManager(tmp_path)
+    await restored.initialize()
+    snapshot = await restored.get_service("editable")
+    assert snapshot["command"] == replacement.command
+    assert snapshot["env"] == {"EDIT_VALUE": "yes"}
+    assert snapshot["stop_timeout"] == 0.75
+    await restored.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stop_escalates_to_sigkill_for_term_ignoring_process(tmp_path: Path) -> None:
+    manager = ServiceManager(tmp_path, monitor_interval=0.05)
+    await manager.add_service(
+        ServiceDefinition(
+            name="stubborn",
+            command=python_command(
+                "import os, signal, time; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "print(os.getpid(), flush=True); "
+                "time.sleep(30)"
+            ),
+            cwd=str(tmp_path),
+            stop_timeout=0.2,
+        )
+    )
+    service = await manager.start("stubborn")
+    pid = int(service["pid"])
+    await asyncio.sleep(0.1)
+
+    started_at = time.monotonic()
+    stopped = await manager.stop("stubborn")
+    elapsed = time.monotonic() - started_at
+    assert elapsed >= 0.15
+    assert stopped["state"] == "STOPPED"
+    assert stopped["exit_code"] is not None
+    assert not psutil.pid_exists(pid)
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resource_snapshot_reports_process_group_memory(tmp_path: Path) -> None:
+    manager = ServiceManager(tmp_path, monitor_interval=0.05)
+    await manager.add_service(
+        ServiceDefinition(
+            name="resources",
+            command=python_command("import time; payload = bytearray(8_000_000); time.sleep(30)"),
+            cwd=str(tmp_path),
+            stop_timeout=0.5,
+        )
+    )
+    await manager.start("resources")
+
+    deadline = asyncio.get_running_loop().time() + 3
+    while True:
+        snapshot = await manager.get_service("resources")
+        if snapshot["memory_rss"] >= 8_000_000:
+            break
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(f"memory snapshot stayed at {snapshot['memory_rss']}")
+        await asyncio.sleep(0.05)
+    assert snapshot["cpu_percent"] >= 0
+    await manager.stop("resources")
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_new_process_owns_its_unix_process_group(tmp_path: Path) -> None:
+    manager = ServiceManager(tmp_path)
+    await manager.add_service(
+        ServiceDefinition(
+            name="group",
+            command=python_command("import time; time.sleep(30)"),
+            cwd=str(tmp_path),
+        )
+    )
+    service = await manager.start("group")
+    pid = int(service["pid"])
+    assert os.getpgid(pid) == pid
+    await manager.stop("group")
+    await manager.shutdown()
