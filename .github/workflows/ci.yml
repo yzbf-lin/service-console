@@ -11,17 +11,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.7.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
       - name: Install Python dependencies
         run: uv sync --group dev
@@ -36,8 +36,6 @@ jobs:
       - name: Build web application
         run: pnpm run build:web-assets
       - name: Verify generated web assets
-        run: |
-          git diff --exit-code -- src/service_console/static
-          test -z "$(git ls-files --others --exclude-standard -- src/service_console/static)"
-      - name: Run tests
-        run: uv run pytest
+        run: uv run pytest tests/test_static_assets.py
+      - name: Run remaining tests
+        run: uv run pytest --ignore=tests/test_static_assets.py
