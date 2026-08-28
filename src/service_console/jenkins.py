@@ -25,6 +25,21 @@ import keyring
 
 _QUEUE_ITEM_PATTERN = re.compile(r"/queue/item/(?P<id>\d+)(?:/|$)")
 _CONTROL_CHARACTER_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+_HTTP_HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_CRUMB_VALUE_PATTERN = re.compile(r"^[\x21-\x7e]+$")
+_RESERVED_CRUMB_HEADERS = frozenset(
+    {
+        "accept",
+        "authorization",
+        "connection",
+        "content-length",
+        "cookie",
+        "host",
+        "proxy-authorization",
+        "transfer-encoding",
+        "user-agent",
+    }
+)
 _MAX_LOG_CHUNK_BYTES = 2 * 1024 * 1024
 
 
@@ -294,6 +309,8 @@ class JenkinsGateway:
     def __init__(self, client_factory: ClientFactory | None = None) -> None:
         self._client_factory = client_factory or self._default_client_factory
         self._clients: dict[str, httpx.AsyncClient] = {}
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._retiring_instances: dict[str, int] = {}
         self._client_lock = asyncio.Lock()
         self._closed = False
 
@@ -306,17 +323,45 @@ class JenkinsGateway:
             if self._closed:
                 return
             self._closed = True
-            clients = list(self._clients.values())
+            pooled = [
+                (client, self._session_locks.pop(key)) for key, client in self._clients.items()
+            ]
             self._clients.clear()
-        await asyncio.gather(*(client.aclose() for client in clients), return_exceptions=True)
+        await self._close_pooled_clients(pooled)
 
     async def discard_instance(self, instance_id: str) -> None:
         """Close pooled clients whose cookies and connections belong to one instance."""
 
         prefix = f"{instance_id}\0"
         async with self._client_lock:
-            clients = [self._clients.pop(key) for key in tuple(self._clients) if key.startswith(prefix)]
-        await asyncio.gather(*(client.aclose() for client in clients), return_exceptions=True)
+            self._retiring_instances[instance_id] = self._retiring_instances.get(instance_id, 0) + 1
+            pooled = [
+                (self._clients.pop(key), self._session_locks.pop(key))
+                for key in tuple(self._clients)
+                if key.startswith(prefix)
+            ]
+        try:
+            await self._close_pooled_clients(pooled)
+        finally:
+            async with self._client_lock:
+                remaining = self._retiring_instances[instance_id] - 1
+                if remaining:
+                    self._retiring_instances[instance_id] = remaining
+                else:
+                    del self._retiring_instances[instance_id]
+
+    @staticmethod
+    async def _close_pooled_clients(
+        pooled: list[tuple[httpx.AsyncClient, asyncio.Lock]],
+    ) -> None:
+        async def close_when_idle(client: httpx.AsyncClient, session_lock: asyncio.Lock) -> None:
+            async with session_lock:
+                await client.aclose()
+
+        await asyncio.gather(
+            *(close_when_idle(client, session_lock) for client, session_lock in pooled),
+            return_exceptions=True,
+        )
 
     async def test_connection(self, instance: JenkinsInstance, token: str) -> dict[str, object]:
         response = await self._request(
@@ -537,7 +582,6 @@ class JenkinsGateway:
         number: int,
         start: int,
     ) -> dict[str, object]:
-        client = await self._client_for(instance, token)
         endpoint = f"{_job_path(job)}/{number}/logText/progressiveText"
         url = f"{instance.base_url}{endpoint}"
         headers = _request_headers(instance, token)
@@ -546,37 +590,43 @@ class JenkinsGateway:
         next_offset_header: str | None = None
         more_header = "false"
         encoding: str | None = None
+        client, session_lock = await self._acquire_client(instance, token)
         try:
-            async with client.stream(
-                "GET",
-                url,
-                params={"start": start},
-                headers=headers,
-                timeout=instance.request_timeout,
-            ) as response:
-                if response.status_code != 200:
-                    raise _response_error(response.status_code)
-                next_offset_header = response.headers.get("X-Text-Size")
-                more_header = response.headers.get("X-More-Data", "false")
-                encoding = response.encoding
-                async for chunk in response.aiter_bytes():
-                    remaining = _MAX_LOG_CHUNK_BYTES - len(content)
-                    if len(chunk) > remaining:
-                        content.extend(chunk[:remaining])
-                        truncated = True
-                        break
-                    content.extend(chunk)
-        except JenkinsApiError:
-            raise
-        except httpx.InvalidURL as exc:
-            raise JenkinsApiError(400, "Jenkins URL is invalid") from exc
-        except httpx.TimeoutException as exc:
-            raise JenkinsApiError(504, "Jenkins request timed out") from exc
-        except httpx.TransportError as exc:
-            detail = (
-                "Jenkins TLS verification failed" if _is_tls_error(exc) else "Unable to connect to Jenkins"
-            )
-            raise JenkinsApiError(502, detail) from exc
+            try:
+                async with client.stream(
+                    "GET",
+                    url,
+                    params={"start": start},
+                    headers=headers,
+                    timeout=instance.request_timeout,
+                ) as response:
+                    if response.status_code != 200:
+                        raise _response_error(response.status_code)
+                    next_offset_header = response.headers.get("X-Text-Size")
+                    more_header = response.headers.get("X-More-Data", "false")
+                    encoding = response.encoding
+                    async for chunk in response.aiter_bytes():
+                        remaining = _MAX_LOG_CHUNK_BYTES - len(content)
+                        if len(chunk) > remaining:
+                            content.extend(chunk[:remaining])
+                            truncated = True
+                            break
+                        content.extend(chunk)
+            except JenkinsApiError:
+                raise
+            except httpx.InvalidURL as exc:
+                raise JenkinsApiError(400, "Jenkins URL is invalid") from exc
+            except httpx.TimeoutException as exc:
+                raise JenkinsApiError(504, "Jenkins request timed out") from exc
+            except httpx.TransportError as exc:
+                detail = (
+                    "Jenkins TLS verification failed"
+                    if _is_tls_error(exc)
+                    else "Unable to connect to Jenkins"
+                )
+                raise JenkinsApiError(502, detail) from exc
+        finally:
+            session_lock.release()
 
         consumed, text = _decode_log_content(bytes(content), encoding, truncated=truncated)
         if truncated:
@@ -609,7 +659,55 @@ class JenkinsGateway:
         data: Mapping[str, str] | None = None,
         expected_statuses: set[int] | None = None,
     ) -> httpx.Response:
-        client = await self._client_for(instance, token)
+        normalized_method = method.upper()
+        client, session_lock = await self._acquire_client(instance, token)
+        try:
+            if normalized_method == "POST":
+                # Keep the session cookie from this fresh crumb paired with the one
+                # state-changing request. The write itself is still sent exactly once.
+                crumb_header = await self._fetch_crumb_header(client, instance, token)
+                headers = _request_headers(instance, token)
+                if crumb_header is not None:
+                    headers[crumb_header[0]] = crumb_header[1]
+                return await self._send_request(
+                    client,
+                    instance,
+                    normalized_method,
+                    endpoint,
+                    params=params,
+                    data=data,
+                    headers=headers,
+                    expected_statuses=expected_statuses,
+                    is_write=True,
+                    crumb_sent=crumb_header is not None,
+                )
+            return await self._send_request(
+                client,
+                instance,
+                normalized_method,
+                endpoint,
+                params=params,
+                data=data,
+                headers=_request_headers(instance, token),
+                expected_statuses=expected_statuses,
+            )
+        finally:
+            session_lock.release()
+
+    async def _send_request(
+        self,
+        client: httpx.AsyncClient,
+        instance: JenkinsInstance,
+        method: str,
+        endpoint: str,
+        *,
+        params: Mapping[str, object] | None = None,
+        data: Mapping[str, str] | None = None,
+        headers: Mapping[str, str],
+        expected_statuses: set[int] | None = None,
+        is_write: bool = False,
+        crumb_sent: bool = False,
+    ) -> httpx.Response:
         url = f"{instance.base_url}{endpoint}"
         try:
             response = await client.request(
@@ -617,7 +715,7 @@ class JenkinsGateway:
                 url,
                 params=params,
                 data=data,
-                headers=_request_headers(instance, token),
+                headers=headers,
                 timeout=instance.request_timeout,
             )
         except httpx.InvalidURL as exc:
@@ -632,26 +730,98 @@ class JenkinsGateway:
 
         allowed = expected_statuses or {200}
         if response.status_code not in allowed:
-            raise _response_error(response.status_code)
+            raise _response_error(
+                response.status_code,
+                is_write=is_write,
+                crumb_sent=crumb_sent,
+                crumb_rejected=_response_rejects_crumb(response),
+            )
         return response
 
-    async def _client_for(self, instance: JenkinsInstance, token: str) -> httpx.AsyncClient:
+    async def _fetch_crumb_header(
+        self,
+        client: httpx.AsyncClient,
+        instance: JenkinsInstance,
+        token: str,
+    ) -> tuple[str, str] | None:
+        response = await self._send_request(
+            client,
+            instance,
+            "GET",
+            "/crumbIssuer/api/json",
+            headers=_request_headers(instance, token),
+            expected_statuses={200, 401, 403, 404},
+        )
+        if response.status_code != 200:
+            # API tokens can be exempt from CSRF protection, and Jenkins may have the
+            # crumb issuer disabled or protected separately. Let the one write decide.
+            return None
+
+        payload = self._json_object(response)
+        field = payload.get("crumbRequestField")
+        crumb = payload.get("crumb")
+        if (
+            not isinstance(field, str)
+            or not field
+            or len(field) > 256
+            or _HTTP_HEADER_NAME_PATTERN.fullmatch(field) is None
+            or field.casefold() in _RESERVED_CRUMB_HEADERS
+            or not isinstance(crumb, str)
+            or not crumb
+            or len(crumb) > 4096
+            or _CRUMB_VALUE_PATTERN.fullmatch(crumb) is None
+        ):
+            raise JenkinsApiError(502, "Jenkins returned an invalid CSRF crumb response")
+        return field, crumb
+
+    async def _acquire_client(
+        self,
+        instance: JenkinsInstance,
+        token: str,
+    ) -> tuple[httpx.AsyncClient, asyncio.Lock]:
+        key, client, session_lock = await self._pooled_client_for(instance, token)
+        await session_lock.acquire()
+        live = False
+        try:
+            async with self._client_lock:
+                if self._closed:
+                    raise JenkinsApiError(503, "Jenkins client is shutting down")
+                live = (
+                    self._clients.get(key) is client
+                    and self._session_locks.get(key) is session_lock
+                )
+                if not live:
+                    raise JenkinsApiError(409, "Jenkins connection changed before the request")
+                return client, session_lock
+        finally:
+            if not live:
+                session_lock.release()
+
+    async def _pooled_client_for(
+        self,
+        instance: JenkinsInstance,
+        token: str,
+    ) -> tuple[str, httpx.AsyncClient, asyncio.Lock]:
         ca_key = str(Path(instance.ca_bundle).expanduser().resolve()) if instance.ca_bundle else "<system>"
         credential_fingerprint = hashlib.sha256(f"{instance.username}\0{token}".encode()).hexdigest()
         key = f"{instance.id}\0{instance.base_url}\0{ca_key}\0{credential_fingerprint}"
         async with self._client_lock:
             if self._closed:
                 raise JenkinsApiError(503, "Jenkins client is shutting down")
+            if self._retiring_instances.get(instance.id, 0):
+                raise JenkinsApiError(409, "Jenkins connection is being refreshed")
             client = self._clients.get(key)
             if client is not None:
-                return client
+                return key, client, self._session_locks[key]
             try:
                 context = ssl.create_default_context(cafile=ca_key if instance.ca_bundle else None)
             except (OSError, ssl.SSLError) as exc:
                 raise JenkinsApiError(400, "Jenkins CA bundle could not be loaded") from exc
             client = self._client_factory(context)
+            session_lock = asyncio.Lock()
             self._clients[key] = client
-            return client
+            self._session_locks[key] = session_lock
+            return key, client, session_lock
 
     @staticmethod
     def _json_object(response: httpx.Response) -> dict[str, Any]:
@@ -1087,7 +1257,21 @@ def _parameter_kind(value: str) -> str:
     return "string"
 
 
-def _response_error(status_code: int) -> JenkinsApiError:
+def _response_error(
+    status_code: int,
+    *,
+    is_write: bool = False,
+    crumb_sent: bool = False,
+    crumb_rejected: bool = False,
+) -> JenkinsApiError:
+    if is_write and status_code == 401:
+        return JenkinsApiError(403, "Jenkins authentication failed")
+    if is_write and status_code in {400, 403} and crumb_rejected:
+        if crumb_sent:
+            return JenkinsApiError(403, "Jenkins rejected the CSRF crumb")
+        return JenkinsApiError(403, "Jenkins requires a CSRF crumb, but no crumb was available")
+    if is_write and status_code == 403:
+        return JenkinsApiError(403, "Jenkins write permission denied")
     if status_code in {401, 403}:
         return JenkinsApiError(403, "Jenkins authentication or permission denied")
     if status_code == 404:
@@ -1095,6 +1279,16 @@ def _response_error(status_code: int) -> JenkinsApiError:
     if status_code in {400, 405, 409, 422}:
         return JenkinsApiError(400, "Jenkins rejected the request")
     return JenkinsApiError(502, f"Jenkins returned HTTP {status_code}")
+
+
+def _response_rejects_crumb(response: httpx.Response) -> bool:
+    if response.status_code not in {400, 403}:
+        return False
+    detail = response.content[:8192].decode("utf-8", errors="ignore").casefold()
+    return "crumb" in detail and any(
+        marker in detail
+        for marker in ("csrf", "invalid", "missing", "no valid", "not included", "required")
+    )
 
 
 def _is_tls_error(exc: BaseException) -> bool:
