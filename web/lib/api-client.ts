@@ -1,12 +1,15 @@
 import {
   extractLogs,
   extractPorts,
+  extractProcesses,
   extractServices,
+  normalizeProcessCandidate,
   normalizeService,
 } from "./service-logic";
 import type {
   NormalizedLogEntry,
   NormalizedPortRow,
+  NormalizedProcessCandidate,
   NormalizedService,
   ProcessTerminateInput,
   ProcessTerminateResult,
@@ -56,6 +59,8 @@ export interface ServiceConsoleApiClient {
   restartService(name: string): Promise<NormalizedService>;
   getLogs(name: string, tail?: number): Promise<NormalizedLogEntry[]>;
   listPorts(port?: number | null): Promise<NormalizedPortRow[]>;
+  listProcesses(query?: string): Promise<NormalizedProcessCandidate[]>;
+  getProcess(pid: number): Promise<NormalizedProcessCandidate>;
   terminateProcess(pid: number, input: ProcessTerminateInput): Promise<ProcessTerminateResult>;
   updateTheme(theme: ThemePreference): Promise<ThemePreference>;
 }
@@ -174,6 +179,15 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
     async listPorts(port = null) {
       const query = port === null || port === undefined ? "" : `?port=${encodeURIComponent(port)}`;
       return extractPorts(await request<unknown>(`/api/ports${query}`));
+    },
+    async listProcesses(query = "") {
+      const search = query.trim();
+      const suffix = search ? `?${new URLSearchParams({ query: search }).toString()}` : "";
+      return extractProcesses(await request<unknown>(`/api/processes${suffix}`));
+    },
+    async getProcess(pid) {
+      const payload = await request<unknown>(`/api/processes/${pid}`);
+      return normalizeProcessCandidate(responseRecord(payload, "process"));
     },
     async terminateProcess(pid, input) {
       const payload = await request<unknown>(`/api/processes/${pid}/terminate`, {

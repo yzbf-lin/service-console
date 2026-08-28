@@ -21,25 +21,29 @@ function applyTheme(preference: ThemePreference, systemDark: boolean) {
   return theme;
 }
 
-function initialPreference(): ThemePreference {
-  if (typeof document === "undefined") return "system";
-  const value = document.documentElement.dataset.themePreference;
-  return value === "light" || value === "dark" ? value : "system";
-}
-
-function initialSystemDark(): boolean {
-  return typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
 export function useTheme(token: string, onSaveError: (message: string) => void) {
-  const [preference, setPreferenceState] = useState<ThemePreference>(initialPreference);
-  const [systemDark, setSystemDark] = useState(initialSystemDark);
+  // 首次渲染必须与静态 HTML 一致；真实偏好由内联脚本提前应用到根节点，
+  // React 挂载后再同步到组件状态，避免深色系统下发生 hydration mismatch。
+  const [preference, setPreferenceState] = useState<ThemePreference>("system");
+  const [systemDark, setSystemDark] = useState(false);
+  const [themeReady, setThemeReady] = useState(false);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const syncTimer = window.setTimeout(() => {
+      const storedPreference = document.documentElement.dataset.themePreference;
+      setPreferenceState(
+        storedPreference === "light" || storedPreference === "dark" ? storedPreference : "system",
+      );
+      setSystemDark(media.matches);
+      setThemeReady(true);
+    }, 0);
     const onChange = (event: MediaQueryListEvent) => setSystemDark(event.matches);
     media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
+    return () => {
+      window.clearTimeout(syncTimer);
+      media.removeEventListener("change", onChange);
+    };
   }, []);
 
   const resolvedTheme = useMemo(
@@ -48,8 +52,9 @@ export function useTheme(token: string, onSaveError: (message: string) => void) 
   );
 
   useEffect(() => {
+    if (!themeReady) return;
     applyTheme(preference, systemDark);
-  }, [preference, systemDark]);
+  }, [preference, systemDark, themeReady]);
 
   const setPreference = useCallback(async (nextPreference: ThemePreference) => {
     setPreferenceState(nextPreference);

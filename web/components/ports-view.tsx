@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, CircleAlert, LoaderCircle, Network, Search, Trash2 } from "lucide-react";
+import { ChevronRight, CircleAlert, LoaderCircle, Network, Plus, Search, Trash2 } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 
 import {
@@ -25,6 +25,7 @@ interface PortsViewProps {
   active: boolean;
   onError: (title: string, message: string) => void;
   onSuccess: (title: string, message: string) => void;
+  onImportProcess: (pid: number) => Promise<void>;
   refreshSignal: number;
 }
 interface PortGroup {
@@ -89,11 +90,12 @@ function formatPortSet(ports: number[]): string {
   return ports.length ? ports.join("、") : "—";
 }
 
-export function PortsView({ api, active, onError, onSuccess, refreshSignal }: PortsViewProps) {
+export function PortsView({ api, active, onError, onSuccess, onImportProcess, refreshSignal }: PortsViewProps) {
   const { ports, filter, loading, loaded, busyPids, setFilter, loadPorts, terminate } = usePorts({ api, active, onError });
   const [filterInput, setFilterInput] = useState("");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [preparingPid, setPreparingPid] = useState<number | null>(null);
+  const [importingPid, setImportingPid] = useState<number | null>(null);
   const [target, setTarget] = useState<TerminationTarget | null>(null);
   const [forceTarget, setForceTarget] = useState<TerminationTarget | null>(null);
 
@@ -177,6 +179,18 @@ export function PortsView({ api, active, onError, onSuccess, refreshSignal }: Po
     }
   };
 
+  const importProcess = async (group: PortGroup) => {
+    if (group.pid === null) return;
+    setImportingPid(group.pid);
+    try {
+      await onImportProcess(group.pid);
+    } catch (error) {
+      onError("读取进程失败", error instanceof Error ? error.message : String(error));
+    } finally {
+      setImportingPid(null);
+    }
+  };
+
   return (
     <main id="portsView" className="flex min-h-0 min-w-0 flex-1 bg-background" aria-labelledby="portsHeading">
       <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -231,15 +245,15 @@ export function PortsView({ api, active, onError, onSuccess, refreshSignal }: Po
 
         <div className="no-visible-scrollbar min-h-0 flex-1 overflow-auto" aria-busy={loading} aria-live="polite">
           {portGroups.length ? (
-            <div className="min-w-[820px]">
+            <div className="min-w-[700px]">
               <div
-                className="sticky top-0 z-10 grid h-8 grid-cols-[minmax(250px,1.35fr)_minmax(112px,.55fr)_minmax(240px,1.15fr)_72px_84px] items-center border-b bg-secondary/95 text-[9px] font-semibold tracking-[0.08em] text-muted-foreground uppercase backdrop-blur"
+                className="sticky top-0 z-10 grid h-8 grid-cols-[minmax(220px,1.35fr)_minmax(96px,.55fr)_minmax(210px,1.15fr)_64px_72px] items-center border-b bg-secondary/95 text-[9px] font-semibold tracking-[0.08em] text-muted-foreground uppercase backdrop-blur"
               >
                 <span className="px-3">进程</span>
                 <span className="px-3">用户</span>
                 <span className="px-3">监听端口</span>
                 <span className="px-3">PID</span>
-                <span className="px-2 text-right">操作</span>
+                <span className="sticky right-0 h-full border-l bg-secondary/95 px-2 text-right leading-8">操作</span>
               </div>
 
               <div role="list" aria-label="按进程聚合的监听端口">
@@ -253,7 +267,7 @@ export function PortsView({ api, active, onError, onSuccess, refreshSignal }: Po
                       <div className="group flex min-h-11 items-stretch transition-colors hover:bg-accent/35">
                         <button
                           type="button"
-                          className="grid min-w-0 flex-1 grid-cols-[minmax(250px,1.35fr)_minmax(112px,.55fr)_minmax(240px,1.15fr)_72px] items-center text-left outline-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/80"
+                          className="grid min-w-0 flex-1 grid-cols-[minmax(220px,1.35fr)_minmax(96px,.55fr)_minmax(210px,1.15fr)_64px] items-center text-left outline-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/80"
                           aria-expanded={expanded}
                           aria-controls={group.key + "-details"}
                           aria-label={
@@ -289,18 +303,30 @@ export function PortsView({ api, active, onError, onSuccess, refreshSignal }: Po
                           <span className="px-3 font-mono text-[10px] text-muted-foreground">{group.pid ?? "—"}</span>
                         </button>
 
-                        <div className="flex w-[84px] shrink-0 items-center justify-end border-l border-border/50 px-2">
+                        <div className="sticky right-0 z-[1] flex w-[72px] shrink-0 items-center justify-end gap-1 border-l border-border/50 bg-background px-1.5 transition-colors group-hover:bg-accent/35">
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-7 gap-1.5 px-2 text-[9px] text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            disabled={group.pid === null || busy || preparing || preparingPid !== null}
+                            className="size-7 p-0 text-[9px]"
+                            disabled={group.pid === null || importingPid !== null || preparingPid !== null || busy}
+                            aria-label={group.pid === null ? "缺少 PID，添加服务不可用" : "将 PID " + group.pid + " 添加为服务"}
+                            title={group.pid === null ? "缺少 PID，添加服务不可用" : "添加为服务"}
+                            onClick={() => void importProcess(group)}
+                          >
+                            {group.pid !== null && importingPid === group.pid ? <LoaderCircle className="size-3 animate-spin" /> : <Plus className="size-3" />}
+                            <span className="sr-only">{group.pid !== null && importingPid === group.pid ? "读取中" : "添加"}</span>
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="size-7 p-0 text-[9px] text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            disabled={group.pid === null || busy || preparing || preparingPid !== null || importingPid !== null}
                             aria-label={group.pid === null ? "缺少 PID，终止操作不可用" : "终止 PID " + group.pid}
                             title={group.pid === null ? "缺少 PID，终止操作不可用" : "终止 PID " + group.pid}
                             onClick={() => void openTerminateDialog(group)}
                           >
                             {busy || preparing ? <LoaderCircle className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
-                            {preparing ? "核对中" : busy ? "处理中" : "终止"}
+                            <span className="sr-only">{preparing ? "核对中" : busy ? "处理中" : "终止"}</span>
                           </Button>
                         </div>
                       </div>

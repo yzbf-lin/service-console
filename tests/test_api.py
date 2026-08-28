@@ -119,6 +119,54 @@ class FakePortInspector:
         }
 
 
+class FakeProcessInspector:
+    def __init__(self) -> None:
+        self.list_calls: list[tuple[str | None, int, dict[int, str]]] = []
+        self.get_calls: list[tuple[int, dict[int, str]]] = []
+        self.list_error: Exception | None = None
+        self.get_error: Exception | None = None
+
+    @staticmethod
+    def process(pid: int = 321) -> dict[str, object]:
+        return {
+            "pid": pid,
+            "ppid": 100,
+            "create_time": 123.5,
+            "started_at": "1970-01-01T00:02:03.500000+00:00",
+            "process_name": "uv",
+            "command": "uv run backend/run.py",
+            "cwd": "/workspace/project",
+            "username": "tester",
+            "ports": [8000],
+            "suggested_name": "project-backend",
+            "safe_env": {"PYTHONUNBUFFERED": "1"},
+            "restorable": True,
+            "warnings": [],
+            "managed_service": None,
+        }
+
+    def list_processes(
+        self,
+        query: str | None = None,
+        limit: int = 100,
+        managed_processes: dict[int, str] | None = None,
+    ) -> list[dict[str, object]]:
+        self.list_calls.append((query, limit, dict(managed_processes or {})))
+        if self.list_error is not None:
+            raise self.list_error
+        return [self.process()]
+
+    def get_process(
+        self,
+        pid: int,
+        managed_processes: dict[int, str] | None = None,
+    ) -> dict[str, object]:
+        self.get_calls.append((pid, dict(managed_processes or {})))
+        if self.get_error is not None:
+            raise self.get_error
+        return self.process(pid)
+
+
 def test_authenticated_service_lifecycle() -> None:
     manager = FakeManager()
     app = create_app(token="secret", manager=manager)
@@ -341,6 +389,53 @@ def test_authenticated_port_inspection_and_process_termination() -> None:
         assert client.post(endpoint, headers=headers, json={"timeout": 0}).status_code == 422
         assert inspector.terminate_calls == [(321, 8123, True, 0.25)]
 
+
+def test_authenticated_process_discovery_uses_managed_pid_map() -> None:
+    manager = FakeManager()
+    manager.services["managed"] = {"name": "managed", "state": "RUNNING", "pid": 123}
+    inspector = FakeProcessInspector()
+    app = create_app(token="secret", manager=manager, process_inspector=inspector)
+    headers = {"Authorization": "Bearer secret"}
+
+    with TestClient(app) as client:
+        assert client.get("/api/processes").status_code == 401
+
+        listed = client.get(
+            "/api/processes?query=celery&limit=5",
+            headers=headers,
+        )
+        assert listed.status_code == 200
+        assert listed.json() == {"processes": [FakeProcessInspector.process()]}
+        assert inspector.list_calls == [("celery", 5, {123: "managed"})]
+
+        detail = client.get("/api/processes/321", headers=headers)
+        assert detail.status_code == 200
+        assert detail.json() == {"process": FakeProcessInspector.process()}
+        assert inspector.get_calls == [(321, {123: "managed"})]
+
+        assert client.get("/api/processes?limit=0", headers=headers).status_code == 422
+        assert client.get("/api/processes?limit=501", headers=headers).status_code == 422
+        assert client.get("/api/processes/1", headers=headers).status_code == 422
+        assert inspector.list_calls == [("celery", 5, {123: "managed"})]
+        assert inspector.get_calls == [(321, {123: "managed"})]
+
+
+def test_process_discovery_errors_map_to_http_responses() -> None:
+    manager = FakeManager()
+    inspector = FakeProcessInspector()
+    app = create_app(manager=manager, process_inspector=inspector)
+
+    with TestClient(app) as client:
+        inspector.list_error = RuntimeError("process enumeration denied")
+        response = client.get("/api/processes")
+        assert response.status_code == 409
+        assert response.json() == {"detail": "process enumeration denied"}
+
+        inspector.list_error = None
+        inspector.get_error = ValueError("process 999 changed identity")
+        response = client.get("/api/processes/999")
+        assert response.status_code == 400
+        assert response.json() == {"detail": "process 999 changed identity"}
 
 def test_port_tool_errors_map_to_http_responses() -> None:
     manager = FakeManager()

@@ -8,6 +8,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ServiceLifecycleToolbar } from "@/components/service-actions";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { useAutoScrollPreference } from "@/hooks/use-auto-scroll-preference";
+import { cn } from "@/lib/cn";
 import {
   currentUptime,
   formatBytes,
@@ -17,7 +19,6 @@ import {
   statusLabel,
 } from "@/lib/service-logic";
 import type { NormalizedLogEntry, NormalizedService, ResolvedTheme, ServiceAction } from "@/lib/types";
-import { cn } from "@/lib/cn";
 
 const terminalThemes = {
   light: {
@@ -91,13 +92,7 @@ export function TerminalConsole({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchValue, setSearchValue] = useState("");
   const [searchStatus, setSearchStatus] = useState("");
-  const [autoScroll, setAutoScroll] = useState(() => (
-    typeof window === "undefined" || window.localStorage.getItem("service-console:auto-scroll") !== "false"
-  ));
-
-  useEffect(() => {
-    window.localStorage.setItem("service-console:auto-scroll", String(autoScroll));
-  }, [autoScroll]);
+  const [autoScroll, setAutoScroll] = useAutoScrollPreference();
 
   useEffect(() => {
     const host = hostRef.current;

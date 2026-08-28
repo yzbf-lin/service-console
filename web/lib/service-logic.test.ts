@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createApiClient, tokenFromSearch } from "./api-client";
 import {
   extractPorts,
+  extractProcesses,
   extractServices,
   formatBytes,
   formatDuration,
@@ -11,10 +12,12 @@ import {
   mergeLogEntries,
   nextCopyName,
   normalizeLogEntry,
+  normalizeProcessCandidate,
   normalizeService,
   parseEnvironment,
   sanitizeTerminalMessage,
   serializeEnvironment,
+  serviceInputFromProcess,
 } from "./service-logic";
 import type { NormalizedLogEntry, ServiceState } from "./types";
 
@@ -73,6 +76,84 @@ describe("port normalization", () => {
 
     expect(ports.map(({ port, pid }) => [port, pid])).toEqual([[8000, 2], [8000, 9], [9000, 8]]);
     expect(ports[2]?.command).toBe("python app.py");
+  });
+});
+
+describe("running process normalization", () => {
+  it("normalizes commands, ports and safe environment from process responses", () => {
+    const process = normalizeProcessCandidate({
+      pid: "42",
+      ppid: 1,
+      create_time: "123.5",
+      started_at: "2026-08-28T00:00:00Z",
+      process_name: "celery",
+      command: "uv run fba celery worker",
+      cwd: "/workspace",
+      username: "developer",
+      ports: [9000, 0, 8000, 9000, 70_000],
+      suggested_name: "QA worker",
+      safe_env: { PYTHONUNBUFFERED: 1 },
+      restorable: true,
+      warnings: ["确认参数"],
+      managed_service: null,
+    });
+
+    expect(process).toMatchObject({
+      pid: 42,
+      parentPid: 1,
+      createTime: 123.5,
+      processName: "celery",
+      command: "uv run fba celery worker",
+      cwd: "/workspace",
+      ports: [8000, 9000],
+      suggestedName: "QA worker",
+      safeEnv: { PYTHONUNBUFFERED: "1" },
+      restorable: true,
+    });
+  });
+
+  it("rejects unexpected command arrays instead of losing argument boundaries", () => {
+    const process = normalizeProcessCandidate({
+      pid: 42,
+      process_name: "python",
+      command: ["python", "app.py", "--label", "hello world"],
+      cwd: "/workspace",
+      safe_env: {},
+      restorable: true,
+      warnings: [],
+    });
+
+    expect(process.command).toBe("");
+    expect(process.restorable).toBe(false);
+    expect(process.warnings).toContain("进程命令格式无效，无法安全恢复参数边界。");
+  });
+
+  it("drops invalid PIDs, marks incomplete candidates unavailable and creates unique service input", () => {
+    expect(extractProcesses({ processes: [
+      { pid: 0, process_name: "invalid", command: "x", cwd: "/tmp", restorable: true },
+      { pid: 8, process_name: "python", command: "", cwd: "/tmp", restorable: true },
+    ] })).toHaveLength(1);
+    expect(extractProcesses({ processes: [
+      { pid: 8, process_name: "python", command: "", cwd: "/tmp", restorable: true },
+    ] })[0]?.restorable).toBe(false);
+
+    const input = serviceInputFromProcess(normalizeProcessCandidate({
+      pid: 9,
+      process_name: "python",
+      command: "python app.py",
+      cwd: "/workspace",
+      suggested_name: "QA worker",
+      safe_env: { PYTHONUNBUFFERED: "1" },
+      restorable: true,
+    }), ["QA-worker"]);
+    expect(input).toEqual({
+      name: "QA-worker-2",
+      command: "python app.py",
+      cwd: "/workspace",
+      env: { PYTHONUNBUFFERED: "1" },
+      auto_start: false,
+      stop_timeout: 10,
+    });
   });
 });
 
@@ -212,6 +293,31 @@ describe("API client", () => {
     await client.restartService("api worker");
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/services/api%20worker/restart");
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it("lists and reads normalized running processes", async () => {
+    const payload = {
+      pid: 42,
+      ppid: 1,
+      process_name: "python",
+      command: "python app.py",
+      cwd: "/workspace",
+      ports: [8000],
+      safe_env: {},
+      restorable: true,
+      warnings: [],
+    };
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ processes: [payload] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ process: payload }), { status: 200 }));
+    const client = createApiClient({ fetch: fetchMock });
+
+    await expect(client.listProcesses("python worker")).resolves.toMatchObject([
+      { pid: 42, command: "python app.py", cwd: "/workspace" },
+    ]);
+    await expect(client.getProcess(42)).resolves.toMatchObject({ pid: 42, processName: "python" });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/processes?query=python+worker");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/processes/42");
   });
 
   it("turns structured HTTP failures into ApiError", async () => {

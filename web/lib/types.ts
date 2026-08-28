@@ -92,6 +92,40 @@ export interface NormalizedPortRow {
   username: string;
 }
 
+export interface ProcessCandidate {
+  pid: number;
+  ppid: number | null;
+  create_time: number | null;
+  started_at: string | null;
+  process_name: string | null;
+  command: string | null;
+  cwd: string | null;
+  username: string | null;
+  ports: number[];
+  suggested_name: string | null;
+  safe_env: Record<string, string>;
+  restorable: boolean;
+  warnings: string[];
+  managed_service: string | null;
+}
+
+export interface NormalizedProcessCandidate {
+  pid: number;
+  parentPid: number | null;
+  createTime: number | null;
+  startedAt: string | null;
+  processName: string;
+  command: string;
+  cwd: string;
+  username: string;
+  ports: number[];
+  suggestedName: string;
+  safeEnv: Record<string, string>;
+  restorable: boolean;
+  warnings: string[];
+  managedService: string | null;
+}
+
 export type ServiceLifecycleAction = "start" | "stop" | "restart";
 export type ServiceDefinitionAction = "edit" | "copy" | "delete";
 export type ServiceAction = ServiceLifecycleAction | ServiceDefinitionAction;

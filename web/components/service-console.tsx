@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -25,9 +25,11 @@ import { useServices } from "@/hooks/use-services";
 import { useTheme } from "@/hooks/use-theme";
 import type {
   NormalizedService,
+  NormalizedProcessCandidate,
   ServiceAction,
   ServiceCreateInput,
   ServiceUpdateInput,
+  ViewId,
 } from "@/lib/types";
 
 function ServiceConsoleContent() {
@@ -41,8 +43,10 @@ function ServiceConsoleContent() {
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<ServiceFormMode>("create");
   const [formSource, setFormSource] = useState<NormalizedService | null>(null);
+  const [formProcessSource, setFormProcessSource] = useState<NormalizedProcessCandidate | null>(null);
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<NormalizedService | null>(null);
+  const processImportRequestId = useRef(0);
 
   const showError = useCallback((title: string, message: string) => {
     notify(title, message, "error");
@@ -59,11 +63,54 @@ function ServiceConsoleContent() {
 
   const serviceState = useServices({ token, enabled: true, onError: showError });
 
+  const cancelProcessImport = useCallback(() => {
+    processImportRequestId.current += 1;
+  }, []);
+
+  useEffect(() => () => cancelProcessImport(), [cancelProcessImport]);
+
+  useEffect(() => {
+    cancelProcessImport();
+  }, [activeView, cancelProcessImport]);
+
   const openForm = useCallback((mode: ServiceFormMode, service: NormalizedService | null = null) => {
+    cancelProcessImport();
     setFormMode(mode);
     setFormSource(service);
+    setFormProcessSource(null);
     setFormOpen(true);
-  }, []);
+  }, [cancelProcessImport]);
+
+  const openProcessForm = useCallback(async (pid: number) => {
+    const requestId = ++processImportRequestId.current;
+    try {
+      const process = await serviceState.api.getProcess(pid);
+      if (requestId !== processImportRequestId.current) return;
+      if (process.managedService) {
+        throw new Error(`该进程已由服务 ${process.managedService} 管理`);
+      }
+      if (!process.restorable) {
+        throw new Error(process.warnings[0] || "该进程缺少可恢复的启动命令或工作目录");
+      }
+      setFormMode("create");
+      setFormSource(null);
+      setFormProcessSource(process);
+      setFormOpen(true);
+    } catch (error) {
+      if (requestId !== processImportRequestId.current) return;
+      throw error;
+    }
+  }, [serviceState.api]);
+
+  const changeView = useCallback((view: ViewId) => {
+    cancelProcessImport();
+    setActiveView(view);
+  }, [cancelProcessImport, setActiveView]);
+
+  const changeFormOpen = useCallback((nextOpen: boolean) => {
+    if (!nextOpen) cancelProcessImport();
+    setFormOpen(nextOpen);
+  }, [cancelProcessImport]);
 
   const handleServiceAction = useCallback(async (name: string, action: ServiceAction) => {
     const service = serviceState.services.find((candidate) => candidate.name === name);
@@ -142,6 +189,7 @@ function ServiceConsoleContent() {
         refreshSignal={portRefreshSignal}
         onError={showError}
         onSuccess={showSuccess}
+        onImportProcess={openProcessForm}
       />
     );
   } else if (activeView === "settings") {
@@ -190,7 +238,7 @@ function ServiceConsoleContent() {
       />
 
       <div className="service-console-body" data-view={activeView}>
-        <SidebarNav activeView={activeView} onViewChange={setActiveView}>
+        <SidebarNav activeView={activeView} onViewChange={changeView}>
           {activeView === "services" ? (
             <ServiceListPanel
               services={serviceState.services}
@@ -209,9 +257,11 @@ function ServiceConsoleContent() {
           open
           mode={formMode}
           sourceService={formSource}
+          sourceProcess={formProcessSource}
           existingNames={existingNames}
           submitting={formSubmitting}
-          onOpenChange={setFormOpen}
+          api={serviceState.api}
+          onOpenChange={changeFormOpen}
           onSubmit={submitServiceForm}
         />
       ) : null}

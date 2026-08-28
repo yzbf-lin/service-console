@@ -2,7 +2,9 @@ import {
   SERVICE_STATES,
   type NormalizedLogEntry,
   type NormalizedPortRow,
+  type NormalizedProcessCandidate,
   type NormalizedService,
+  type ServiceCreateInput,
   type ServiceActionDisabled,
   type ServiceState,
   type ServiceStatus,
@@ -141,6 +143,55 @@ export function extractPorts(payload: unknown): NormalizedPortRow[] {
     .map(normalizePort)
     .filter((item) => Number.isInteger(item.port) && item.port >= 1 && item.port <= 65_535)
     .sort((left, right) => left.port - right.port || (left.pid ?? 0) - (right.pid ?? 0));
+}
+
+export function normalizeProcessCandidate(raw: unknown): NormalizedProcessCandidate {
+  const source = isRecord(raw) ? raw : {};
+  const commandValue = source.command ?? source.cmdline ?? "";
+  const command = typeof commandValue === "string" ? commandValue : "";
+  const warnings = Array.isArray(source.warnings)
+    ? source.warnings.map(String).filter(Boolean)
+    : [];
+  if (Array.isArray(commandValue)) {
+    warnings.push("进程命令格式无效，无法安全恢复参数边界。");
+  }
+  const cwd = String(source.cwd ?? "");
+  const ports = Array.isArray(source.ports)
+    ? [...new Set(source.ports.map((port) => Number(port)).filter(
+      (port) => Number.isInteger(port) && port >= 1 && port <= 65_535,
+    ))].sort((left, right) => left - right)
+    : [];
+
+  return {
+    pid: asNumber(source.pid) ?? Number.NaN,
+    parentPid: asNumber(source.ppid, source.parent_pid),
+    createTime: asNumber(source.create_time),
+    startedAt: asNullableString(source.started_at),
+    processName: String(source.process_name ?? source.name ?? "未知进程"),
+    command,
+    cwd,
+    username: String(source.username ?? source.user ?? "—"),
+    ports,
+    suggestedName: String(source.suggested_name ?? source.process_name ?? source.name ?? ""),
+    safeEnv: normalizeEnvironment(source.safe_env),
+    restorable: Boolean(source.restorable) && Boolean(command.trim()) && Boolean(cwd.trim()),
+    warnings,
+    managedService: asNullableString(source.managed_service),
+  };
+}
+
+export function extractProcesses(payload: unknown): NormalizedProcessCandidate[] {
+  const processes = Array.isArray(payload)
+    ? payload
+    : isRecord(payload)
+      ? payload.processes ?? payload.data ?? []
+      : [];
+  if (!Array.isArray(processes)) return [];
+
+  return processes
+    .map(normalizeProcessCandidate)
+    .filter((process) => Number.isInteger(process.pid) && process.pid > 0)
+    .sort((left, right) => left.processName.localeCompare(right.processName) || left.pid - right.pid);
 }
 
 export function formatDuration(seconds: number | null | undefined): string {
@@ -356,4 +407,31 @@ export function nextCopyName(sourceName: string, existingNames: NameLookup = [],
     const candidate = `${base}${suffix}`.slice(0, maxLength);
     if (!nameExists(existingNames, candidate)) return candidate;
   }
+}
+
+export function serviceInputFromProcess(
+  process: NormalizedProcessCandidate,
+  existingNames: NameLookup = [],
+  maxLength = 80,
+): ServiceCreateInput {
+  const fallback = `service-${process.pid}`;
+  const sanitized = (process.suggestedName || process.processName || fallback)
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "")
+    .slice(0, maxLength) || fallback;
+  let name = sanitized;
+  for (let index = 2; nameExists(existingNames, name); index += 1) {
+    const suffix = `-${index}`;
+    name = `${sanitized.slice(0, Math.max(1, maxLength - suffix.length))}${suffix}`;
+  }
+
+  return {
+    name,
+    command: process.command.trim(),
+    cwd: process.cwd.trim(),
+    env: process.safeEnv,
+    auto_start: false,
+    stop_timeout: 10,
+  };
 }

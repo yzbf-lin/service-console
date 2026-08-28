@@ -38,8 +38,8 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="zh-CN" data-theme-preference="system" suppressHydrationWarning>
       <head>
-        <meta id="themeColorMeta" name="theme-color" content="#f4f6f8" />
-        <script dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
+        <meta id="themeColorMeta" name="theme-color" content="#f4f6f8" suppressHydrationWarning />
+        <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
       </head>
       <body>{children}</body>
     </html>

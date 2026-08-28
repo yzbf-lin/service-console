@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from .manager import ServiceManager
 from .models import ServiceDefinition
 from .ports import PortInspector
+from .processes import ProcessInspector
 from .settings import UiPreferencesStore
 
 
@@ -75,12 +76,14 @@ def create_app(
     token: str | None = None,
     manager: ServiceManager | None = None,
     port_inspector: PortInspector | None = None,
+    process_inspector: ProcessInspector | None = None,
 ) -> FastAPI:
     """Create an application and own the supplied manager for its lifespan."""
 
     selected_data_dir = Path(data_dir).expanduser()
     service_manager = manager or ServiceManager(selected_data_dir)
-    process_inspector = port_inspector if port_inspector is not None else PortInspector()
+    port_tool = port_inspector if port_inspector is not None else PortInspector()
+    process_tool = process_inspector or ProcessInspector(port_tool)
     ui_preferences = UiPreferencesStore(selected_data_dir)
 
     @asynccontextmanager
@@ -94,8 +97,17 @@ def create_app(
 
     app = FastAPI(title="Service Console", lifespan=lifespan)
     app.state.manager = service_manager
-    app.state.port_inspector = process_inspector
+    app.state.port_inspector = port_tool
+    app.state.process_inspector = process_tool
     app.state.token = token
+
+    async def managed_processes() -> dict[int, str]:
+        managed: dict[int, str] = {}
+        for service in await service_manager.list_services():
+            pid = service.get("pid")
+            if isinstance(pid, int) and not isinstance(pid, bool) and pid > 1:
+                managed[pid] = str(service["name"])
+        return managed
 
     async def require_token(authorization: Annotated[str | None, Header()] = None) -> None:
         if token is None:
@@ -173,8 +185,32 @@ def create_app(
     async def list_ports(
         port: Annotated[int | None, Query(ge=1, le=65535)] = None,
     ) -> dict[str, list[dict[str, object]]]:
-        ports = await asyncio.to_thread(process_inspector.list_ports, port)
+        ports = await asyncio.to_thread(port_tool.list_ports, port)
         return {"ports": ports}
+
+    @api.get("/processes")
+    async def list_processes(
+        query: Annotated[str | None, Query(max_length=200)] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    ) -> dict[str, list[dict[str, object]]]:
+        processes = await asyncio.to_thread(
+            process_tool.list_processes,
+            query,
+            limit,
+            await managed_processes(),
+        )
+        return {"processes": processes}
+
+    @api.get("/processes/{pid}")
+    async def get_process(pid: int) -> dict[str, dict[str, object]]:
+        if pid <= 1:
+            raise HTTPException(status_code=422, detail="pid must be greater than 1")
+        process = await asyncio.to_thread(
+            process_tool.get_process,
+            pid,
+            await managed_processes(),
+        )
+        return {"process": process}
 
     @api.post("/processes/{pid}/terminate")
     async def terminate_process(
@@ -184,7 +220,7 @@ def create_app(
         if pid <= 0:
             raise HTTPException(status_code=422, detail="pid must be positive")
         result = await asyncio.to_thread(
-            process_inspector.terminate,
+            port_tool.terminate,
             pid,
             expected_port=body.expected_port,
             force=body.force,

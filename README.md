@@ -34,6 +34,8 @@ requiring Docker or another container runtime.
 - Capture stdout and stderr in independent persistent logs and bounded live buffers.
 - Render ANSI output with xterm.js search, selection, links, wrapping, and scrollback.
 - Inspect listening ports and safely terminate their owning processes with PID/port verification.
+- Discover the current user's running processes, including workers without ports, and prefill service
+  definitions from restored `uv`/`pnpm` commands and working directories.
 - Use the same controller through the desktop app, Web UI, CLI, TUI, HTTP, or WebSocket.
 - Use a compact Next.js dashboard built with React, TypeScript, Tailwind CSS, shadcn/ui, Radix UI,
   and Lucide React, with persistent light and dark themes.
@@ -89,6 +91,18 @@ uv run service-console logs api --tail 200 --follow
 
 When `--url` is omitted, the CLI automatically discovers the running desktop controller. Explicit
 `--url` and `--token` options, or their environment variables, always take precedence.
+
+### Add a service from a running process
+
+Open **Add service** and select the **Running processes** tab to search by name, command, or PID. For a
+listening process, the plus button in **Ports and processes** opens the same form with its definition
+prefilled. Review and edit the inferred name, command, working directory, and allow-listed environment
+variables before saving.
+
+This creates configuration from the process; it does not reconnect to that process's existing stdout
+or stderr pipes. Stop the original process before starting the saved service in Service Console to
+avoid a duplicate instance or port conflict. Log capture begins with the first managed start. Token,
+password, secret, and API-key command arguments are redacted and require manual confirmation.
 
 ## CLI reference
 

@@ -33,6 +33,7 @@ function renderPortsView({
   terminate = vi.fn().mockResolvedValue({ needsForce: false, terminated: true }),
   onError = vi.fn(),
   onSuccess = vi.fn(),
+  onImportProcess,
 }: {
   ports: NormalizedPortRow[];
   filter?: number | null;
@@ -40,9 +41,11 @@ function renderPortsView({
   terminate?: ReturnType<typeof vi.fn>;
   onError?: NotificationHandler;
   onSuccess?: NotificationHandler;
+  onImportProcess?: (pid: number) => Promise<void>;
 }) {
   const loadPorts = vi.fn();
   const apiClient = api ?? ({ listPorts: vi.fn() } as unknown as ServiceConsoleApiClient);
+  const importProcess = vi.fn(onImportProcess ?? (async () => undefined));
 
   usePortsMock.mockReturnValue({
     ports,
@@ -61,14 +64,28 @@ function renderPortsView({
       active={false}
       onError={onError}
       onSuccess={onSuccess}
+      onImportProcess={importProcess}
       refreshSignal={0}
     />,
   );
 
-  return { api: apiClient, loadPorts, onError, onSuccess, terminate };
+  return { api: apiClient, loadPorts, onError, onSuccess, onImportProcess: importProcess, terminate };
 }
 
 describe("PortsView process grouping", () => {
+  it("sends a process PID to the add-service shortcut and disables unknown processes", async () => {
+    const onImportProcess = vi.fn<(pid: number) => Promise<void>>().mockResolvedValue(undefined);
+    const { onImportProcess: importProcess } = renderPortsView({
+      ports: [portFixture(), portFixture({ port: 9_000, pid: null, processName: "未知进程" })],
+      onImportProcess,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "将 PID 42 添加为服务" }));
+    await waitFor(() => expect(importProcess).toHaveBeenCalledWith(42));
+    expect(onImportProcess).toHaveBeenCalledWith(42);
+    expect((screen.getByRole("button", { name: "缺少 PID，添加服务不可用" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("groups rows by PID, keeps unidentified rows separate, and expands protocol details", () => {
     renderPortsView({
       ports: [
