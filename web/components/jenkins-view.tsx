@@ -57,6 +57,7 @@ import { JenkinsInstanceDialog, type JenkinsInstanceDialogMode } from "@/compone
 import { XtermLogViewer } from "@/components/xterm-log-viewer";
 import { cn } from "@/lib/cn";
 import type { ServiceConsoleApiClient } from "@/lib/api-client";
+import { resolveJenkinsBuildUrl } from "@/lib/jenkins";
 import type {
   JenkinsBuild,
   JenkinsInstance,
@@ -193,6 +194,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const [cancelTarget, setCancelTarget] = useState<JenkinsQueueItem | null>(null);
 
   const [logText, setLogText] = useState("");
+  const [logAppend, setLogAppend] = useState({ revision: 0, text: "" });
   const [logLoading, setLogLoading] = useState(false);
   const [logComplete, setLogComplete] = useState(false);
   const [logError, setLogError] = useState("");
@@ -216,6 +218,12 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const unsupportedFileParameters = useMemo(
     () => jobDetail?.parameters.filter((parameter) => parameter.type === "file") ?? [],
     [jobDetail],
+  );
+  const selectedBuildUrl = useMemo(
+    () => activeInstance && selectedBuild
+      ? resolveJenkinsBuildUrl(activeInstance.baseUrl, selectedBuild.url)
+      : null,
+    [activeInstance, selectedBuild],
   );
 
   const reportPollingError = useCallback((key: string, title: string, error: unknown) => {
@@ -466,6 +474,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
           accumulated = LOG_TRUNCATION_NOTICE + accumulated.slice(-LOG_MAX_CHARS);
         }
         setLogText(accumulated);
+        setLogAppend((current) => ({ revision: current.revision + 1, text: chunk.text }));
         offset = chunk.nextOffset;
         setLogComplete(chunk.complete);
         setLogError("");
@@ -827,12 +836,12 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         <div className="flex shrink-0 items-center gap-1">
           {logTruncated ? <Badge className="h-4 px-1 text-[8px]" variant="warning">已截断</Badge> : null}
           {logLoading ? <LoaderCircle className="size-3 animate-spin text-muted-foreground" aria-label="读取日志" /> : logComplete ? <Badge className="h-4 px-1 text-[8px]" variant="muted">日志完成</Badge> : null}
-          {selectedBuild?.url ? <Button asChild className="size-6 p-0" variant="ghost" size="icon-sm"><a href={selectedBuild.url} target="_blank" rel="noreferrer" aria-label="在 Jenkins 打开构建"><ExternalLink className="size-3" /></a></Button> : null}
+          {selectedBuildUrl ? <Button asChild className="size-6 p-0" variant="ghost" size="icon-sm"><a href={selectedBuildUrl} target="_blank" rel="noreferrer" aria-label="在 Jenkins 打开构建"><ExternalLink className="size-3" /></a></Button> : null}
         </div>
       </header>
       {logError ? <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-destructive/20 bg-destructive/5 px-3 text-[9px] text-destructive" role="alert"><CircleAlert className="size-3" />{logError}</div> : null}
       {selectedBuildNumber !== null ? (
-        <XtermLogViewer active={active && (!narrow || mobilePane === "logs")} ariaLabel={`Jenkins 构建 #${selectedBuildNumber} 日志`} resetKey={`${activeInstanceId}:${selectedJobName}:${selectedBuildNumber}`} text={logText} theme={theme} />
+        <XtermLogViewer active={active && (!narrow || mobilePane === "logs")} appendRevision={logAppend.revision} appendText={logAppend.text} ariaLabel={`Jenkins 构建 #${selectedBuildNumber} 日志`} onCopyError={(message) => onError("复制 Jenkins 日志失败", message)} onCopySuccess={(message) => onSuccess("Jenkins 日志已复制", message)} resetKey={`${activeInstanceId}:${selectedJobName}:${selectedBuildNumber}`} text={logText} theme={theme} />
       ) : (
         <div className="grid min-h-0 flex-1 place-items-center bg-[#0e1621] text-center text-[11px] text-[#8793a3]"><div><FileText className="mx-auto mb-2 size-5" /><p>选择构建后显示控制台日志</p></div></div>
       )}

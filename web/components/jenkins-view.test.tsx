@@ -6,8 +6,8 @@ import type { ServiceConsoleApiClient } from "@/lib/api-client";
 import type { JenkinsBuild, JenkinsInstance, JenkinsJob, JenkinsQueueItem } from "@/lib/types";
 
 vi.mock("@/components/xterm-log-viewer", () => ({
-  XtermLogViewer: ({ text, resetKey }: { text: string; resetKey: string }) => (
-    <pre data-testid="jenkins-log" data-reset-key={resetKey}>{text}</pre>
+  XtermLogViewer: ({ appendRevision, appendText, text, resetKey }: { appendRevision?: number; appendText?: string; text: string; resetKey: string }) => (
+    <pre data-testid="jenkins-log" data-append-revision={appendRevision} data-append-text={appendText} data-reset-key={resetKey}>{text}</pre>
   ),
 }));
 
@@ -182,6 +182,20 @@ describe("JenkinsView", () => {
     expect(mocks.getJenkinsJob).toHaveBeenCalledWith("b", "Job B");
   });
 
+  it("opens a build through the selected instance Web address", async () => {
+    mocks.listJenkinsInstances.mockResolvedValue([{ ...instanceA, baseUrl: "https://public.example.com/jenkins" }]);
+    mocks.getJenkinsBuild.mockResolvedValue({
+      ...buildFixture(),
+      url: "http://jenkins.internal:8080/job/folder/job/app/42/?view=plain#console",
+    });
+    renderView();
+
+    const link = await screen.findByRole("link", { name: "在 Jenkins 打开构建" });
+    expect(link.getAttribute("href")).toBe(
+      "https://public.example.com/jenkins/job/folder/job/app/42/?view=plain#console",
+    );
+  });
+
   it("creates an instance with a non-echoed token and selects the returned item", async () => {
     mocks.listJenkinsInstances
       .mockResolvedValueOnce([instanceA])
@@ -303,6 +317,8 @@ describe("JenkinsView", () => {
     expect(mocks.getJenkinsBuildLog.mock.calls[1]).toEqual(["a", "Job A", 42, 5]);
     expect(mocks.getJenkinsBuildLog.mock.calls[2]).toEqual(["a", "Job A", 42, 5]);
     await waitFor(() => expect(screen.getByTestId("jenkins-log").textContent).toBe("firstsecond"));
+    expect(screen.getByTestId("jenkins-log").getAttribute("data-append-text")).toBe("second");
+    expect(screen.getByTestId("jenkins-log").getAttribute("data-append-revision")).toBe("2");
     expect(screen.queryByText("temporary log failure")).toBeNull();
   });
 

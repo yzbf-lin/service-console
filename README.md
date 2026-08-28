@@ -94,6 +94,11 @@ queried on demand through the local Service Console controller; they are not cop
 local Jenkins database. Switching the UI item never changes an in-flight MCP operation because every
 Jenkins API and MCP call carries an explicit instance ID.
 
+Build links are opened through the selected instance's configured Web address, even when Jenkins
+reports an internal host or default port. The console viewer supports Cmd/Ctrl+F search with
+previous/next navigation, native selection copy, a copy-selection button, and one-click copy-all as
+plain text. Progressive updates preserve the active search and selection.
+
 Parameterized builds preserve Jenkins defaults: leave a password parameter blank to omit it from the
 request and let Jenkins apply its configured default. Jenkins file parameters are detected but are
 not uploaded by this release; jobs containing one are marked unsupported and cannot be triggered

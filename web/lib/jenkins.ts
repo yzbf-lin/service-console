@@ -42,6 +42,60 @@ function envelope(payload: unknown, key: string): unknown {
   return isRecord(payload) && key in payload ? payload[key] : payload;
 }
 
+const ABSOLUTE_URL_SCHEME = /^[a-z][a-z\d+.-]*:/i;
+
+function httpUrl(value: string, base?: URL): URL | null {
+  try {
+    const url = base ? new URL(value, base) : new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function withoutTrailingSlash(pathname: string): string {
+  return pathname.replace(/\/+$/, "");
+}
+
+function resourcePath(pathname: string, contextPath: string): string {
+  const jobPathIndex = pathname.search(/\/job(?:\/|$)/);
+  if (jobPathIndex >= 0) return pathname.slice(jobPathIndex);
+  if (contextPath && (pathname === contextPath || pathname.startsWith(`${contextPath}/`))) {
+    return pathname.slice(contextPath.length) || "/";
+  }
+  return pathname;
+}
+
+/**
+ * 将 Jenkins API 返回的资源地址映射到用户配置的 Jenkins Web 地址。
+ *
+ * Jenkins 常会按其内部 rootUrl 返回默认 8080 端口。这里以实例 baseUrl 的
+ * 协议、主机、端口及 context path 为准，仅保留资源的 Job 路径、查询和锚点。
+ */
+export function resolveJenkinsBuildUrl(baseUrl: string, buildUrl: string): string | null {
+  const configuredUrl = httpUrl(baseUrl.trim());
+  const rawBuildUrl = buildUrl.trim();
+  if (!configuredUrl || !rawBuildUrl) return null;
+
+  const contextPath = withoutTrailingSlash(configuredUrl.pathname);
+  const relativeBase = new URL(configuredUrl);
+  relativeBase.pathname = `${contextPath}/`;
+  relativeBase.search = "";
+  relativeBase.hash = "";
+
+  // 带 scheme 的值必须自身合法，避免把畸形或非 HTTP(S) 地址误当相对路径。
+  const sourceUrl = ABSOLUTE_URL_SCHEME.test(rawBuildUrl)
+    ? httpUrl(rawBuildUrl)
+    : httpUrl(rawBuildUrl, relativeBase);
+  if (!sourceUrl) return null;
+
+  const suffix = resourcePath(sourceUrl.pathname, contextPath).replace(/^\/+/, "");
+  configuredUrl.pathname = suffix ? `${contextPath}/${suffix}` : `${contextPath}/`;
+  configuredUrl.search = sourceUrl.search;
+  configuredUrl.hash = sourceUrl.hash;
+  return configuredUrl.toString();
+}
+
 export function normalizeJenkinsInstance(value: unknown): JenkinsInstance {
   const source = record(value);
   return {
