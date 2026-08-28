@@ -8,6 +8,7 @@ import {
 } from "./service-logic";
 import type {
   AppUpdateStatus,
+  McpIntegrationStatus,
   NormalizedLogEntry,
   NormalizedPortRow,
   NormalizedProcessCandidate,
@@ -68,6 +69,10 @@ export interface ServiceConsoleApiClient {
   checkAppUpdate(): Promise<AppUpdateStatus>;
   downloadAppUpdate(): Promise<AppUpdateStatus>;
   installAppUpdate(): Promise<AppUpdateStatus>;
+  getMcpIntegrationStatus(): Promise<McpIntegrationStatus>;
+  installMcpIntegration(): Promise<McpIntegrationStatus>;
+  testMcpIntegration(): Promise<McpIntegrationStatus>;
+  removeMcpIntegration(): Promise<McpIntegrationStatus>;
 }
 
 function responseRecord(payload: unknown, key: string): Record<string, unknown> {
@@ -226,6 +231,22 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
     async installAppUpdate() {
       const payload = await request<unknown>("/api/app-update/install", { method: "POST" });
       return responseRecord(payload, "update") as unknown as AppUpdateStatus;
+    },
+    async getMcpIntegrationStatus() {
+      const payload = await request<unknown>("/api/mcp-integration");
+      return responseRecord(payload, "mcp") as unknown as McpIntegrationStatus;
+    },
+    async installMcpIntegration() {
+      const payload = await request<unknown>("/api/mcp-integration/install", { method: "POST" });
+      return responseRecord(payload, "mcp") as unknown as McpIntegrationStatus;
+    },
+    async testMcpIntegration() {
+      const payload = await request<unknown>("/api/mcp-integration/test", { method: "POST" });
+      return responseRecord(payload, "mcp") as unknown as McpIntegrationStatus;
+    },
+    async removeMcpIntegration() {
+      const payload = await request<unknown>("/api/mcp-integration", { method: "DELETE" });
+      return responseRecord(payload, "mcp") as unknown as McpIntegrationStatus;
     },
   };
 }

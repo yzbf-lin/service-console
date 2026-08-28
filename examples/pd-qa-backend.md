@@ -19,6 +19,16 @@ container runtime.
    ./scripts/register-pd-qa-backend.sh
    ```
 
+   With the Codex MCP integration installed, keep the equivalent definitions in the project-root
+   `.service-console.json` and ask the agent to call:
+
+   ```text
+   project_apply_config(config_path="/absolute/path/to/pd-qa-backend/.service-console.json")
+   ```
+
+   The manifest is then the source of truth; repeated calls update changed definitions and skip
+   unchanged ones without deleting unrelated services.
+
 3. Start each service from the browser, TUI, or CLI:
 
    ```bash

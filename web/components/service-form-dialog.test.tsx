@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ServiceFormDialog, type ServiceFormMode } from "@/components/service-form-dialog";
-import type { ServiceConsoleApiClient } from "@/lib/api-client";
+import { ApiError, type ServiceConsoleApiClient } from "@/lib/api-client";
 import type {
   NormalizedProcessCandidate,
   NormalizedService,
@@ -174,6 +174,59 @@ describe("ServiceFormDialog process import", () => {
     expect(screen.getByRole("status").textContent).toContain("请复核启动参数");
     expect((screen.getByLabelText(/服务名称/) as HTMLInputElement).value).toBe("beat");
     expect(listProcesses).not.toHaveBeenCalled();
+  });
+
+  it("allows a non-restorable process to enter the manual completion form", async () => {
+    const user = userEvent.setup();
+    const restricted = processFixture({
+      command: "",
+      cwd: "",
+      restorable: false,
+      warnings: ["权限受限，无法读取启动命令和工作目录"],
+    });
+    const { getProcess } = renderDialog({ processes: [restricted] });
+
+    await user.click(screen.getByRole("tab", { name: "运行中进程" }));
+    const manualButton = await screen.findByRole("button", {
+      name: "手动补全 celery 的配置",
+    });
+    expect((manualButton as HTMLButtonElement).disabled).toBe(false);
+    await user.click(manualButton);
+
+    await waitFor(() => expect(getProcess).toHaveBeenCalledWith(42));
+    expect(screen.getByRole("status").textContent).toContain("自动提取信息不完整");
+    expect(screen.getByRole("status").textContent).toContain("权限受限");
+    expect((screen.getByLabelText(/启动命令/) as HTMLTextAreaElement).value).toBe("");
+    expect((screen.getByLabelText(/工作目录/) as HTMLInputElement).value).toBe("");
+
+    await user.type(screen.getByLabelText(/启动命令/), "python app.py");
+    await user.type(screen.getByLabelText(/工作目录/), "C:\\workspace");
+    await user.click(screen.getByRole("button", { name: "添加服务" }));
+    expect(screen.getByRole("alertdialog", { name: "保存手动补全的服务配置？" })).toBeTruthy();
+    expect(screen.getByText(/配置未能完整自动核验/)).toBeTruthy();
+  });
+
+  it("falls back to manual completion when process detail is permission denied", async () => {
+    const user = userEvent.setup();
+    const candidate = processFixture();
+    renderDialog({
+      processes: [candidate],
+      getProcess: async () => {
+        throw new ApiError(
+          "permission denied while inspecting process 42 owned by another user",
+          409,
+        );
+      },
+    });
+
+    await user.click(screen.getByRole("tab", { name: "运行中进程" }));
+    await user.click(await screen.findByRole("button", { name: "填入 celery 的配置" }));
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("自动提取信息不完整");
+    expect(status.textContent).toContain("当前权限不足");
+    expect((screen.getByLabelText(/启动命令/) as HTMLTextAreaElement).value).toBe(candidate.command);
+    expect(screen.queryByText(/permission denied while inspecting/)).toBeNull();
   });
 
   it("rejects a candidate when its PID identity changes before applying", async () => {

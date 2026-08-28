@@ -76,7 +76,7 @@ class ProcessInspector:
         self.controller_pid = os.getpid() if controller_pid is None else controller_pid
         getuid = getattr(os, "getuid", None)
         self.current_uid = getuid() if current_uid is None and getuid is not None else current_uid
-        self.current_username = current_username or getpass.getuser()
+        self.current_username = current_username or _current_username()
 
     def list_processes(
         self,
@@ -94,7 +94,7 @@ class ProcessInspector:
         ports_by_process, port_warning = self._load_ports()
 
         results: list[ProcessRow] = []
-        identities: set[tuple[int, float]] = set()
+        identities: set[tuple[int, float | None]] = set()
         try:
             running_processes = psutil.process_iter()
             for running_process in running_processes:
@@ -114,11 +114,13 @@ class ProcessInspector:
                 if (
                     is_protected
                     or is_shell
-                    or not is_current_user
+                    or is_current_user is False
                     or row["managed_service"] is not None
                 ):
                     continue
-                identity = (int(row["pid"]), float(row["create_time"]))
+                raw_create_time = row["create_time"]
+                create_time = float(raw_create_time) if raw_create_time is not None else None
+                identity = (int(row["pid"]), create_time)
                 if identity in identities:
                     continue
                 if normalized_query and not _matches(row, normalized_query):
@@ -141,10 +143,6 @@ class ProcessInspector:
         if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
             raise ValueError("pid must be an integer greater than 1")
         protected = self._controller_ancestry()
-        selected = _get_process(pid)
-        selected_created_at = _create_time(selected, pid)
-        self._ensure_visible(selected, protected)
-        _verify_identity(pid, selected_created_at)
         ports_by_process, port_warning = self._load_ports()
         row, _, _, _ = self._inspect(
             pid,
@@ -152,7 +150,6 @@ class ProcessInspector:
             protected,
             ports_by_process,
             port_warning,
-            enforce_visibility=True,
         )
         return row
 
@@ -163,18 +160,64 @@ class ProcessInspector:
         protected: set[int],
         ports_by_process: dict[ProcessIdentity, set[int]],
         port_warning: str | None,
-        *,
-        enforce_visibility: bool = False,
-    ) -> tuple[ProcessRow, bool, bool, bool]:
+    ) -> tuple[ProcessRow, bool, bool, bool | None]:
         selected = _get_process(pid)
-        selected_created_at = _create_time(selected, pid)
-        if enforce_visibility:
-            self._ensure_visible(selected, protected)
+        if pid in protected:
+            raise ValueError(f"process {pid} belongs to Service Console and cannot be imported")
+
+        selected_username = _process_username(selected)
+        is_current_user = self._is_current_user(selected, selected_username)
+        if is_current_user is not True:
+            row = self._restricted_row(
+                selected,
+                managed,
+                ports_by_process,
+                port_warning,
+                username=selected_username,
+                is_current_user=is_current_user,
+            )
+            return row, False, False, is_current_user
+
+        try:
+            selected_created_at = _create_time(selected, pid)
+        except RuntimeError:
+            row = self._restricted_row(
+                selected,
+                managed,
+                ports_by_process,
+                port_warning,
+                username=selected_username,
+                is_current_user=is_current_user,
+            )
+            return row, False, False, is_current_user
         launcher = self._resolve_launcher(selected, protected, managed)
         launcher_pid = int(launcher.pid)
-        created_at = _create_time(launcher, launcher_pid)
-        if enforce_visibility and launcher_pid != pid:
-            self._ensure_visible(launcher, protected)
+        launcher_username = (
+            selected_username if launcher_pid == pid else _process_username(launcher)
+        )
+        is_current_user = self._is_current_user(launcher, launcher_username)
+        if is_current_user is not True:
+            row = self._restricted_row(
+                launcher,
+                managed,
+                ports_by_process,
+                port_warning,
+                username=launcher_username,
+                is_current_user=is_current_user,
+            )
+            return row, False, False, is_current_user
+        try:
+            created_at = _create_time(launcher, launcher_pid)
+        except RuntimeError:
+            row = self._restricted_row(
+                launcher,
+                managed,
+                ports_by_process,
+                port_warning,
+                username=launcher_username,
+                is_current_user=is_current_user,
+            )
+            return row, False, False, is_current_user
         warnings: list[str] = []
 
         argv = _read_process_value(launcher, "cmdline", warnings, "command line") or []
@@ -185,9 +228,9 @@ class ProcessInspector:
         cwd = str(cwd_value) if cwd_value else ""
         name_value = _read_process_value(launcher, "name", warnings, "process name")
         process_name = str(name_value or (Path(argv[0]).name if argv else "unknown"))
-        username_value = _read_process_value(launcher, "username", warnings, "username")
-        username = str(username_value) if username_value else None
-        is_current_user = self._is_current_user(launcher, username)
+        username = launcher_username
+        if username is None:
+            warnings.append("Process username could not be inspected.")
         ppid_value = _read_process_value(launcher, "ppid", warnings, "parent PID")
         ppid = int(ppid_value) if ppid_value is not None else None
         safe_env: dict[str, str] = {}
@@ -213,8 +256,6 @@ class ProcessInspector:
             warnings.append("Service Console and its launcher processes cannot be imported.")
         if is_shell:
             warnings.append("Interactive shell processes cannot be imported directly.")
-        if not is_current_user:
-            warnings.append("Processes owned by another user cannot be imported.")
         if redacted:
             warnings.append(
                 "Sensitive command arguments were redacted; enter them manually before saving."
@@ -228,9 +269,20 @@ class ProcessInspector:
         elif not Path(cwd).is_dir():
             warnings.append("Working directory no longer exists.")
 
-        _verify_identity(pid, selected_created_at)
-        if launcher_pid != pid:
-            _verify_identity(launcher_pid, created_at)
+        try:
+            _verify_identity(pid, selected_created_at)
+            if launcher_pid != pid:
+                _verify_identity(launcher_pid, created_at)
+        except RuntimeError:
+            row = self._restricted_row(
+                launcher,
+                managed,
+                ports_by_process,
+                port_warning,
+                username=launcher_username,
+                is_current_user=is_current_user,
+            )
+            return row, False, False, is_current_user
 
         ports = set(ports_by_process.get((launcher_pid, created_at), set()))
         restorable = bool(command and cwd and Path(cwd).is_dir())
@@ -260,25 +312,91 @@ class ProcessInspector:
         }
         return row, is_protected, is_shell, is_current_user
 
-    def _is_current_user(self, process: psutil.Process, username: str | None) -> bool:
+    def _restricted_row(
+        self,
+        process: psutil.Process,
+        managed: dict[int, str],
+        ports_by_process: dict[ProcessIdentity, set[int]],
+        port_warning: str | None,
+        *,
+        username: str | None,
+        is_current_user: bool | None,
+    ) -> ProcessRow:
+        """Return a non-sensitive snapshot when ownership or metadata access is restricted."""
+
+        pid = int(process.pid)
+        if is_current_user is False:
+            access_warning = (
+                "Process metadata access is limited because it is owned by another user; "
+                "enter the command and working directory manually."
+            )
+        elif is_current_user is None:
+            access_warning = (
+                "Process ownership and metadata access could not be verified; "
+                "enter the command and working directory manually."
+            )
+        else:
+            access_warning = (
+                "Process metadata access is limited; "
+                "enter the command and working directory manually."
+            )
+        warnings = [access_warning]
+
+        created_at = _optional_create_time(process, pid)
+        if created_at is not None:
+            try:
+                _verify_identity(pid, created_at)
+            except RuntimeError:
+                created_at = None
+        process_name_value = _read_process_value(process, "name", warnings, "process name")
+        process_name = str(process_name_value or "unknown")
+        ppid_value = _read_process_value(process, "ppid", warnings, "parent PID")
+        ppid = int(ppid_value) if ppid_value is not None else None
+        managed_service = _managed_service(process, managed)
+        if managed_service is not None:
+            warnings.append(f"Already managed by service {managed_service}.")
+        if port_warning:
+            warnings.append(port_warning)
+
+        ports = (
+            set(ports_by_process.get((pid, created_at), set()))
+            if created_at is not None
+            else set()
+        )
+        return {
+            "pid": pid,
+            "ppid": ppid,
+            "create_time": created_at,
+            "started_at": (
+                datetime.fromtimestamp(created_at, UTC).isoformat()
+                if created_at is not None
+                else None
+            ),
+            "process_name": process_name,
+            "command": "",
+            "cwd": "",
+            "username": username,
+            "ports": sorted(ports),
+            "suggested_name": _suggested_name("", [], process_name, pid),
+            "safe_env": {},
+            "restorable": False,
+            "warnings": list(dict.fromkeys(warnings)),
+            "managed_service": managed_service,
+        }
+
+    def _is_current_user(
+        self,
+        process: psutil.Process,
+        username: str | None,
+    ) -> bool | None:
         if self.current_uid is not None:
             try:
                 return int(process.uids().real) == self.current_uid
             except (AttributeError, psutil.Error, OSError):
                 pass
         if username is None:
-            try:
-                username = str(process.username())
-            except (psutil.Error, OSError):
-                return False
-        return username == self.current_username
-
-    def _ensure_visible(self, process: psutil.Process, protected: set[int]) -> None:
-        pid = int(process.pid)
-        if pid in protected:
-            raise ValueError(f"process {pid} belongs to Service Console and cannot be imported")
-        if not self._is_current_user(process, None):
-            raise RuntimeError(f"permission denied while inspecting process {pid} owned by another user")
+            return None
+        return _same_username(username, self.current_username)
 
     def _resolve_launcher(
         self,
@@ -299,6 +417,9 @@ class ProcessInspector:
             if parent is None or parent.pid <= 1 or parent.pid in protected:
                 break
             if parent.pid in managed or _get_process_group(parent.pid) != selected_group:
+                break
+            parent_username = _process_username(parent)
+            if self._is_current_user(parent, parent_username) is not True:
                 break
             parent_argv = _cmdline(parent)
             if _is_shell(parent, parent_argv):
@@ -356,6 +477,43 @@ class ProcessInspector:
         return ports_by_process, None
 
 
+def _current_username() -> str:
+    if _IS_WINDOWS:
+        try:
+            username = str(psutil.Process(os.getpid()).username()).strip()
+        except (psutil.Error, OSError):
+            username = ""
+        if username:
+            return username
+    return getpass.getuser()
+
+
+def _process_username(process: psutil.Process) -> str | None:
+    try:
+        username = str(process.username()).strip()
+    except (psutil.Error, OSError):
+        return None
+    return username or None
+
+
+def _same_username(candidate: str, current: str) -> bool:
+    if not _IS_WINDOWS:
+        return candidate == current
+
+    candidate_key = candidate.strip().replace("/", "\\").casefold()
+    current_key = current.strip().replace("/", "\\").casefold()
+    if candidate_key == current_key:
+        return True
+
+    _, separator, candidate_account = candidate_key.rpartition("\\")
+    _, current_separator, current_account = current_key.rpartition("\\")
+    if separator and current_separator:
+        return False
+    return (candidate_account if separator else candidate_key) == (
+        current_account if current_separator else current_key
+    )
+
+
 def _get_process(pid: int) -> psutil.Process:
     try:
         return psutil.Process(pid)
@@ -376,6 +534,13 @@ def _create_time(process: psutil.Process, pid: int) -> float:
         raise RuntimeError(f"permission denied while inspecting process {pid}") from exc
     except OSError as exc:
         raise RuntimeError(f"failed to inspect process {pid}: {exc}") from exc
+
+
+def _optional_create_time(process: psutil.Process, pid: int) -> float | None:
+    try:
+        return _create_time(process, pid)
+    except RuntimeError:
+        return None
 
 
 def _verify_identity(pid: int, expected_create_time: float) -> None:

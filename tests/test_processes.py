@@ -33,9 +33,9 @@ class FakeProcess:
         name: str,
         argv: list[str],
         cwd: Path,
-        created_at: float,
+        created_at: float | BaseException,
         environment: dict[str, str] | BaseException | None = None,
-        username: str = "tester",
+        username: str | BaseException = "tester",
         uid: int | None = None,
     ) -> None:
         self.pid = pid
@@ -44,7 +44,7 @@ class FakeProcess:
         self._name = name
         self._argv = argv
         self._cwd = cwd
-        self._created_at: float | list[float] = created_at
+        self._created_at: float | list[float] | BaseException = created_at
         self._environment = environment or {}
         self._username = username
         self._uid = _TEST_UID if uid is None else uid
@@ -71,11 +71,15 @@ class FakeProcess:
         return str(self._cwd)
 
     def create_time(self) -> float:
+        if isinstance(self._created_at, BaseException):
+            raise self._created_at
         if isinstance(self._created_at, list):
             return self._created_at.pop(0)
         return self._created_at
 
     def username(self) -> str:
+        if isinstance(self._username, BaseException):
+            raise self._username
         return self._username
 
     def environ(self) -> dict[str, str]:
@@ -306,7 +310,7 @@ def test_get_process_returns_resolved_uv_identity_and_marks_managed_children(
     assert any("Already managed" in warning for warning in managed["warnings"])
 
 
-def test_get_process_rejects_other_users_and_controller_ancestry_before_reading_metadata(
+def test_get_process_returns_restricted_other_user_snapshot_and_rejects_controller_ancestry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -314,8 +318,17 @@ def test_get_process_rejects_other_users_and_controller_ancestry_before_reading_
     install_processes(monkeypatch, registry)
     inspector = ProcessInspector(FakePortInspector(), controller_pid=900)
 
-    with pytest.raises(RuntimeError, match="owned by another user"):
-        inspector.get_process(500)
+    other_user = inspector.get_process(500)
+
+    assert other_user["pid"] == 500
+    assert other_user["process_name"] == "python"
+    assert other_user["username"] == "other"
+    assert other_user["command"] == ""
+    assert other_user["cwd"] == ""
+    assert other_user["safe_env"] == {}
+    assert other_user["restorable"] is False
+    assert "enter the command and working directory manually" in other_user["warnings"][0]
+
     with pytest.raises(ValueError, match="belongs to Service Console"):
         inspector.get_process(900)
     with pytest.raises(ValueError, match="belongs to Service Console"):
@@ -341,7 +354,7 @@ def test_get_process_rejects_pid_reuse(
         cwd=tmp_path,
         created_at=100.0,
     )
-    changing._created_at = [100.0, 100.0, 100.0, 100.0, 200.0]
+    changing._created_at = [100.0, 100.0, 200.0]
     install_processes(monkeypatch, {500: changing})
     inspector = ProcessInspector(FakePortInspector(), controller_pid=999)
 
@@ -554,6 +567,116 @@ def test_windows_discovery_without_getpgid_uses_windows_command_quoting(
 
     assert row["pid"] == 800
     assert row["command"] == subprocess.list2cmdline(selected._argv)
+
+
+def test_windows_access_denied_process_is_listed_as_non_restorable_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    restricted = FakeProcess(
+        805,
+        ppid=1,
+        pgid=805,
+        name="python.exe",
+        argv=["python.exe", "private.py", "--token", "must-not-be-read"],
+        cwd=tmp_path,
+        created_at=psutil.AccessDenied(pid=805),
+        environment={"TOKEN": "must-not-be-read"},
+        username=psutil.AccessDenied(pid=805),
+    )
+    install_processes(monkeypatch, {805: restricted})
+    monkeypatch.delattr(processes.os, "getuid")
+    monkeypatch.setattr(processes, "_IS_WINDOWS", True)
+    inspector = ProcessInspector(
+        FakePortInspector(),
+        controller_pid=999,
+        current_username=r"DOMAIN\tester",
+    )
+
+    listed = inspector.list_processes()
+    detail = inspector.get_process(805)
+
+    assert len(listed) == 1
+    assert listed[0] == detail
+    assert detail["pid"] == 805
+    assert detail["process_name"] == "python.exe"
+    assert detail["username"] is None
+    assert detail["create_time"] is None
+    assert detail["started_at"] is None
+    assert detail["command"] == ""
+    assert detail["cwd"] == ""
+    assert detail["safe_env"] == {}
+    assert detail["restorable"] is False
+    assert "enter the command and working directory manually" in detail["warnings"][0]
+    assert restricted.cmdline_reads == 0
+    assert restricted.cwd_reads == 0
+    assert restricted.environment_reads == 0
+
+
+def test_windows_current_user_with_denied_identity_uses_restricted_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    restricted = FakeProcess(
+        806,
+        ppid=1,
+        pgid=806,
+        name="worker.exe",
+        argv=["worker.exe", "private.py"],
+        cwd=tmp_path,
+        created_at=psutil.AccessDenied(pid=806),
+        environment={"TOKEN": "must-not-be-read"},
+        username=r"DOMAIN\tester",
+    )
+    install_processes(monkeypatch, {806: restricted})
+    monkeypatch.delattr(processes.os, "getuid")
+    monkeypatch.setattr(processes, "_IS_WINDOWS", True)
+    inspector = ProcessInspector(
+        FakePortInspector(),
+        controller_pid=999,
+        current_username=r"DOMAIN\tester",
+    )
+
+    listed = inspector.list_processes()
+    detail = inspector.get_process(806)
+
+    assert listed == [detail]
+    assert detail["create_time"] is None
+    assert detail["restorable"] is False
+    assert detail["warnings"][0].startswith("Process metadata access is limited;")
+    assert restricted.cmdline_reads == 0
+    assert restricted.cwd_reads == 0
+    assert restricted.environment_reads == 0
+
+
+def test_windows_domain_qualified_username_matches_current_account(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    selected = FakeProcess(
+        807,
+        ppid=1,
+        pgid=807,
+        name="python.exe",
+        argv=["python.exe", "app.py"],
+        cwd=tmp_path,
+        created_at=807.25,
+        username=r"DOMAIN\Tester",
+    )
+    install_processes(monkeypatch, {807: selected})
+    monkeypatch.delattr(processes.os, "getuid")
+    monkeypatch.setattr(processes, "_IS_WINDOWS", True)
+    inspector = ProcessInspector(
+        FakePortInspector(),
+        controller_pid=999,
+        current_username="tester",
+    )
+
+    row = inspector.get_process(807)
+
+    assert row["command"] == subprocess.list2cmdline(selected._argv)
+    assert row["restorable"] is True
+    assert processes._same_username(r"FIRST\tester", r"SECOND\tester") is False
 
 
 @pytest.mark.parametrize("shell", ["cmd.exe", "powershell.exe", "pwsh.exe"])

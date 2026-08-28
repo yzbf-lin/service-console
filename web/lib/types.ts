@@ -29,6 +29,38 @@ export const APP_UPDATE_STATES = [
 
 export type AppUpdateState = (typeof APP_UPDATE_STATES)[number];
 
+export const MCP_INTEGRATION_STATES = [
+  "unavailable",
+  "not_installed",
+  "installed",
+  "conflict",
+  "error",
+] as const;
+
+export type McpIntegrationState = (typeof MCP_INTEGRATION_STATES)[number];
+
+export interface McpTestResult {
+  ok: boolean;
+  tested_at: string;
+  error: string | null;
+}
+
+export interface McpIntegrationStatus {
+  state: McpIntegrationState;
+  transport: "stdio";
+  controller_ready: boolean;
+  bridge_available: boolean;
+  codex_cli_available: boolean;
+  codex_registered: boolean;
+  server_name: string;
+  bridge_command: string | null;
+  bridge_args: string[];
+  config_snippet: string | null;
+  tools: string[];
+  last_test: McpTestResult | null;
+  error: string | null;
+}
+
 export interface AppUpdateStatus {
   state: AppUpdateState;
   current_version: string;

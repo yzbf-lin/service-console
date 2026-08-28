@@ -59,7 +59,11 @@ class DesktopController:
         self.instance_id = secrets.token_urlsafe(16)
         runtime_override = os.environ.get("SERVICE_CONSOLE_RUNTIME_FILE", "").strip()
         selected_runtime = runtime_file or runtime_override
-        self.runtime_path = Path(selected_runtime).expanduser() if selected_runtime else runtime_path()
+        self.runtime_path = (
+            Path(selected_runtime).expanduser().resolve()
+            if selected_runtime
+            else runtime_path().resolve()
+        )
         self.update_ready_file = (
             Path(update_ready_file).expanduser() if update_ready_file is not None else None
         )
@@ -96,6 +100,7 @@ class DesktopController:
             data_dir=self.data_dir,
             token=self.token,
             on_update_ready=self.schedule_application_exit,
+            runtime_file=self.runtime_path,
         )
         config = uvicorn.Config(
             application,

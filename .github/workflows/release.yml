@@ -46,6 +46,9 @@ jobs:
           test "$(uname -m)" = "arm64"
           codesign --verify --deep --strict "dist/Service Console.app"
           "dist/Service Console.app/Contents/MacOS/Service Console" --help >/dev/null
+          "dist/Service Console.app/Contents/MacOS/Service Console MCP" --help >/dev/null
+          uv run --locked python scripts/smoke_test_mcp_helper.py \
+            "dist/Service Console.app/Contents/MacOS/Service Console MCP"
       - name: Package application
         shell: bash
         run: |
@@ -94,8 +97,8 @@ jobs:
       - name: Run Windows Python tests
         shell: pwsh
         run: |
-          uv sync --group dev
-          uv run pytest
+          uv sync --locked --group dev
+          uv run --locked pytest
       - name: Build application
         shell: pwsh
         run: ./scripts/build-windows-app.ps1
@@ -112,6 +115,15 @@ jobs:
           }
           if ($process.ExitCode -ne 0) {
             throw "Desktop executable smoke test failed with exit code $($process.ExitCode)"
+          }
+          & "dist/Service Console/Service Console MCP.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "MCP helper smoke test failed with exit code $LASTEXITCODE"
+          }
+          uv run --locked python scripts/smoke_test_mcp_helper.py `
+            "dist/Service Console/Service Console MCP.exe"
+          if ($LASTEXITCODE -ne 0) {
+            throw "MCP helper handshake failed with exit code $LASTEXITCODE"
           }
       - name: Package application
         shell: pwsh

@@ -26,22 +26,31 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { McpIntegrationCard } from "@/components/mcp-integration-card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import { formatBytes } from "@/lib/service-logic";
-import type { AppUpdateStatus, ResolvedTheme, ThemePreference } from "@/lib/types";
+import type { AppUpdateStatus, McpIntegrationStatus, ResolvedTheme, ThemePreference } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import type { AppUpdateOperation } from "@/hooks/use-app-update";
+import type { McpIntegrationOperation } from "@/hooks/use-mcp-integration";
 
 interface SettingsViewProps {
   preference: ThemePreference;
   resolvedTheme: ResolvedTheme;
   updateStatus: AppUpdateStatus | null;
   updateOperation: AppUpdateOperation | null;
+  mcpStatus: McpIntegrationStatus | null;
+  mcpOperation: McpIntegrationOperation | null;
   onPreferenceChange: (preference: ThemePreference) => void;
   onCheckForUpdates: () => void;
   onDownloadUpdate: () => void;
   onInstallUpdate: () => void;
+  onInstallMcp: () => void;
+  onRefreshMcp: () => void;
+  onTestMcp: () => void;
+  onCopyMcpConfig: (config: string) => void;
+  onRemoveMcp: () => void;
 }
 
 const themes = [
@@ -87,10 +96,17 @@ export function SettingsView({
   resolvedTheme,
   updateStatus,
   updateOperation,
+  mcpStatus,
+  mcpOperation,
   onPreferenceChange,
   onCheckForUpdates,
   onDownloadUpdate,
   onInstallUpdate,
+  onInstallMcp,
+  onRefreshMcp,
+  onTestMcp,
+  onCopyMcpConfig,
+  onRemoveMcp,
 }: SettingsViewProps) {
   const cloudConfigured = isSupabaseConfigured();
   const updateState = updateStatus?.state ?? "idle";
@@ -318,6 +334,16 @@ export function SettingsView({
             </div>
           </div>
         </section>
+
+        <McpIntegrationCard
+          status={mcpStatus}
+          operation={mcpOperation}
+          onInstall={onInstallMcp}
+          onRefresh={onRefreshMcp}
+          onTest={onTestMcp}
+          onCopyConfig={onCopyMcpConfig}
+          onRemove={onRemoveMcp}
+        />
 
         <section aria-labelledby="connectionHeading">
           <div className="mb-2">

@@ -21,15 +21,17 @@ if (-not $VersionMatch) {
 $Version = $VersionMatch.Matches[0].Groups[1].Value
 $IconPath = Join-Path $RootDir "assets/windows/ServiceConsole.ico"
 $ExecutablePath = Join-Path $RootDir "dist/Service Console/Service Console.exe"
+$McpHelperBuildPath = Join-Path $RootDir "dist/Service Console MCP.exe"
+$McpHelperAppPath = Join-Path $RootDir "dist/Service Console/Service Console MCP.exe"
 
 pnpm install --frozen-lockfile
 pnpm run build:web-assets
-uv sync --group icon
-uv run --group icon python (Join-Path $RootDir "scripts/build_windows_icon.py") `
+uv sync --locked --group icon
+uv run --locked --group icon python (Join-Path $RootDir "scripts/build_windows_icon.py") `
     (Join-Path $RootDir "assets/service-console-icon-1024.png") `
     $IconPath
-uv sync --group desktop
-uv run --group desktop pyinstaller `
+uv sync --locked --group desktop
+uv run --locked --group desktop pyinstaller `
     --noconfirm `
     --clean `
     --windowed `
@@ -42,8 +44,34 @@ uv run --group desktop pyinstaller `
     --hidden-import webview.platforms.edgechromium `
     (Join-Path $RootDir "src/service_console/desktop.py")
 
+uv run --locked --group desktop pyinstaller `
+    --noconfirm `
+    --clean `
+    --onefile `
+    --console `
+    --name "Service Console MCP" `
+    --paths (Join-Path $RootDir "src") `
+    --copy-metadata service-console `
+    --copy-metadata mcp `
+    --collect-data service_console `
+    (Join-Path $RootDir "src/service_console/mcp_server.py")
+
+if (-not (Test-Path $McpHelperBuildPath -PathType Leaf)) {
+    throw "PyInstaller did not create the expected MCP helper: $McpHelperBuildPath"
+}
+Copy-Item -Force $McpHelperBuildPath $McpHelperAppPath
+
 if (-not (Test-Path $ExecutablePath -PathType Leaf)) {
     throw "PyInstaller did not create the expected executable: $ExecutablePath"
+}
+
+& $McpHelperAppPath --help | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "MCP helper smoke test failed with exit code $LASTEXITCODE"
+}
+uv run --locked python (Join-Path $RootDir "scripts/smoke_test_mcp_helper.py") $McpHelperAppPath
+if ($LASTEXITCODE -ne 0) {
+    throw "MCP helper handshake failed with exit code $LASTEXITCODE"
 }
 
 Write-Host "`nCreated: $ExecutablePath (version $Version)"

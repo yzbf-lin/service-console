@@ -12,7 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { PortsView } from "@/components/ports-view";
+import { PortsView, type ProcessImportHint } from "@/components/ports-view";
 import { ServiceControlView } from "@/components/service-control-view";
 import { ServiceFormDialog, type ServiceFormMode } from "@/components/service-form-dialog";
 import { ServiceListPanel } from "@/components/service-list-panel";
@@ -22,16 +22,51 @@ import { ToastProvider, useToast } from "@/components/toast-provider";
 import { Topbar } from "@/components/topbar";
 import { useAppUpdate } from "@/hooks/use-app-update";
 import { useHashView } from "@/hooks/use-hash-view";
+import { useMcpIntegration } from "@/hooks/use-mcp-integration";
 import { useServices } from "@/hooks/use-services";
 import { useTheme } from "@/hooks/use-theme";
+import { ApiError } from "@/lib/api-client";
 import type {
-  NormalizedService,
   NormalizedProcessCandidate,
+  NormalizedService,
   ServiceAction,
   ServiceCreateInput,
   ServiceUpdateInput,
   ViewId,
 } from "@/lib/types";
+
+function isProcessPermissionError(error: unknown): boolean {
+  return error instanceof ApiError && (
+    error.status === 403
+    || (
+      error.status === 409
+      && /permission denied|access (?:is )?denied|权限|拒绝访问/i.test(error.message)
+    )
+  );
+}
+
+function permissionLimitedProcess(
+  process: ProcessImportHint,
+): NormalizedProcessCandidate {
+  return {
+    pid: process.pid,
+    parentPid: null,
+    createTime: null,
+    startedAt: null,
+    processName: process.processName || `进程 ${process.pid}`,
+    command: "",
+    cwd: "",
+    username: "—",
+    ports: process.ports,
+    suggestedName: process.processName || `service-${process.pid}`,
+    safeEnv: {},
+    restorable: false,
+    warnings: [
+      "当前权限不足，无法读取完整进程信息。请手动补全启动命令和工作目录，并确认配置后再保存。",
+    ],
+    managedService: null,
+  };
+}
 
 function ServiceConsoleContent() {
   const { notify } = useToast();
@@ -65,6 +100,11 @@ function ServiceConsoleContent() {
 
   const serviceState = useServices({ token, enabled: true, onError: showError });
   const appUpdate = useAppUpdate({ api: serviceState.api, onError: showError });
+  const mcpIntegration = useMcpIntegration({
+    api: serviceState.api,
+    onError: showError,
+    onSuccess: showSuccess,
+  });
   const latestVersion = appUpdate.status?.latest_version ?? null;
   const updateAvailable = Boolean(
     latestVersion
@@ -107,16 +147,13 @@ function ServiceConsoleContent() {
     setFormOpen(true);
   }, [cancelProcessImport]);
 
-  const openProcessForm = useCallback(async (pid: number) => {
+  const openProcessForm = useCallback(async (processHint: ProcessImportHint) => {
     const requestId = ++processImportRequestId.current;
     try {
-      const process = await serviceState.api.getProcess(pid);
+      const process = await serviceState.api.getProcess(processHint.pid);
       if (requestId !== processImportRequestId.current) return;
       if (process.managedService) {
         throw new Error(`该进程已由服务 ${process.managedService} 管理`);
-      }
-      if (!process.restorable) {
-        throw new Error(process.warnings[0] || "该进程缺少可恢复的启动命令或工作目录");
       }
       setFormMode("create");
       setFormSource(null);
@@ -124,6 +161,13 @@ function ServiceConsoleContent() {
       setFormOpen(true);
     } catch (error) {
       if (requestId !== processImportRequestId.current) return;
+      if (isProcessPermissionError(error)) {
+        setFormMode("create");
+        setFormSource(null);
+        setFormProcessSource(permissionLimitedProcess(processHint));
+        setFormOpen(true);
+        return;
+      }
       throw error;
     }
   }, [serviceState.api]);
@@ -137,6 +181,16 @@ function ServiceConsoleContent() {
     if (!nextOpen) cancelProcessImport();
     setFormOpen(nextOpen);
   }, [cancelProcessImport]);
+
+  const copyMcpConfig = useCallback(async (config: string) => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("当前系统未提供剪贴板写入能力");
+      await navigator.clipboard.writeText(config);
+      showSuccess("MCP 配置已复制", "可粘贴到 Codex 配置或终端中使用。");
+    } catch (error) {
+      showError("复制 MCP 配置失败", error instanceof Error ? error.message : String(error));
+    }
+  }, [showError, showSuccess]);
 
   const handleServiceAction = useCallback(async (name: string, action: ServiceAction) => {
     const service = serviceState.services.find((candidate) => candidate.name === name);
@@ -225,10 +279,17 @@ function ServiceConsoleContent() {
         resolvedTheme={resolvedTheme}
         updateStatus={appUpdate.status}
         updateOperation={appUpdate.operation}
+        mcpStatus={mcpIntegration.status}
+        mcpOperation={mcpIntegration.operation}
         onPreferenceChange={(nextPreference) => void setPreference(nextPreference)}
         onCheckForUpdates={() => void appUpdate.checkForUpdates()}
         onDownloadUpdate={() => void appUpdate.downloadUpdate()}
         onInstallUpdate={() => void appUpdate.installUpdate()}
+        onInstallMcp={() => void mcpIntegration.install()}
+        onRefreshMcp={() => void mcpIntegration.refreshStatus()}
+        onTestMcp={() => void mcpIntegration.testConnection()}
+        onCopyMcpConfig={(config) => void copyMcpConfig(config)}
+        onRemoveMcp={() => void mcpIntegration.remove()}
       />
     );
   } else {
