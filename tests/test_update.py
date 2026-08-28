@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import stat
 import zipfile
 from pathlib import Path
@@ -525,7 +526,8 @@ def test_macos_helper_command_preserves_restart_arguments(
     assert command[:2] == ["/bin/sh", str(helper_path)]
     assert update_module.decode_restart_arguments(command[-1]) == arguments
     assert kwargs["start_new_session"] is True
-    assert helper_path.stat().st_mode & stat.S_IXUSR
+    if os.name != "nt":
+        assert helper_path.stat().st_mode & stat.S_IXUSR
 
 
 def test_windows_helper_command_preserves_restart_arguments(
