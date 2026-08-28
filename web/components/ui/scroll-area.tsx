@@ -38,7 +38,7 @@ const ScrollArea = React.forwardRef<
         tabIndex={0}
         {...viewportProps}
         className={cn(
-          "size-full rounded-[inherit] outline-none transition-[color,box-shadow] focus-visible:ring-2 focus-visible:ring-ring/50",
+          "size-full rounded-[inherit] outline-none transition-[color,box-shadow] focus-visible:ring-2 focus-visible:ring-ring/80",
           viewportClassName,
         )}
       >

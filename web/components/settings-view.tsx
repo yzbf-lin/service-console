@@ -3,9 +3,7 @@
 import { Check, Cloud, Monitor, Moon, Sun } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Separator } from "@/components/ui/separator";
 import { isSupabaseConfigured } from "@/lib/supabase";
 import type { ResolvedTheme, ThemePreference } from "@/lib/types";
 import { cn } from "@/lib/cn";
@@ -26,76 +24,78 @@ export function SettingsView({ preference, resolvedTheme, onPreferenceChange }: 
   const cloudConfigured = isSupabaseConfigured();
 
   return (
-    <main id="settingsView" className="no-visible-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto p-3 sm:p-5" aria-labelledby="settingsHeading">
-      <div className="mx-auto w-full max-w-3xl space-y-3">
-        <div className="mb-5">
-          <span className="text-[9px] font-bold tracking-[0.12em] text-primary uppercase">控制台偏好</span>
-          <h2 id="settingsHeading" className="mt-1 text-lg font-bold tracking-tight">设置</h2>
-          <p className="mt-1 text-xs text-muted-foreground">调整 Service Console 的显示和可选云端连接。</p>
+    <main id="settingsView" className="no-visible-scrollbar min-h-0 min-w-0 flex-1 overflow-y-auto bg-background" aria-labelledby="settingsHeading">
+      <header className="flex min-h-16 items-center border-b bg-card/75 px-5">
+        <div>
+          <h2 id="settingsHeading" className="text-[14px] font-semibold tracking-tight">设置</h2>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">调整本机工作台的外观与可选连接。</p>
         </div>
+      </header>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm">外观</CardTitle>
-            <CardDescription className="text-xs">主题偏好会保存在本机，应用重启后仍然生效。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <RadioGroup
-              className="grid grid-cols-3 gap-2 max-[620px]:grid-cols-1"
-              value={preference}
-              aria-label="主题偏好"
-              onValueChange={(value) => onPreferenceChange(value as ThemePreference)}
-            >
-              {themes.map(({ value, label, description, icon: Icon }) => {
-                const selected = preference === value;
-                return (
-                  <label
-                    key={value}
-                    className={cn(
-                      "relative flex min-h-24 cursor-pointer flex-col rounded-lg border bg-background p-3 outline-none transition-colors hover:bg-accent/45",
-                      selected && "border-primary bg-accent/55 ring-1 ring-primary/20",
-                    )}
-                  >
-                    <RadioGroupItem className="sr-only" value={value} />
-                    <div className="flex items-center justify-between">
-                      <span className={cn("grid size-8 place-items-center rounded-md bg-secondary text-muted-foreground", selected && "bg-primary text-primary-foreground")}>
-                        <Icon className="size-4" aria-hidden="true" />
-                      </span>
-                      {selected ? <span className="grid size-5 place-items-center rounded-full bg-primary text-primary-foreground"><Check className="size-3" /></span> : null}
-                    </div>
-                    <strong className="mt-2 text-xs">{label}</strong>
-                    <small className="mt-0.5 text-[10px] text-muted-foreground">{description}</small>
-                  </label>
-                );
-              })}
-            </RadioGroup>
-            <p className="mt-3 text-[10px] text-muted-foreground" aria-live="polite">
-              当前实际使用：{resolvedTheme === "dark" ? "深色主题" : "浅色主题"}
-            </p>
-          </CardContent>
-        </Card>
+      <div className="mx-auto w-full max-w-3xl space-y-6 px-5 py-6 max-[620px]:px-3 max-[620px]:py-4">
+        <section aria-labelledby="appearanceHeading">
+          <div className="mb-2">
+            <h3 id="appearanceHeading" className="text-[12px] font-semibold">外观</h3>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">主题偏好保存在本机，重新打开应用后仍然生效。</p>
+          </div>
 
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <CardTitle className="text-sm">Supabase 云端连接</CardTitle>
-                <CardDescription className="mt-1 text-xs">可选的远程认证与状态同步适配器，不影响本机离线控制。</CardDescription>
+          <RadioGroup
+            className="divide-y overflow-hidden rounded-lg border bg-card"
+            value={preference}
+            aria-label="主题偏好"
+            onValueChange={(value) => onPreferenceChange(value as ThemePreference)}
+          >
+            {themes.map(({ value, label, description, icon: Icon }) => {
+              const selected = preference === value;
+              return (
+                <label
+                  key={value}
+                  className={cn(
+                    "relative flex min-h-14 cursor-pointer items-center gap-3 px-3 py-2 outline-none transition-colors hover:bg-accent/45 focus-within:z-[1] focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring/80",
+                    selected && "bg-accent/65",
+                  )}
+                >
+                  <RadioGroupItem className="sr-only" value={value} />
+                  <span className={cn("grid size-8 shrink-0 place-items-center rounded-lg bg-secondary text-muted-foreground", selected && "bg-primary text-primary-foreground")}>
+                    <Icon className="size-4" aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <strong className="block text-[12px] font-medium">{label}</strong>
+                    <small className="mt-0.5 block text-[10px] text-muted-foreground">{description}</small>
+                  </span>
+                  <span className={cn("grid size-5 shrink-0 place-items-center rounded-full border text-transparent", selected && "border-primary bg-primary text-primary-foreground")}>
+                    <Check className="size-3" />
+                  </span>
+                </label>
+              );
+            })}
+          </RadioGroup>
+          <p className="mt-2 text-[10px] text-muted-foreground" aria-live="polite">
+            当前实际使用：{resolvedTheme === "dark" ? "深色主题" : "浅色主题"}
+          </p>
+        </section>
+
+        <section aria-labelledby="connectionHeading">
+          <div className="mb-2">
+            <h3 id="connectionHeading" className="text-[12px] font-semibold">远程连接</h3>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">可选适配器不会影响本机离线控制。</p>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border bg-card">
+            <div className="flex items-start gap-3 px-3 py-3">
+              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-secondary text-muted-foreground"><Cloud className="size-4" aria-hidden="true" /></span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-3">
+                  <strong className="text-[12px] font-medium">Supabase 云端连接</strong>
+                  <Badge className="rounded-md px-1.5 py-0.5 text-[9px]" variant={cloudConfigured ? "success" : "secondary"}>{cloudConfigured ? "已配置" : "未配置"}</Badge>
+                </div>
+                <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                  本机的启动、停止、日志和端口操作始终直接连接 FastAPI 控制器。构建时提供 Supabase URL 和匿名密钥后，才启用远程认证与状态同步。
+                </p>
               </div>
-              <Badge variant={cloudConfigured ? "success" : "secondary"}>{cloudConfigured ? "已配置" : "未配置"}</Badge>
             </div>
-          </CardHeader>
-          <Separator />
-          <CardContent className="flex items-start gap-3 pt-4">
-            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-secondary text-muted-foreground"><Cloud className="size-4" aria-hidden="true" /></span>
-            <div>
-              <strong className="text-xs">本机控制始终直接连接 Service Console</strong>
-              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-                Supabase 仅在构建时提供 NEXT_PUBLIC_SUPABASE_URL 和 NEXT_PUBLIC_SUPABASE_ANON_KEY 后启用。启动、停止、日志和端口操作仍由本机 FastAPI 守护进程执行。
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+          </div>
+        </section>
       </div>
     </main>
   );

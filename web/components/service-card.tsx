@@ -1,15 +1,9 @@
 "use client";
 
-import { Copy, Pencil, Play, RotateCw, Square, Trash2 } from "lucide-react";
-
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { ServiceActionsMenu } from "@/components/service-actions";
 import {
-  currentUptime,
   formatBytes,
-  formatDuration,
   formatPercent,
-  getServiceActionDisabled,
   statusLabel,
 } from "@/lib/service-logic";
 import type { NormalizedService, ServiceAction } from "@/lib/types";
@@ -24,129 +18,71 @@ interface ServiceCardProps {
 }
 
 const statusClasses: Record<NormalizedService["status"], string> = {
-  RUNNING: "bg-success shadow-[0_0_0_3px_color-mix(in_srgb,var(--success)_14%,transparent)]",
+  RUNNING: "bg-success",
   STARTING: "bg-warning animate-pulse",
   STOPPING: "bg-warning animate-pulse",
   FAILED: "bg-destructive",
   EXITED: "bg-violet-500",
-  STOPPED: "bg-muted-foreground",
-  UNKNOWN: "bg-muted-foreground",
+  STOPPED: "bg-muted-foreground/65",
+  UNKNOWN: "bg-muted-foreground/65",
 };
 
-function statusTone(status: NormalizedService["status"]) {
-  if (status === "RUNNING") return "success" as const;
-  if (status === "FAILED") return "destructive" as const;
-  if (status === "STARTING" || status === "STOPPING") return "warning" as const;
-  return "secondary" as const;
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <span className="inline-flex min-w-0 items-baseline gap-1">
-      <span className="text-[8px] font-bold tracking-wide text-muted-foreground uppercase">{label}</span>
-      <span className="truncate font-mono text-[10px] font-semibold">{value}</span>
-    </span>
-  );
+function statusTextClass(status: NormalizedService["status"]) {
+  if (status === "RUNNING") return "text-success";
+  if (status === "FAILED") return "text-destructive";
+  if (status === "STARTING" || status === "STOPPING") return "text-warning";
+  return "text-muted-foreground";
 }
 
 export function ServiceCard({ service, selected, busy, onSelect, onAction }: ServiceCardProps) {
-  const disabled = getServiceActionDisabled(service.status, busy);
   const memory = service.memoryBytes !== null
     ? formatBytes(service.memoryBytes)
     : formatPercent(service.memoryPercent);
 
-  const action = (name: ServiceAction) => (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    if (!disabled[name]) onAction(name);
-  };
-
-  const compactButton = "h-7 min-w-0 flex-1 gap-1 px-1.5 text-[9px] disabled:border-border disabled:bg-muted disabled:text-muted-foreground disabled:opacity-60";
-  const iconButton = "size-7 shrink-0 disabled:border-border disabled:bg-muted disabled:text-muted-foreground disabled:opacity-60";
-
   return (
     <article
       className={cn(
-        "group relative cursor-pointer rounded-lg border bg-card p-2 outline-none transition-colors",
-        "hover:border-input hover:bg-accent/35 focus-visible:ring-2 focus-visible:ring-ring/40",
-        selected && "border-primary bg-accent/55 shadow-[inset_3px_0_0_var(--primary),0_0_0_1px_color-mix(in_srgb,var(--primary)_8%,transparent)]",
+        "group relative border-b border-border/70",
+        selected && "bg-accent/75",
       )}
       data-service={service.name}
-      tabIndex={0}
-      role="button"
-      aria-pressed={selected}
-      aria-label={`${service.name}，${statusLabel(service.status)}`}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        const target = event.target instanceof Element ? event.target : null;
-        if (["Enter", " "].includes(event.key) && !target?.closest("button")) {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className={cn("size-2.5 shrink-0 rounded-full", statusClasses[service.status])} aria-hidden="true" />
-          <strong className="truncate text-xs font-bold" title={service.name}>{service.name}</strong>
-        </div>
-        <Badge variant={statusTone(service.status)} className="shrink-0 px-1.5 py-0.5 text-[8px] uppercase">
-          {busy ? "处理中" : statusLabel(service.status)}
-        </Badge>
-      </div>
+      <button
+        className={cn(
+          "relative flex min-h-[68px] w-full min-w-0 flex-col justify-center gap-1 px-3 py-2 pr-10 text-left outline-none transition-colors",
+          "hover:bg-accent/45 focus-visible:z-[1] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/80",
+          "before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-r-full before:bg-transparent",
+          selected && "before:bg-primary",
+        )}
+        type="button"
+        data-service-select={service.name}
+        aria-pressed={selected}
+        aria-label={`${service.name}，${statusLabel(service.status)}`}
+        onClick={onSelect}
+      >
+        <span className="flex w-full min-w-0 items-center gap-2">
+          <span className={cn("size-2 shrink-0 rounded-full", statusClasses[service.status])} aria-hidden="true" />
+          <strong className="min-w-0 flex-1 truncate text-[12px] font-semibold" title={service.name}>{service.name}</strong>
+          <span className={cn("shrink-0 text-[10px] font-medium", statusTextClass(service.status))}>
+            {busy ? "处理中" : statusLabel(service.status)}
+          </span>
+        </span>
 
-      <p className="mt-1.5 truncate font-mono text-[10px] text-secondary-foreground" title={service.command}>{service.command}</p>
-      <p className="mt-0.5 truncate text-[9px] text-muted-foreground" title={service.cwd}>{service.cwd}</p>
+        <span className="block w-full truncate pl-4 font-mono text-[10px] text-secondary-foreground/85" title={service.command}>
+          {service.command}
+        </span>
 
-      <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 border-t pt-1.5">
-        <Metric label="PID" value={service.pid === null ? "—" : String(service.pid)} />
-        <Metric label="运行" value={formatDuration(currentUptime(service))} />
-        <Metric label="CPU" value={formatPercent(service.cpuPercent)} />
-        <Metric label="内存" value={memory} />
-      </div>
+        <span className="flex w-full min-w-0 items-center gap-2 pl-4 text-[10px] text-muted-foreground">
+          <span className="font-mono">PID {service.pid ?? "—"}</span>
+          <span aria-hidden="true">·</span>
+          <span>CPU {formatPercent(service.cpuPercent)}</span>
+          <span aria-hidden="true">·</span>
+          <span className="truncate">{memory}</span>
+        </span>
+      </button>
 
-      <div className="mt-1.5 flex items-center gap-1 border-t pt-1.5">
-        <div className="flex min-w-0 flex-1 gap-1">
-          <Button
-            className={cn(compactButton, !disabled.start && "border-success/55 text-success hover:bg-success/10 hover:text-success")}
-            variant="outline"
-            size="sm"
-            disabled={disabled.start}
-            aria-disabled={disabled.start}
-            data-action="start"
-            onClick={action("start")}
-          >
-            <Play className="size-3" />
-            启动
-          </Button>
-          <Button
-            className={cn(compactButton, !disabled.stop && "border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive")}
-            variant="outline"
-            size="sm"
-            disabled={disabled.stop}
-            aria-disabled={disabled.stop}
-            data-action="stop"
-            onClick={action("stop")}
-          >
-            <Square className="size-3" />
-            停止
-          </Button>
-          <Button
-            className={cn(compactButton, !disabled.restart && "border-primary/50 text-primary hover:bg-primary/10 hover:text-primary")}
-            variant="outline"
-            size="sm"
-            disabled={disabled.restart}
-            aria-disabled={disabled.restart}
-            data-action="restart"
-            onClick={action("restart")}
-          >
-            <RotateCw className="size-3" />
-            重启
-          </Button>
-        </div>
-
-        <Button className={iconButton} variant="outline" size="icon-sm" disabled={disabled.edit} aria-disabled={disabled.edit} data-action="edit" aria-label="编辑服务" title="编辑服务" onClick={action("edit")}><Pencil className="size-3" /></Button>
-        <Button className={iconButton} variant="outline" size="icon-sm" disabled={disabled.copy} aria-disabled={disabled.copy} data-action="copy" aria-label="复制服务" title="复制服务" onClick={action("copy")}><Copy className="size-3" /></Button>
-        <Button className={cn(iconButton, !disabled.delete && "text-destructive")} variant="outline" size="icon-sm" disabled={disabled.delete} aria-disabled={disabled.delete} data-action="delete" aria-label="删除服务" title="删除服务" onClick={action("delete")}><Trash2 className="size-3" /></Button>
+      <div className="absolute top-1.5 right-1.5 opacity-65 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        <ServiceActionsMenu service={service} busy={busy} onAction={onAction} />
       </div>
     </article>
   );

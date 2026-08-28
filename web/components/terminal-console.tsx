@@ -5,11 +5,18 @@ import type { Terminal } from "@xterm/xterm";
 import { ChevronDown, ChevronUp, CircleAlert, RotateCw, Search, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Badge } from "@/components/ui/badge";
+import { ServiceLifecycleToolbar } from "@/components/service-actions";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { formatTerminalEntry, statusLabel } from "@/lib/service-logic";
-import type { NormalizedLogEntry, NormalizedService, ResolvedTheme } from "@/lib/types";
+import {
+  currentUptime,
+  formatBytes,
+  formatDuration,
+  formatPercent,
+  formatTerminalEntry,
+  statusLabel,
+} from "@/lib/service-logic";
+import type { NormalizedLogEntry, NormalizedService, ResolvedTheme, ServiceAction } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
 const terminalThemes = {
@@ -49,23 +56,27 @@ function logKey(entry: NormalizedLogEntry) {
   return `${entry.timestamp ?? ""}\u0000${entry.stream}\u0000${entry.message}`;
 }
 
-function statusTone(status: NormalizedService["status"]) {
-  if (status === "RUNNING") return "success" as const;
-  if (status === "FAILED") return "destructive" as const;
-  if (status === "STARTING" || status === "STOPPING") return "warning" as const;
-  return "secondary" as const;
-}
-
 interface TerminalConsoleProps {
   service: NormalizedService | null;
   logs: NormalizedLogEntry[];
   logRevision: number;
   theme: ResolvedTheme;
   active: boolean;
+  busy: boolean;
+  onAction: (action: ServiceAction) => void;
   onClear: () => void;
 }
 
-export function TerminalConsole({ service, logs, logRevision, theme, active, onClear }: TerminalConsoleProps) {
+export function TerminalConsole({
+  service,
+  logs,
+  logRevision,
+  theme,
+  active,
+  busy,
+  onAction,
+  onClear,
+}: TerminalConsoleProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
@@ -253,33 +264,44 @@ export function TerminalConsole({ service, logs, logRevision, theme, active, onC
   const command = service?.command ?? "从左侧选择一个服务查看输出";
   const title = service?.name ?? "实时日志";
   const status = service ? statusLabel(service.status) : "未选择";
+  const memory = service
+    ? service.memoryBytes !== null ? formatBytes(service.memoryBytes) : formatPercent(service.memoryPercent)
+    : "—";
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card shadow-[var(--shadow-panel)]" aria-labelledby="consoleTitle">
-      <header className="flex min-h-[54px] shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className={cn("size-2.5 shrink-0 rounded-full bg-muted-foreground", service?.status === "RUNNING" && "bg-success", service?.status === "FAILED" && "bg-destructive", ["STARTING", "STOPPING"].includes(service?.status ?? "") && "bg-warning animate-pulse")} aria-hidden="true" />
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 id="consoleTitle" className="truncate text-sm font-bold">{title}</h2>
-              <Badge variant={statusTone(service?.status ?? "UNKNOWN")} className="shrink-0 text-[9px] uppercase">{status}</Badge>
-            </div>
-            <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground" title={command}>{command}</p>
+    <section className="service-terminal flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-card" aria-labelledby="consoleTitle">
+      <header className="flex min-h-[58px] shrink-0 items-center justify-between gap-3 border-b px-3 py-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className={cn("size-2 shrink-0 rounded-full bg-muted-foreground", service?.status === "RUNNING" && "bg-success", service?.status === "FAILED" && "bg-destructive", ["STARTING", "STOPPING"].includes(service?.status ?? "") && "bg-warning animate-pulse")} aria-hidden="true" />
+            <h2 id="consoleTitle" className="truncate text-[13px] font-semibold">{title}</h2>
+            <span className="shrink-0 text-[10px] text-muted-foreground">{busy ? "处理中" : status}</span>
+          </div>
+          <div className="mt-1 flex min-w-0 items-center gap-2 pl-4 text-[10px] text-muted-foreground">
+            <code className="min-w-0 flex-1 truncate font-mono text-secondary-foreground/80" title={command}>{command}</code>
+            {service ? (
+              <span className="flex shrink-0 items-center gap-1.5 max-[960px]:hidden">
+                <span>PID {service.pid ?? "—"}</span><span aria-hidden="true">·</span>
+                <span>{formatDuration(currentUptime(service))}</span><span aria-hidden="true">·</span>
+                <span>CPU {formatPercent(service.cpuPercent)}</span><span aria-hidden="true">·</span>
+                <span>{memory}</span>
+              </span>
+            ) : null}
           </div>
         </div>
 
         <div className="flex shrink-0 items-center gap-1">
-          <label className="mr-1 flex items-center gap-1.5 text-[11px] text-muted-foreground max-[920px]:hidden">
+          {service ? <ServiceLifecycleToolbar service={service} busy={busy} onAction={onAction} /> : null}
+          {service ? <span className="mx-0.5 h-5 w-px bg-border" aria-hidden="true" /> : null}
+          <label className="mr-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground max-[720px]:hidden">
             <Switch checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="自动滚动" />
-            自动滚动
+            <span className="max-[1080px]:sr-only">自动滚动</span>
           </label>
-          <Button variant="ghost" size="sm" disabled={!service || !ready} onClick={() => setSearchOpen(true)}>
+          <Button className="size-7 rounded-md p-0 shadow-none" variant="ghost" size="icon-sm" title="搜索日志 (⌘F)" aria-label="搜索日志" disabled={!service || !ready} onClick={() => setSearchOpen(true)}>
             <Search className="size-3.5" />
-            <span className="max-[920px]:sr-only">搜索</span>
           </Button>
-          <Button variant="ghost" size="sm" disabled={!service} onClick={onClear}>
+          <Button className="size-7 rounded-md p-0 shadow-none" variant="ghost" size="icon-sm" title="清空当前视图" aria-label="清空当前视图" disabled={!service} onClick={onClear}>
             <Trash2 className="size-3.5" />
-            <span className="max-[920px]:sr-only">清屏</span>
           </Button>
         </div>
       </header>

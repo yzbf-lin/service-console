@@ -27,47 +27,50 @@ function serviceFixture(status: ServiceState): NormalizedService {
   };
 }
 
-describe("ServiceCard lifecycle actions", () => {
-  it("renders Start as a native disabled button while the service is RUNNING", () => {
-    const onAction = vi.fn();
+describe("ServiceCard", () => {
+  it("uses a dedicated native button to select the service", () => {
+    const onSelect = vi.fn();
     render(
+      <ServiceCard
+        service={serviceFixture("RUNNING")}
+        selected={false}
+        busy={false}
+        onSelect={onSelect}
+        onAction={vi.fn()}
+      />,
+    );
+
+    const selectButton = screen.getByRole("button", { name: /^pd-qa-backend，/ });
+    expect(selectButton).toBeInstanceOf(HTMLButtonElement);
+    expect(selectButton.getAttribute("data-service-select")).toBe("pd-qa-backend");
+    expect(selectButton.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(selectButton);
+    expect(onSelect).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the selection button and actions menu as sibling interactions", () => {
+    const onSelect = vi.fn();
+    const { container } = render(
       <ServiceCard
         service={serviceFixture("RUNNING")}
         selected
         busy={false}
-        onSelect={vi.fn()}
-        onAction={onAction}
+        onSelect={onSelect}
+        onAction={vi.fn()}
       />,
     );
 
-    const startButton = screen.getByRole("button", { name: "启动" }) as HTMLButtonElement;
-    expect(startButton.disabled).toBe(true);
-    expect(startButton.hasAttribute("disabled")).toBe(true);
-    expect(startButton.getAttribute("aria-disabled")).toBe("true");
+    const article = container.querySelector<HTMLElement>('[data-service="pd-qa-backend"]');
+    const selectButton = screen.getByRole("button", { name: /^pd-qa-backend，/ });
+    const menuButton = screen.getByRole("button", { name: "打开 pd-qa-backend 操作菜单" });
 
-    fireEvent.click(startButton);
-    expect(onAction).not.toHaveBeenCalled();
-  });
+    expect(article).not.toBeNull();
+    expect(selectButton.getAttribute("aria-pressed")).toBe("true");
+    expect(selectButton.contains(menuButton)).toBe(false);
+    expect(article?.querySelector("button button")).toBeNull();
 
-  it("enables Start for a STOPPED service and dispatches the start action", () => {
-    const onAction = vi.fn();
-    render(
-      <ServiceCard
-        service={serviceFixture("STOPPED")}
-        selected={false}
-        busy={false}
-        onSelect={vi.fn()}
-        onAction={onAction}
-      />,
-    );
-
-    const startButton = screen.getByRole("button", { name: "启动" }) as HTMLButtonElement;
-    expect(startButton.disabled).toBe(false);
-    expect(startButton.hasAttribute("disabled")).toBe(false);
-    expect(startButton.getAttribute("aria-disabled")).toBe("false");
-
-    fireEvent.click(startButton);
-    expect(onAction).toHaveBeenCalledOnce();
-    expect(onAction).toHaveBeenCalledWith("start");
+    fireEvent.click(menuButton);
+    expect(onSelect).not.toHaveBeenCalled();
   });
 });

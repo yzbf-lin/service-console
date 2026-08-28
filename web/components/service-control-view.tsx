@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { ServiceInspector } from "@/components/service-inspector";
 import { ServiceListPanel } from "@/components/service-list-panel";
 import { TerminalConsole } from "@/components/terminal-console";
 import type {
@@ -42,8 +43,8 @@ export function ServiceControlView({
   onAction,
   onClearLogs,
 }: ServiceControlViewProps) {
-  const [filter, setFilter] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const selectedBusy = selectedService ? busyServices.has(selectedService.name) : false;
 
   useEffect(() => {
     const desktop = window.matchMedia("(min-width: 768px)");
@@ -79,17 +80,6 @@ export function ServiceControlView({
         <span className="flex items-center gap-1 text-[10px] text-muted-foreground"><ListFilter className="size-3.5" />服务列表<ChevronRight className="size-3.5" /></span>
       </Button>
 
-      <ServiceListPanel
-        className="max-[767px]:hidden"
-        services={services}
-        selectedName={selectedName}
-        busyServices={busyServices}
-        filter={filter}
-        onFilterChange={setFilter}
-        onSelect={onSelect}
-        onAction={onAction}
-      />
-
       <TerminalConsole
         service={selectedService}
         logs={logs}
@@ -97,6 +87,18 @@ export function ServiceControlView({
         theme={theme}
         active={active}
         onClear={onClearLogs}
+        busy={selectedBusy}
+        onAction={(action) => {
+          if (selectedService) onAction(selectedService.name, action);
+        }}
+      />
+
+      <ServiceInspector
+        service={selectedService}
+        busy={selectedBusy}
+        onAction={(action) => {
+          if (selectedService) onAction(selectedService.name, action);
+        }}
       />
 
       <Dialog open={drawerOpen} onOpenChange={setDrawerOpen}>
@@ -107,12 +109,11 @@ export function ServiceControlView({
           <DialogTitle className="sr-only">服务列表</DialogTitle>
           <DialogDescription className="sr-only">选择服务并查看运行状态或执行操作</DialogDescription>
           <ServiceListPanel
-            className="h-full rounded-none border-0 shadow-none"
+            className="h-full"
+            variant="drawer"
             services={services}
             selectedName={selectedName}
             busyServices={busyServices}
-            filter={filter}
-            onFilterChange={setFilter}
             onSelect={selectFromDrawer}
             onAction={onAction}
           />

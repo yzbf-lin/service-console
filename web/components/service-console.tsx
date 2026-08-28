@@ -15,6 +15,7 @@ import {
 import { PortsView } from "@/components/ports-view";
 import { ServiceControlView } from "@/components/service-control-view";
 import { ServiceFormDialog, type ServiceFormMode } from "@/components/service-form-dialog";
+import { ServiceListPanel } from "@/components/service-list-panel";
 import { SettingsView } from "@/components/settings-view";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { ToastProvider, useToast } from "@/components/toast-provider";
@@ -78,11 +79,11 @@ function ServiceConsoleContent() {
     try {
       await serviceState.runAction(name, action);
       const label = action === "start" ? "启动" : action === "stop" ? "停止" : "重启";
-      showSuccess(`${label}指令已执行`, name);
+      notify(`${label}操作已提交`, `${name} 的最终状态会通过实时连接更新`, "info");
     } catch (error) {
       showError("服务操作失败", error instanceof Error ? error.message : String(error));
     }
-  }, [openForm, serviceState, showError, showSuccess]);
+  }, [notify, openForm, serviceState, showError]);
 
   const submitServiceForm = useCallback(async (input: ServiceCreateInput | ServiceUpdateInput) => {
     setFormSubmitting(true);
@@ -127,6 +128,10 @@ function ServiceConsoleContent() {
   }, [activeView, serviceState]);
 
   const existingNames = useMemo(() => serviceState.services.map((service) => service.name), [serviceState.services]);
+  const runningCount = useMemo(
+    () => serviceState.services.filter((service) => service.status === "RUNNING").length,
+    [serviceState.services],
+  );
 
   let content;
   if (activeView === "ports") {
@@ -169,20 +174,33 @@ function ServiceConsoleContent() {
   }
 
   return (
-    <div className="service-console-shell">
+    <div className="service-console-shell" data-view={activeView}>
       <Topbar
         activeView={activeView}
         apiStatus={serviceState.apiStatus}
         socketStatus={serviceState.socketStatus}
         resolvedTheme={resolvedTheme}
         refreshing={refreshing}
+        runningCount={runningCount}
+        serviceCount={serviceState.services.length}
+        selectedServiceName={serviceState.selectedService?.name ?? null}
         onRefresh={() => void refresh()}
         onAddService={() => openForm("create")}
         onToggleTheme={toggleTheme}
       />
 
-      <div className="service-console-body">
-        <SidebarNav activeView={activeView} onViewChange={setActiveView} />
+      <div className="service-console-body" data-view={activeView}>
+        <SidebarNav activeView={activeView} onViewChange={setActiveView}>
+          {activeView === "services" ? (
+            <ServiceListPanel
+              services={serviceState.services}
+              selectedName={serviceState.selectedName}
+              busyServices={serviceState.busyServices}
+              onSelect={serviceState.selectService}
+              onAction={(name, action) => void handleServiceAction(name, action)}
+            />
+          ) : null}
+        </SidebarNav>
         <div className="service-console-stage">{content}</div>
       </div>
 

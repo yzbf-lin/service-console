@@ -12,6 +12,9 @@ interface TopbarProps {
   socketStatus: ConnectionState;
   resolvedTheme: "light" | "dark";
   refreshing: boolean;
+  runningCount: number;
+  serviceCount: number;
+  selectedServiceName: string | null;
   onRefresh: () => void;
   onAddService: () => void;
   onToggleTheme: () => void;
@@ -23,25 +26,30 @@ const connectionCopy: Record<ConnectionState, { api: string; socket: string }> =
   error: { api: "API 不可用", socket: "实时已断开" },
 };
 
-function StatusChip({ kind, state }: { kind: "api" | "socket"; state: ConnectionState }) {
+const viewCopy: Record<ViewId, { title: string; description: string }> = {
+  services: { title: "服务控制", description: "进程与实时日志" },
+  ports: { title: "端口进程", description: "监听端口与占用进程" },
+  settings: { title: "设置", description: "外观与连接偏好" },
+};
+
+function ConnectionItem({ kind, state }: { kind: "api" | "socket"; state: ConnectionState }) {
+  const label = kind === "api" ? "API" : "实时";
   return (
     <span
-      className={cn(
-        "inline-flex min-h-6 items-center gap-1.5 rounded-full border bg-secondary px-2 text-[11px] font-semibold text-secondary-foreground",
-        state === "ok" && "border-success/50 bg-success/10 text-success",
-        state === "error" && "border-destructive/50 bg-destructive/10 text-destructive",
-      )}
+      className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground"
       data-state={state}
+      title={connectionCopy[state][kind]}
     >
       <span
         className={cn(
-          "size-2 rounded-full bg-warning",
-          state === "ok" && "bg-success shadow-[0_0_0_3px_color-mix(in_srgb,var(--success)_16%,transparent)]",
+          "size-1.5 rounded-full bg-warning",
+          state === "ok" && "bg-success",
           state === "error" && "bg-destructive",
         )}
         aria-hidden="true"
       />
-      {connectionCopy[state][kind]}
+      {label}
+      <span className="sr-only">：{connectionCopy[state][kind]}</span>
     </span>
   );
 }
@@ -52,32 +60,45 @@ export function Topbar({
   socketStatus,
   resolvedTheme,
   refreshing,
+  runningCount,
+  serviceCount,
+  selectedServiceName,
   onRefresh,
   onAddService,
   onToggleTheme,
 }: TopbarProps) {
+  const context = viewCopy[activeView];
+  const detail = activeView === "services"
+    ? selectedServiceName ?? `${runningCount}/${serviceCount} 运行中`
+    : context.description;
+
   return (
-    <header className="z-40 grid h-14 min-h-14 grid-cols-[minmax(180px,1fr)_auto_minmax(180px,1fr)] items-center gap-3 border-b bg-card/90 px-3 backdrop-blur-xl max-[767px]:grid-cols-[1fr_auto] max-[767px]:px-2.5">
-      <div className="flex min-w-0 items-center gap-2" aria-label="Service Console">
-        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground shadow-md shadow-primary/20">
-          <TerminalSquare className="size-5" strokeWidth={1.8} aria-hidden="true" />
+    <header className="service-topbar z-40 grid h-12 min-h-12 items-center border-b bg-[var(--toolbar)]">
+      <div className="flex h-full min-w-0 items-center gap-2 border-r px-3" aria-label="Service Console">
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
+          <TerminalSquare className="size-4" strokeWidth={1.8} aria-hidden="true" />
         </span>
         <div className="min-w-0">
-          <h1 className="truncate text-sm font-bold tracking-tight">Service Console</h1>
-          <p className="truncate text-[10px] text-muted-foreground max-[767px]:hidden">本地进程控制台</p>
+          <h1 className="truncate text-[13px] font-semibold tracking-tight">Service Console</h1>
+          <p className="truncate text-[9px] text-muted-foreground max-[767px]:hidden">本地进程工作台</p>
         </div>
       </div>
 
-      <div className="flex items-center justify-center gap-2 max-[767px]:hidden" aria-label="连接状态" aria-live="polite">
-        <StatusChip kind="api" state={apiStatus} />
-        <StatusChip kind="socket" state={socketStatus} />
+      <div className="flex min-w-0 items-center gap-2 px-3 max-[767px]:hidden">
+        <h2 className="shrink-0 text-[12px] font-semibold">{context.title}</h2>
+        <span className="text-border" aria-hidden="true">/</span>
+        <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">{detail}</span>
+        <div className="flex shrink-0 items-center gap-3 border-l pl-3" aria-label="连接状态" aria-live="polite">
+          <ConnectionItem kind="api" state={apiStatus} />
+          <ConnectionItem kind="socket" state={socketStatus} />
+        </div>
       </div>
 
-      <div className="flex items-center justify-end gap-1.5">
+      <div className="flex items-center justify-end gap-1 px-2.5">
         <Button
           variant="ghost"
-          size="icon"
-          className="size-8"
+          size="icon-sm"
+          className="size-8 rounded-lg shadow-none"
           type="button"
           aria-label={resolvedTheme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
           title={resolvedTheme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
@@ -88,21 +109,22 @@ export function Topbar({
 
         {activeView !== "settings" ? (
           <Button
-            variant="outline"
-            size="sm"
+            variant="ghost"
+            size="icon-sm"
+            className="size-8 rounded-lg shadow-none"
             type="button"
             disabled={refreshing}
             aria-label={activeView === "ports" ? "刷新端口列表" : "刷新服务列表"}
+            title={activeView === "ports" ? "刷新端口列表" : "刷新服务列表"}
             onClick={onRefresh}
           >
             <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
-            <span className="max-[520px]:sr-only">刷新</span>
           </Button>
         ) : null}
 
         {activeView === "services" ? (
-          <Button size="sm" type="button" onClick={onAddService}>
-            <Plus className="size-4" />
+          <Button className="h-8 rounded-lg px-2.5 text-[11px] shadow-none" size="sm" type="button" onClick={onAddService}>
+            <Plus className="size-3.5" />
             <span className="max-[520px]:sr-only">添加服务</span>
           </Button>
         ) : null}
