@@ -2,32 +2,47 @@
 
 import type { SearchAddon } from "@xterm/addon-search";
 import type { Terminal } from "@xterm/xterm";
-import { ChevronDown, ChevronUp, CircleAlert, RotateCw, Search, X } from "lucide-react";
+import { ChevronDown, ChevronUp, CircleAlert, Copy, CopyCheck, RotateCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useAutoScrollPreference } from "@/hooks/use-auto-scroll-preference";
+import { sanitizeTerminalMessage } from "@/lib/service-logic";
 import { terminalThemes } from "@/lib/terminal-theme";
 import type { ResolvedTheme } from "@/lib/types";
 
 interface XtermLogViewerProps {
   active: boolean;
+  appendRevision?: number;
+  appendText?: string;
   ariaLabel: string;
+  onCopyError?: (message: string) => void;
+  onCopySuccess?: (message: string) => void;
   resetKey: string;
   text: string;
   theme: ResolvedTheme;
 }
 
-export function XtermLogViewer({ active, ariaLabel, resetKey, text, theme }: XtermLogViewerProps) {
+export function XtermLogViewer({
+  active,
+  appendRevision,
+  appendText,
+  ariaLabel,
+  onCopyError,
+  onCopySuccess,
+  resetKey,
+  text,
+  theme,
+}: XtermLogViewerProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
-  const renderedRef = useRef({ key: "", text: "" });
+  const renderedRef = useRef<{ appendRevision?: number; key: string; text: string }>({ key: "", text: "" });
   const renderQueueRef = useRef(Promise.resolve());
-  const renderRevisionRef = useRef(0);
+  const terminalGenerationRef = useRef(0);
   const themeRef = useRef(theme);
   const [attempt, setAttempt] = useState(0);
   const [ready, setReady] = useState(false);
@@ -35,6 +50,8 @@ export function XtermLogViewer({ active, ariaLabel, resetKey, text, theme }: Xte
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchValue, setSearchValue] = useState("");
   const [searchStatus, setSearchStatus] = useState("");
+  const [hasSelection, setHasSelection] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
   const [autoScroll, setAutoScroll] = useAutoScrollPreference();
 
   useEffect(() => {
@@ -43,9 +60,10 @@ export function XtermLogViewer({ active, ariaLabel, resetKey, text, theme }: Xte
     let disposed = false;
     let terminal: Terminal | null = null;
     let observer: ResizeObserver | null = null;
+    let selectionDisposable: { dispose: () => void } | null = null;
+    const generation = ++terminalGenerationRef.current;
     renderedRef.current = { key: "", text: "" };
     renderQueueRef.current = Promise.resolve();
-    renderRevisionRef.current += 1;
 
     void Promise.all([
       import("@xterm/xterm"),
@@ -78,6 +96,9 @@ export function XtermLogViewer({ active, ariaLabel, resetKey, text, theme }: Xte
         }
       }));
       terminal.open(host);
+      selectionDisposable = terminal.onSelectionChange(() => {
+        setHasSelection(terminal?.hasSelection() ?? false);
+      });
       terminalRef.current = terminal;
       searchAddonRef.current = searchAddon;
       fitRef.current = () => {
@@ -97,7 +118,9 @@ export function XtermLogViewer({ active, ariaLabel, resetKey, text, theme }: Xte
 
     return () => {
       disposed = true;
+      if (terminalGenerationRef.current === generation) terminalGenerationRef.current += 1;
       observer?.disconnect();
+      selectionDisposable?.dispose();
       terminal?.dispose();
       terminalRef.current = null;
       searchAddonRef.current = null;
@@ -120,21 +143,26 @@ export function XtermLogViewer({ active, ariaLabel, resetKey, text, theme }: Xte
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!ready || !terminal) return;
-    const revision = ++renderRevisionRef.current;
-    const previous = renderedRef.current;
-    const appendOnly = previous.key === resetKey && text.startsWith(previous.text);
-    const pending = appendOnly ? text.slice(previous.text.length) : text;
+    const generation = terminalGenerationRef.current;
     const write = (value: string) => new Promise<void>((resolve) => terminal.write(value, resolve));
 
     renderQueueRef.current = renderQueueRef.current.then(async () => {
-      if (revision !== renderRevisionRef.current) return;
-      if (!appendOnly) terminal.reset();
+      if (generation !== terminalGenerationRef.current || terminalRef.current !== terminal) return;
+      const previous = renderedRef.current;
+      const sameOutput = previous.key === resetKey;
+      const explicitAppend = sameOutput
+        && appendRevision !== undefined
+        && previous.appendRevision !== undefined
+        && appendRevision !== previous.appendRevision;
+      const appendOnly = sameOutput && text.startsWith(previous.text);
+      const pending = explicitAppend ? (appendText ?? "") : appendOnly ? text.slice(previous.text.length) : text;
+      if (!explicitAppend && !appendOnly) terminal.reset();
       if (pending) await write(pending);
-      if (revision !== renderRevisionRef.current) return;
-      renderedRef.current = { key: resetKey, text };
+      if (generation !== terminalGenerationRef.current || terminalRef.current !== terminal) return;
+      renderedRef.current = { appendRevision, key: resetKey, text };
       if (autoScroll && !searchOpen) terminal.scrollToBottom();
     });
-  }, [autoScroll, ready, resetKey, searchOpen, text]);
+  }, [appendRevision, appendText, autoScroll, ready, resetKey, searchOpen, text]);
 
   const runSearch = useCallback((forward: boolean, query = searchValue) => {
     const value = query.trim();
@@ -149,6 +177,62 @@ export function XtermLogViewer({ active, ariaLabel, resetKey, text, theme }: Xte
       : addon.findPrevious(value, { caseSensitive: false });
     setSearchStatus(found ? "已定位" : "无匹配");
   }, [searchValue]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchStatus("");
+    searchAddonRef.current?.clearDecorations();
+    if (autoScroll) terminalRef.current?.scrollToBottom();
+  }, [autoScroll]);
+
+  const writeClipboard = useCallback(async (value: string, successMessage: string) => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("当前系统未提供剪贴板写入能力");
+      await navigator.clipboard.writeText(value);
+      setCopyStatus(successMessage);
+      onCopySuccess?.(successMessage);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCopyStatus(`复制失败：${message}`);
+      onCopyError?.(message);
+    }
+  }, [onCopyError, onCopySuccess]);
+
+  const copySelection = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal?.hasSelection()) return;
+    void writeClipboard(terminal.getSelection(), "已复制选中内容");
+  }, [writeClipboard]);
+
+  const copyAll = useCallback(() => {
+    if (!text) return;
+    const plainText = sanitizeTerminalMessage(text).replace(/\u001b\[[0-9;:]*m/g, "");
+    void writeClipboard(plainText, "已复制全部日志");
+  }, [text, writeClipboard]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const editing = target?.closest("input, textarea, select, [contenteditable='true']");
+      const inTerminal = Boolean(target && hostRef.current?.contains(target));
+      const modifier = event.metaKey || event.ctrlKey;
+
+      if (
+        active
+        && modifier
+        && event.key.toLowerCase() === "f"
+        && (!editing || inTerminal || target?.closest("[data-terminal-search]"))
+      ) {
+        event.preventDefault();
+        setSearchOpen(true);
+      } else if (event.key === "Escape" && searchOpen) {
+        event.preventDefault();
+        closeSearch();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [active, closeSearch, searchOpen]);
 
   if (loadError) {
     return (
@@ -171,12 +255,12 @@ export function XtermLogViewer({ active, ariaLabel, resetKey, text, theme }: Xte
       <div className="flex h-8 shrink-0 items-center justify-end gap-1 border-b border-white/10 px-2 text-[10px] text-[#aab4c2]">
         <label className="mr-auto flex items-center gap-1.5">
           <Switch checked={autoScroll} onCheckedChange={setAutoScroll} aria-label="Jenkins 日志自动滚动" />
-          自动滚动
+          <span className="sr-only">自动滚动</span>
         </label>
         {searchOpen ? (
           <div className="flex items-center gap-1" data-terminal-search>
             <Input
-              className="h-6 w-40 border-white/15 bg-white/5 px-2 text-[10px] text-white"
+              className="h-6 w-32 border-white/15 bg-white/5 px-2 text-[10px] text-white"
               autoFocus
               value={searchValue}
               placeholder="搜索日志"
@@ -186,18 +270,23 @@ export function XtermLogViewer({ active, ariaLabel, resetKey, text, theme }: Xte
                 runSearch(true, event.target.value);
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter") runSearch(!event.shiftKey);
-                if (event.key === "Escape") setSearchOpen(false);
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  runSearch(!event.shiftKey);
+                }
               }}
             />
-            <span className="min-w-9 text-center">{searchStatus}</span>
+            <span className="min-w-8 text-center" aria-live="polite">{searchStatus}</span>
             <Button className="size-6 text-[#c6cfda] hover:bg-white/10 hover:text-white" variant="ghost" size="icon-sm" aria-label="上一个匹配" onClick={() => runSearch(false)}><ChevronUp className="size-3" /></Button>
             <Button className="size-6 text-[#c6cfda] hover:bg-white/10 hover:text-white" variant="ghost" size="icon-sm" aria-label="下一个匹配" onClick={() => runSearch(true)}><ChevronDown className="size-3" /></Button>
-            <Button className="size-6 text-[#c6cfda] hover:bg-white/10 hover:text-white" variant="ghost" size="icon-sm" aria-label="关闭日志搜索" onClick={() => setSearchOpen(false)}><X className="size-3" /></Button>
+            <Button className="size-6 text-[#c6cfda] hover:bg-white/10 hover:text-white" variant="ghost" size="icon-sm" aria-label="关闭日志搜索" onClick={closeSearch}><X className="size-3" /></Button>
           </div>
         ) : (
-          <Button className="h-6 px-2 text-[10px] text-[#c6cfda] hover:bg-white/10 hover:text-white" variant="ghost" size="sm" disabled={!ready} onClick={() => setSearchOpen(true)}><Search className="size-3" />搜索</Button>
+          <Button className="size-6 text-[#c6cfda] hover:bg-white/10 hover:text-white" variant="ghost" size="icon-sm" title="搜索日志 (⌘/Ctrl+F)" aria-label="搜索 Jenkins 日志" disabled={!ready} onClick={() => setSearchOpen(true)}><Search className="size-3" /></Button>
         )}
+        <Button className="size-6 text-[#c6cfda] hover:bg-white/10 hover:text-white" variant="ghost" size="icon-sm" title="复制选中内容 (⌘/Ctrl+C)" aria-label="复制选中的 Jenkins 日志" disabled={!ready || !hasSelection} onClick={copySelection}><Copy className="size-3" /></Button>
+        <Button className="size-6 text-[#c6cfda] hover:bg-white/10 hover:text-white" variant="ghost" size="icon-sm" title="复制全部日志" aria-label="复制全部 Jenkins 日志" disabled={!ready || !text} onClick={copyAll}><CopyCheck className="size-3" /></Button>
+        <span className="sr-only" role="status" aria-live="polite">{copyStatus}</span>
       </div>
       <div ref={hostRef} className="min-h-0 flex-1 px-1 py-1" role="log" aria-label={ariaLabel} aria-live="off" />
     </div>
