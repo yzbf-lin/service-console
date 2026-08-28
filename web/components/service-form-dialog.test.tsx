@@ -94,6 +94,25 @@ function renderDialog({
 }
 
 describe("ServiceFormDialog process import", () => {
+  it("keeps long process commands from pushing import actions outside the dialog", async () => {
+    const user = userEvent.setup();
+    renderDialog({
+      processes: [processFixture({
+        command: `/Applications/Very Long Process.app/Contents/MacOS/VeryLongProcess ${"--long-argument ".repeat(80)}`,
+      })],
+    });
+
+    await user.click(screen.getByRole("tab", { name: "运行中进程" }));
+    const list = await screen.findByRole("list", { name: "运行中进程" });
+    const form = screen.getByRole("dialog", { name: "添加服务" }).querySelector("form");
+    const item = screen.getByRole("listitem");
+
+    expect(form?.className).toContain("min-w-0");
+    expect(list.parentElement?.className).toContain("overflow-x-hidden");
+    expect(item.className).toContain("grid-cols-[2rem_minmax(0,1fr)_auto]");
+    expect(screen.getByRole("button", { name: "填入 celery 的配置" })).toBeTruthy();
+  });
+
   it("searches running processes and fills the existing create form before submission", async () => {
     const user = userEvent.setup();
     const candidate = processFixture({ warnings: ["环境变量未完整读取"] });

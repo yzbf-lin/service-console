@@ -147,7 +147,7 @@ function candidateUnavailableReason(candidate: NormalizedProcessCandidate): stri
 function ProcessWarnings({ warnings }: { warnings: string[] }) {
   if (!warnings.length) return null;
   return (
-    <ul className="mt-1 space-y-0.5 text-[9px] leading-relaxed text-warning" aria-label="进程配置警告">
+    <ul className="mt-1 space-y-0.5 [overflow-wrap:anywhere] text-[9px] leading-relaxed text-warning" aria-label="进程配置警告">
       {warnings.map((warning, index) => <li key={`${warning}-${index}`}>• {warning}</li>)}
     </ul>
   );
@@ -315,7 +315,7 @@ export function ServiceFormDialog({
     <>
       <Dialog open={open} onOpenChange={(nextOpen) => !submitting && onOpenChange(nextOpen)}>
         <DialogContent className="w-[min(700px,calc(100vw-28px))] max-w-[700px] gap-0 overflow-hidden p-0">
-          <form onSubmit={submit}>
+          <form className="min-w-0 w-full" onSubmit={submit}>
           <Tabs
             className="contents"
             value={mode === "create" ? activeTab : "manual"}
@@ -383,8 +383,8 @@ export function ServiceFormDialog({
             </TabsContent>
 
             {mode === "create" ? (
-              <TabsContent value="process" className="m-0">
-                <div className="flex max-h-[min(66vh,560px)] min-h-80 flex-col">
+              <TabsContent value="process" className="m-0 min-w-0">
+                <div className="flex min-w-0 max-h-[min(66vh,560px)] min-h-80 flex-col">
                   <div className="flex shrink-0 items-center gap-2 border-b px-5 py-3">
                     <label className="relative min-w-0 flex-1">
                       <span className="sr-only">搜索运行中进程</span>
@@ -396,7 +396,7 @@ export function ServiceFormDialog({
                     </Button>
                   </div>
 
-                  <div className="no-visible-scrollbar min-h-0 flex-1 overflow-y-auto p-3" aria-busy={processesLoading} aria-live="polite">
+                  <div className="no-visible-scrollbar min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3" aria-busy={processesLoading} aria-live="polite">
                     {processSelectionError ? (
                       <p className="mb-2 rounded-md border border-destructive/35 bg-destructive/10 px-3 py-2 text-[10px] text-destructive" role="alert">
                         {processSelectionError}
@@ -410,14 +410,14 @@ export function ServiceFormDialog({
                     ) : processesLoading && !processesLoaded ? (
                       <div className="flex min-h-48 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />正在扫描运行中进程…</div>
                     ) : processes.length ? (
-                      <div className="space-y-1" role="list" aria-label="运行中进程">
+                      <div className="min-w-0 space-y-1" role="list" aria-label="运行中进程">
                         {processes.map((candidate) => {
                           const unavailableReason = candidateUnavailableReason(candidate);
                           return (
-                            <article key={`${candidate.pid}-${candidate.createTime ?? "unknown"}`} className="flex min-w-0 items-center gap-3 rounded-lg border px-3 py-2 transition-colors hover:bg-accent/35" role="listitem">
+                            <article key={`${candidate.pid}-${candidate.createTime ?? "unknown"}`} className="grid w-full min-w-0 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border px-3 py-2 transition-colors hover:bg-accent/35" role="listitem">
                               <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground" aria-hidden="true"><Workflow className="size-4" /></span>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex min-w-0 items-center gap-1.5"><strong className="truncate text-[11px]" title={candidate.processName}>{candidate.processName}</strong><Badge variant="outline" className="h-4 rounded px-1 font-mono text-[8px]">PID {candidate.pid}</Badge>{candidate.ports.length ? <Badge variant="secondary" className="h-4 rounded px-1 text-[8px]"><Network className="mr-0.5 size-2.5" />{candidate.ports.join(", ")}</Badge> : null}</div>
+                              <div className="min-w-0 overflow-hidden">
+                                <div className="flex min-w-0 flex-wrap items-center gap-1.5"><strong className="min-w-0 truncate text-[11px]" title={candidate.processName}>{candidate.processName}</strong><Badge variant="outline" className="h-4 rounded px-1 font-mono text-[8px]">PID {candidate.pid}</Badge>{candidate.ports.length ? <Badge variant="secondary" className="h-4 max-w-full rounded px-1 text-[8px]"><Network className="mr-0.5 size-2.5" /><span className="truncate">{candidate.ports.join(", ")}</span></Badge> : null}</div>
                                 <code className="mt-0.5 block truncate text-[9px] text-muted-foreground" title={candidate.command || "命令不可用"}>{candidate.command || "命令不可用"}</code>
                                 <span className="mt-0.5 block truncate text-[9px] text-muted-foreground" title={candidate.cwd || unavailableReason || undefined}>{unavailableReason ?? candidate.cwd}</span>
                                 <ProcessWarnings warnings={candidate.warnings} />
