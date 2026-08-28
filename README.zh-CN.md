@@ -129,6 +129,31 @@ xterm.js 界面，再用 PyInstaller 打包 CPython、pywebview、FastAPI 和完
 产物匹配构建机器架构，目前已在 Apple Silicon 上验证。它尚未使用 Apple Developer ID 签名和公证，
 通过 GitHub 下载后可能触发 Gatekeeper 提示。`dist/` 默认不进入 Git，应通过 GitHub Releases 分发。
 
+## 打包 Windows 应用
+
+在 Windows 上使用 PowerShell 7、Node.js、pnpm 和 uv：
+
+```powershell
+pwsh ./scripts/build-windows-app.ps1
+& "dist/Service Console/Service Console.exe" --help
+```
+
+脚本会生成多分辨率 ICO 图标、构建同一套离线界面，并在 `dist/Service Console` 生成 PyInstaller
+目录包。Windows 10/11 需要安装 Microsoft Edge WebView2 Runtime。当前 Windows 可执行文件未进行
+商业代码签名，在配置可信代码签名证书前可能出现 SmartScreen 提示。
+
+## 发布 Release 包
+
+仓库的 `Release` GitHub Actions 工作流会构建 Apple Silicon macOS ZIP 和 Windows x64 ZIP。推送与
+`pyproject.toml` 版本一致的标签后，会将两个安装包和 `SHA256SUMS.txt` 发布到 GitHub Releases：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+也可以手动运行该工作流，只生成可下载的 Actions 构建产物而不创建 GitHub Release。
+
 ## FastAPI + Vite + Celery 示例
 
 仓库提供了后端、前端、Celery Worker 和 Celery Beat 的完整原生管理示例，见

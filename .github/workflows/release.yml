@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS arm64
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Read and validate version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n 1)"
+          test -n "$VERSION"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match pyproject version $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Build application
+        run: ./scripts/build-macos-app.sh
+      - name: Smoke-test executable and signature
+        shell: bash
+        run: |
+          test "$(uname -m)" = "arm64"
+          codesign --verify --deep --strict "dist/Service Console.app"
+          "dist/Service Console.app/Contents/MacOS/Service Console" --help >/dev/null
+      - name: Package application
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          STAGE="release/Service Console"
+          mkdir -p "$STAGE"
+          ditto "dist/Service Console.app" "$STAGE/Service Console.app"
+          cp LICENSE README.md README.zh-CN.md "$STAGE/"
+          ditto -c -k --sequesterRsrc --keepParent "$STAGE" \
+            "release/Service-Console-v${VERSION}-macOS-arm64.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: service-console-macos-arm64
+          path: release/Service-Console-*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Read and validate version
+        id: version
+        shell: pwsh
+        run: |
+          $match = Select-String -Path pyproject.toml -Pattern '^version = "([^"]+)"$'
+          if (-not $match) { throw "Unable to read project version" }
+          $version = $match.Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match pyproject version $version"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Run Windows Python tests
+        shell: pwsh
+        run: |
+          uv sync --group dev
+          uv run pytest
+      - name: Build application
+        shell: pwsh
+        run: ./scripts/build-windows-app.ps1
+      - name: Smoke-test executable
+        shell: pwsh
+        run: |
+          & "dist/Service Console/Service Console.exe" --help
+          if ($LASTEXITCODE -ne 0) { throw "Desktop executable smoke test failed" }
+      - name: Package application
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $appDir = "dist/Service Console"
+          Copy-Item LICENSE, README.md, README.zh-CN.md -Destination $appDir
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Compress-Archive -Path $appDir -DestinationPath "release/Service-Console-v$version-Windows-x64.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: service-console-windows-x64
+          path: release/Service-Console-*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: service-console-*
+          merge-multiple: true
+          path: release
+      - name: Create checksums
+        run: |
+          cd release
+          sha256sum Service-Console-*.zip > SHA256SUMS.txt
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/* \
+              --verify-tag \
+              --generate-notes \
+              --title "Service Console $GITHUB_REF_NAME"
+          fi

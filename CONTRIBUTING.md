@@ -24,6 +24,18 @@ changes.
 The local application is ad-hoc signed. Developer ID signing, notarization, and release packaging are
 maintainer release steps and are not required for ordinary pull requests.
 
+## Windows desktop build
+
+Run this on Windows with PowerShell 7:
+
+```powershell
+pwsh ./scripts/build-windows-app.ps1
+```
+
+The portable directory bundle is written to `dist/Service Console`. Windows lifecycle changes must
+also pass the `Windows Python tests` CI job. The GitHub `Release` workflow owns ZIP packaging,
+checksums, and tag-based publication; generated binaries must not be committed.
+
 ## Pull requests
 
 - Explain the user-facing problem and the chosen behavior.

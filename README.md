@@ -14,7 +14,7 @@
 
 <p align="center">
   <img alt="Python 3.12+" src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white">
-  <img alt="macOS and Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-555555">
+  <img alt="macOS, Windows, and Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-555555">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2ea44f">
 </p>
 
@@ -62,8 +62,9 @@ controller and work without Supabase.
 |---|---|
 | Controller, CLI, TUI | Python 3.12+ and [uv](https://docs.astral.sh/uv/) |
 | Web asset development | Node.js 22+ and pnpm 11 |
-| Native desktop window | macOS or a Linux environment supported by pywebview |
+| Native desktop window | macOS, Windows, or a Linux environment supported by pywebview |
 | macOS `.app` build | macOS, Xcode command-line tools, Node.js, pnpm, and uv |
+| Windows `.exe` build | Windows, PowerShell 7, Node.js, pnpm, and uv |
 
 ## Quick start
 
@@ -180,6 +181,34 @@ The resulting app runs without Node.js or network access. It matches the build m
 the current build has been tested on Apple Silicon. It is ad-hoc signed and not notarized with an
 Apple Developer ID, so downloaded builds may trigger a Gatekeeper warning. `dist/` is intentionally
 ignored; publish distributable binaries through GitHub Releases.
+
+## Build the Windows application
+
+Run the PowerShell build on Windows:
+
+```powershell
+pwsh ./scripts/build-windows-app.ps1
+& "dist/Service Console/Service Console.exe" --help
+```
+
+The script generates a multi-resolution ICO icon, builds the same offline dashboard, and creates a
+PyInstaller directory bundle at `dist/Service Console`. Windows 10/11 must have the Microsoft Edge
+WebView2 Runtime installed. The executable is unsigned, so Windows may show a SmartScreen warning
+until the project is configured with a trusted code-signing certificate.
+
+## Publish release packages
+
+The `Release` GitHub Actions workflow builds an Apple Silicon macOS ZIP and a Windows x64 ZIP. A tag
+matching the version in `pyproject.toml` publishes both packages and `SHA256SUMS.txt` to GitHub
+Releases:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow can also be started manually to build downloadable Actions artifacts without creating
+a GitHub Release.
 
 ## Web application and terminal assets
 

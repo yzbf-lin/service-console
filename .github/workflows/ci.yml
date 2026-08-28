@@ -15,6 +15,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
+          python-version: "3.12"
       - uses: pnpm/action-setup@v6
         with:
           version: 11.7.0
@@ -39,3 +40,17 @@ jobs:
         run: uv run pytest tests/test_static_assets.py
       - name: Run remaining tests
         run: uv run pytest --ignore=tests/test_static_assets.py
+
+  windows-test:
+    name: Windows Python tests
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: uv sync --group dev
+      - name: Run Python tests
+        run: uv run pytest
