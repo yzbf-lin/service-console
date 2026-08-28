@@ -6,7 +6,7 @@
 
 <p align="center">无需容器，直接启动和管理本地开发服务。</p>
 
-<p align="center">桌面端 · Web · CLI · TUI · 独立日志 · 端口检查 · 远程控制</p>
+<p align="center">桌面端 · Web · CLI · TUI · MCP · 独立日志 · 端口检查 · 远程控制</p>
 
 <p align="center"><a href="README.md">English</a></p>
 
@@ -31,10 +31,12 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 - 使用 xterm.js 显示 ANSI 日志，支持搜索、复制、链接、换行和滚动历史。
 - 查看监听端口及占用进程，并通过 PID/端口二次校验安全终止进程。
 - 自动发现桌面端新版本，验证 Ed25519 签名清单与安装包 SHA-256，并在用户确认后安装重启。
-- 搜索当前用户的运行中进程（包括无端口 Worker），自动提取 `uv`/`pnpm` 启动命令和工作目录并填入服务配置。
+- 搜索当前用户的运行中进程（包括无端口 Worker），自动提取 `uv`/`pnpm` 启动命令和工作目录；
+  Windows 无权读取完整元数据时可安全降级为手动补全。
 - 使用 Next.js、React、TypeScript、Tailwind CSS、shadcn/ui、Radix UI 与 Lucide React
   构建紧凑控制台，并支持可持久化的浅色/深色主题。
 - 桌面端使用随机回环端口、临时 Token 和权限为 `0600` 的运行描述文件。
+- 内置 stdio MCP Bridge，让 Codex/AI 配置、启动、停止、重启服务并检查状态与日志。
 
 ## 功能导览
 
@@ -125,6 +127,18 @@ uv run service-console logs api --tail 200 --follow
 Service Console 启动服务，避免重复实例或端口冲突；日志从首次受管启动开始采集。命令中的 Token、
 Password、Secret、API Key 等敏感参数会被遮罩，需手工确认后再保存。
 
+#### Windows 进程权限与手动补全
+
+Windows 可能把同一账户表示为 `DOMAIN\User` 或 `User`；Service Console 会规范化这两种形式，避免把
+当前用户的进程误判为其他用户。如果 Windows 无法核验进程所有者或启动时间，界面会改为“手动补全”，
+仅使用 PID、进程名和已知端口生成安全草稿，并且不会读取或复用该进程的命令行、工作目录与环境变量。
+如果只有部分元数据字段不可用，则保留已安全读取的信息并标出缺失项。填写启动命令和工作目录、核对
+参数后即可保存服务配置。
+
+通用进程搜索不会列出已确认属于其他账户的进程；控制器自身及已经受管的进程仍不可导入。从“端口与
+进程”页面选择权限受限的进程时，也会进入同一个手动补全流程。应用默认按当前用户权限运行，不需要仅为
+导入进程而以管理员身份启动；目标若属于其他账户或高完整性管理员进程，Windows 仍可能限制元数据读取。
+
 ## 常用命令
 
 | 操作 | 命令 |
@@ -138,6 +152,69 @@ Password、Secret、API Key 等敏感参数会被遮罩，需手工确认后再�
 | 查看端口 | `service-console ports --port PORT` |
 | 正常终止占用进程 | `service-console kill-process PID --port PORT --timeout 3` |
 | 超时后强制终止 | `service-console kill-process PID --port PORT --force` |
+
+## 给 AI 使用（MCP）
+
+桌面 Release 包内置独立的 console 型 stdio MCP Bridge。打开 **设置 → AI / MCP 集成**，点击
+**安装到 Codex** 即可完成一次性注册，然后按 Codex 的 MCP 加载机制重启 Codex 一次；以后 Service
+Console 启动并发布本机控制器后，AI 能力会自动就绪。Codex 按需启动 Bridge，Bridge 从
+`~/.service-console/controller.json` 发现随机端口和临时
+Token，因此 Codex 配置中不保存凭据，也不需要在每次应用启动后更新端口。
+
+如果 AI 首次调用工具时桌面应用尚未运行，Bridge 会自动拉起同一安装目录中的 Service Console 并等待
+控制器就绪。应用更新或重启后，Bridge 会重新读取运行描述文件。设置页的 **测试连接** 会执行真实的
+MCP 握手并调用只读的 `service_list` 工具。
+
+也可以手工注册打包后的 Bridge：
+
+```bash
+# macOS
+codex mcp add service-console -- \
+  "/Applications/Service Console.app/Contents/MacOS/Service Console MCP"
+```
+
+```powershell
+# Windows：请按实际安装目录调整路径
+codex mcp add service-console -- `
+  "C:\Program Files\Service Console\Service Console MCP.exe"
+```
+
+源码开发环境可以使用同一个虚拟环境入口：
+
+```bash
+codex mcp add service-console -- \
+  "$(pwd)/.venv/bin/python" -m service_console.mcp_server
+```
+
+### 项目启动配置
+
+在需要管理的项目根目录创建 `.service-console.json`。相对工作目录会以该文件所在目录为基准解析：
+
+```json
+{
+  "version": 1,
+  "project": "example-project",
+  "services": [
+    {
+      "name": "example-backend",
+      "command": "uv run backend/run.py",
+      "cwd": ".",
+      "env": {"PYTHONUNBUFFERED": "1"},
+      "auto_start": true,
+      "stop_timeout": 10
+    }
+  ]
+}
+```
+
+AI 调用 `project_apply_config` 后会创建、更新或跳过未变化的服务，但不会删除文件中未声明的现有服务。
+随后可通过 `service_restart`、`service_status` 和 `service_logs` 完成代码修改后的重启验收。建议在项目的
+`AGENTS.md` 中记录：修改后端后重启 backend，修改 Celery 任务后重启 worker，修改定时调度配置时再
+额外重启 beat；每次重启后检查状态并读取最近日志。
+
+Bridge 还提供 `service_list/status/upsert/start/stop/restart/logs`、`port_list`、
+`process_list/import/terminate`。其中停止、重启和终止进程会改变本机进程状态，AI 客户端可根据 MCP
+annotations 显示确认提示。
 
 ## 浏览器控制器
 
@@ -186,7 +263,8 @@ open "dist/Service Console.app"
 
 脚本会从 `assets/service-console-icon-1024.png` 生成多分辨率 ICNS 图标；用户提供的透明产品标志原图
 保留在 `assets/service-console-logo.png`。随后静态导出 Next.js 与 xterm.js 界面，再用 PyInstaller 打包
-CPython、pywebview、FastAPI 和完整界面。Bundle 版本自动与 `pyproject.toml` 同步并进行 ad-hoc 签名。
+CPython、pywebview、FastAPI、完整界面和 console 型 MCP sidecar。Bundle 版本自动与
+`pyproject.toml` 同步并进行 ad-hoc 签名。
 
 产物匹配构建机器架构，目前已在 Apple Silicon 上验证。它尚未使用 Apple Developer ID 签名和公证，
 通过 GitHub 下载后可能触发 Gatekeeper 提示。`dist/` 默认不进入 Git，应通过 GitHub Releases 分发。
@@ -210,7 +288,8 @@ pwsh ./scripts/build-windows-app.ps1
 ```
 
 脚本会生成多分辨率 ICO 图标、构建同一套离线界面，并在 `dist/Service Console` 生成 PyInstaller
-目录包。Windows 10/11 需要安装 Microsoft Edge WebView2 Runtime。当前 Windows 可执行文件未进行
+目录包和 `Service Console MCP.exe`。Windows 10/11 需要安装 Microsoft Edge WebView2 Runtime。
+当前 Windows 可执行文件未进行
 商业代码签名，在配置可信代码签名证书前可能出现 SmartScreen 提示。
 
 ## 发布 Release 包

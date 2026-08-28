@@ -36,7 +36,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import type { ServiceConsoleApiClient } from "@/lib/api-client";
+import { ApiError, type ServiceConsoleApiClient } from "@/lib/api-client";
 import {
   nextCopyName,
   parseEnvironment,
@@ -138,10 +138,32 @@ function initialForm(
   };
 }
 
-function candidateUnavailableReason(candidate: NormalizedProcessCandidate): string | null {
+function candidateBlockedReason(candidate: NormalizedProcessCandidate): string | null {
   if (candidate.managedService) return `已由服务 ${candidate.managedService} 管理`;
-  if (!candidate.restorable) return candidate.warnings[0] || "缺少可恢复的命令或工作目录";
   return null;
+}
+
+function isProcessPermissionError(error: unknown): boolean {
+  return error instanceof ApiError && (
+    error.status === 403
+    || (
+      error.status === 409
+      && /permission denied|access (?:is )?denied|权限|拒绝访问/i.test(error.message)
+    )
+  );
+}
+
+function withManualCompletionWarning(
+  candidate: NormalizedProcessCandidate,
+  warning = "未能自动提取完整启动配置，请手动补全并核对后再保存。",
+): NormalizedProcessCandidate {
+  return {
+    ...candidate,
+    restorable: false,
+    warnings: candidate.warnings.includes(warning)
+      ? candidate.warnings
+      : [...candidate.warnings, warning],
+  };
 }
 
 function ProcessWarnings({ warnings }: { warnings: string[] }) {
@@ -220,7 +242,7 @@ export function ServiceFormDialog({
   }, [activeTab, importedProcess]);
 
   const applyProcess = async (candidate: NormalizedProcessCandidate) => {
-    if (candidateUnavailableReason(candidate)) return;
+    if (candidateBlockedReason(candidate)) return;
     const requestId = ++processApplyRequestId.current;
     setVerifyingPid(candidate.pid);
     setProcessSelectionError("");
@@ -229,22 +251,44 @@ export function ServiceFormDialog({
       if (requestId !== processApplyRequestId.current) return;
       if (
         current.pid !== candidate.pid
-        || candidate.createTime === null
-        || current.createTime === null
-        || current.createTime !== candidate.createTime
+        || (
+          candidate.createTime !== null
+          && current.createTime !== null
+          && current.createTime !== candidate.createTime
+        )
       ) {
         throw new Error(`PID ${candidate.pid} 的进程身份已变化，请刷新列表后重试`);
       }
-      const unavailableReason = candidateUnavailableReason(current);
-      if (unavailableReason) throw new Error(unavailableReason);
+      const blockedReason = candidateBlockedReason(current);
+      if (blockedReason) throw new Error(blockedReason);
+      const selectedProcess = candidate.createTime === null || current.createTime === null
+        ? withManualCompletionWarning(
+          current,
+          `未能核验 PID ${candidate.pid} 的启动时间，请手动确认仍是目标进程。`,
+        )
+        : current.restorable
+          ? current
+          : withManualCompletionWarning(current);
 
-      setForm(formFromInput(serviceInputFromProcess(current, existingNames)));
-      setImportedProcess(current);
+      setForm(formFromInput(serviceInputFromProcess(selectedProcess, existingNames)));
+      setImportedProcess(selectedProcess);
       setError("");
       focusNameAfterImport.current = true;
       setActiveTab("manual");
     } catch (applyError) {
       if (requestId !== processApplyRequestId.current) return;
+      if (isProcessPermissionError(applyError)) {
+        const selectedProcess = withManualCompletionWarning(
+          candidate,
+          "当前权限不足，无法读取完整进程信息。请手动补全启动命令和工作目录，并确认配置后再保存。",
+        );
+        setForm(formFromInput(serviceInputFromProcess(selectedProcess, existingNames)));
+        setImportedProcess(selectedProcess);
+        setError("");
+        focusNameAfterImport.current = true;
+        setActiveTab("manual");
+        return;
+      }
       setProcessSelectionError(applyError instanceof Error ? applyError.message : String(applyError));
     } finally {
       if (requestId === processApplyRequestId.current) setVerifyingPid(null);
@@ -336,10 +380,16 @@ export function ServiceFormDialog({
             <TabsContent value="manual" className="m-0">
               <div className="grid max-h-[min(66vh,560px)] grid-cols-2 gap-4 overflow-y-auto p-5 max-[600px]:grid-cols-1">
                 {importedProcess ? (
-                  <div className="col-span-2 flex gap-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2.5 text-[10px] text-foreground max-[600px]:col-span-1" role="status">
-                    <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" />
+                  <div className={`col-span-2 flex gap-2 rounded-lg border px-3 py-2.5 text-[10px] text-foreground max-[600px]:col-span-1 ${
+                    importedProcess.restorable
+                      ? "border-primary/25 bg-primary/5"
+                      : "border-warning/30 bg-warning/5"
+                  }`} role="status">
+                    <CircleAlert className={`mt-0.5 size-3.5 shrink-0 ${importedProcess.restorable ? "text-primary" : "text-warning"}`} aria-hidden="true" />
                     <div>
-                      已从 PID {importedProcess.pid} 填入配置。当前进程不会被接管；保存后请先停止原进程，再由控制台启动，避免重复实例或端口冲突。日志从首次受管启动开始采集。
+                      {importedProcess.restorable
+                        ? `已从 PID ${importedProcess.pid} 自动填入可恢复的启动配置。当前进程不会被接管；保存后请先停止原进程，再由控制台启动，避免重复实例或端口冲突。日志从首次受管启动开始采集。`
+                        : `PID ${importedProcess.pid} 的自动提取信息不完整。请根据下方警告核对并手动补全启动命令、工作目录或参数；保存只会创建服务配置，不会接管当前进程。`}
                       <ProcessWarnings warnings={importedProcess.warnings} />
                     </div>
                   </div>
@@ -412,14 +462,17 @@ export function ServiceFormDialog({
                     ) : processes.length ? (
                       <div className="min-w-0 space-y-1" role="list" aria-label="运行中进程">
                         {processes.map((candidate) => {
-                          const unavailableReason = candidateUnavailableReason(candidate);
+                          const blockedReason = candidateBlockedReason(candidate);
+                          const needsManualCompletion = !candidate.restorable;
                           return (
                             <article key={`${candidate.pid}-${candidate.createTime ?? "unknown"}`} className="grid w-full min-w-0 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border px-3 py-2 transition-colors hover:bg-accent/35" role="listitem">
                               <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground" aria-hidden="true"><Workflow className="size-4" /></span>
                               <div className="min-w-0 overflow-hidden">
                                 <div className="flex min-w-0 flex-wrap items-center gap-1.5"><strong className="min-w-0 truncate text-[11px]" title={candidate.processName}>{candidate.processName}</strong><Badge variant="outline" className="h-4 rounded px-1 font-mono text-[8px]">PID {candidate.pid}</Badge>{candidate.ports.length ? <Badge variant="secondary" className="h-4 max-w-full rounded px-1 text-[8px]"><Network className="mr-0.5 size-2.5" /><span className="truncate">{candidate.ports.join(", ")}</span></Badge> : null}</div>
                                 <code className="mt-0.5 block truncate text-[9px] text-muted-foreground" title={candidate.command || "命令不可用"}>{candidate.command || "命令不可用"}</code>
-                                <span className="mt-0.5 block truncate text-[9px] text-muted-foreground" title={candidate.cwd || unavailableReason || undefined}>{unavailableReason ?? candidate.cwd}</span>
+                                <span className="mt-0.5 block truncate text-[9px] text-muted-foreground" title={candidate.cwd || blockedReason || undefined}>
+                                  {blockedReason ?? (candidate.cwd || (needsManualCompletion ? "需手动补全启动信息" : ""))}
+                                </span>
                                 <ProcessWarnings warnings={candidate.warnings} />
                               </div>
                               <Button
@@ -427,16 +480,18 @@ export function ServiceFormDialog({
                                 variant="outline"
                                 size="sm"
                                 className="h-7 shrink-0 px-2 text-[9px]"
-                                disabled={Boolean(unavailableReason) || verifyingPid !== null}
-                                aria-label={unavailableReason
-                                  ? `${candidate.processName} 不可导入：${unavailableReason}`
+                                disabled={Boolean(blockedReason) || verifyingPid !== null}
+                                aria-label={blockedReason
+                                  ? `${candidate.processName} 不可导入：${blockedReason}`
                                   : verifyingPid === candidate.pid
                                     ? `正在核验 ${candidate.processName}`
-                                    : `填入 ${candidate.processName} 的配置`}
+                                    : needsManualCompletion
+                                      ? `手动补全 ${candidate.processName} 的配置`
+                                      : `填入 ${candidate.processName} 的配置`}
                                 onClick={() => void applyProcess(candidate)}
                               >
                                 {verifyingPid === candidate.pid ? <LoaderCircle className="size-3 animate-spin" /> : <Plus className="size-3" />}
-                                {verifyingPid === candidate.pid ? "核验中" : "填入配置"}
+                                {verifyingPid === candidate.pid ? "核验中" : needsManualCompletion ? "手动补全" : "填入配置"}
                               </Button>
                             </article>
                           );
@@ -467,9 +522,11 @@ export function ServiceFormDialog({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>仅保存服务配置？</AlertDialogTitle>
+            <AlertDialogTitle>{importedProcess?.restorable ? "仅保存服务配置？" : "保存手动补全的服务配置？"}</AlertDialogTitle>
             <AlertDialogDescription>
-              PID {importedProcess?.pid ?? "—"} 的原进程仍在运行。继续只会保存启动配置，不会接管、停止或采集该进程的既有日志。请先停止原进程，再从控制台启动服务，避免重复实例。
+              {importedProcess?.restorable
+                ? `PID ${importedProcess.pid} 的原进程仍在运行。继续只会保存启动配置，不会接管、停止或采集该进程的既有日志。请先停止原进程，再从控制台启动服务，避免重复实例。`
+                : `PID ${importedProcess?.pid ?? "—"} 的配置未能完整自动核验。继续会保存你手动确认后的启动配置，不会接管、停止或采集原进程的既有日志。请确认命令和工作目录无误，并在受管启动前停止原进程。`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

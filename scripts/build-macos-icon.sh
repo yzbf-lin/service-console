@@ -11,4 +11,4 @@ if [[ ! -f "$SOURCE" ]]; then
 fi
 
 mkdir -p "$(dirname "$OUTPUT")"
-uv run --group icon python "$ROOT_DIR/scripts/build_macos_icon.py" "$SOURCE" "$OUTPUT"
+uv run --locked --group icon python "$ROOT_DIR/scripts/build_macos_icon.py" "$SOURCE" "$OUTPUT"

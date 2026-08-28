@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Desktop · Web · CLI · TUI · Isolated logs · Port inspection · Remote control
+  Desktop · Web · CLI · TUI · MCP · Isolated logs · Port inspection · Remote control
 </p>
 
 <p align="center">
@@ -45,12 +45,14 @@ requiring Docker or another container runtime.
 - Discover new desktop releases automatically, verify an Ed25519-signed manifest and package SHA-256,
   then install and restart only after explicit confirmation.
 - Discover the current user's running processes, including workers without ports, and prefill service
-  definitions from restored `uv`/`pnpm` commands and working directories.
+  definitions from restored `uv`/`pnpm` commands and working directories, with safe manual fallback
+  when Windows denies access to complete metadata.
 - Use the same controller through the desktop app, Web UI, CLI, TUI, HTTP, or WebSocket.
 - Use a compact Next.js dashboard built with React, TypeScript, Tailwind CSS, shadcn/ui, Radix UI,
   and Lucide React, with persistent light and dark themes.
 - Keep desktop automation private with a random loopback port, temporary bearer token, and a `0600`
   runtime descriptor.
+- Let Codex and other AI clients configure and operate services through the bundled stdio MCP bridge.
 
 ## Feature tour
 
@@ -149,6 +151,22 @@ or stderr pipes. Stop the original process before starting the saved service in 
 avoid a duplicate instance or port conflict. Log capture begins with the first managed start. Token,
 password, secret, and API-key command arguments are redacted and require manual confirmation.
 
+#### Windows process permissions and manual completion
+
+Windows may represent the same account as either `DOMAIN\User` or `User`. Service Console normalizes
+both forms so a current-user process is not mistaken for another user's process. If Windows cannot
+verify the process owner or start time, the UI switches to **Manual completion**. The safe draft uses
+only the PID, process name, and known ports; it does not read or reuse that process's command line,
+working directory, or environment. If only individual metadata fields are unavailable, Service
+Console preserves the fields it could safely inspect and marks the missing values. Enter the command
+and working directory, review the arguments, and then save the definition.
+
+The general process search excludes processes confirmed to belong to another account. Service
+Console's own processes and already-managed processes also remain unavailable for import. Selecting
+a restricted process from **Ports and processes** opens the same manual-completion flow. The app runs
+with the current user's permissions by default, so Administrator mode is not required merely to
+import a process; Windows can still restrict metadata for another account or a high-integrity process.
+
 ## CLI reference
 
 | Operation | Command |
@@ -164,6 +182,66 @@ password, secret, and API-key command arguments are redacted and require manual 
 | Force termination after timeout | `service-console kill-process PID --port PORT --force` |
 
 Run `service-console --help` for all options.
+
+## AI and MCP integration
+
+Desktop release packages include a separate console-mode stdio MCP bridge. Open **Settings → AI /
+MCP integration** and choose **Install in Codex** once, then restart Codex once so it loads the new
+tools. On subsequent launches, the desktop app publishes its private controller and the registered
+bridge becomes ready automatically. Codex starts
+the bridge on demand; the bridge discovers the random port and temporary token from
+`~/.service-console/controller.json`, so no credential or changing port is stored in Codex.
+
+If an AI tool is called while the desktop app is closed, the bridge starts the app from the same
+installation and waits for the controller. It re-reads the descriptor after application updates and
+restarts. **Test connection** performs a real MCP handshake and calls the read-only `service_list`
+tool.
+
+Manual registration is also available:
+
+```bash
+# macOS release
+codex mcp add service-console -- \
+  "/Applications/Service Console.app/Contents/MacOS/Service Console MCP"
+
+# Source checkout
+codex mcp add service-console -- \
+  "$(pwd)/.venv/bin/python" -m service_console.mcp_server
+```
+
+```powershell
+# Windows release; adjust the installation directory as needed
+codex mcp add service-console -- `
+  "C:\Program Files\Service Console\Service Console MCP.exe"
+```
+
+### Declarative project configuration
+
+Create `.service-console.json` in the project root. Relative working directories resolve from the
+manifest directory:
+
+```json
+{
+  "version": 1,
+  "project": "example-project",
+  "services": [
+    {
+      "name": "example-backend",
+      "command": "uv run backend/run.py",
+      "cwd": ".",
+      "env": {"PYTHONUNBUFFERED": "1"},
+      "auto_start": true,
+      "stop_timeout": 10
+    }
+  ]
+}
+```
+
+`project_apply_config` creates, updates, or skips unchanged definitions without deleting other
+services. An AI agent can then use `service_restart`, `service_status`, and `service_logs` to validate
+a code change. The bridge also exposes service lifecycle/configuration tools, port inspection, running
+process discovery/import, and explicit process termination. Mutating tools carry MCP annotations so
+clients can apply their normal confirmation policy.
 
 ## Browser controller
 
@@ -236,7 +314,8 @@ The build script:
    original transparent product mark is retained in `assets/service-console-logo.png`;
 2. builds and statically exports the Next.js dashboard into the Python package;
 3. installs the desktop dependency group;
-4. bundles CPython, pywebview, FastAPI, and the complete dashboard with PyInstaller;
+4. bundles CPython, pywebview, FastAPI, the complete dashboard, and a console-mode MCP sidecar with
+   PyInstaller;
 5. synchronizes the bundle version with `pyproject.toml` and applies an ad-hoc signature.
 
 The resulting app runs without Node.js or network access. It matches the build machine architecture;
@@ -263,7 +342,8 @@ pwsh ./scripts/build-windows-app.ps1
 ```
 
 The script generates a multi-resolution ICO icon, builds the same offline dashboard, and creates a
-PyInstaller directory bundle at `dist/Service Console`. Windows 10/11 must have the Microsoft Edge
+PyInstaller directory bundle at `dist/Service Console`, including `Service Console MCP.exe`. Windows
+10/11 must have the Microsoft Edge
 WebView2 Runtime installed. The executable is unsigned, so Windows may show a SmartScreen warning
 until the project is configured with a trusted code-signing certificate.
 

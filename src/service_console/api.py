@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .manager import ServiceManager
+from .mcp_integration import McpIntegrationManager
 from .models import ServiceDefinition
 from .ports import PortInspector
 from .processes import ProcessInspector
@@ -80,7 +81,9 @@ def create_app(
     port_inspector: PortInspector | None = None,
     process_inspector: ProcessInspector | None = None,
     update_manager: UpdateManager | None = None,
+    mcp_integration: McpIntegrationManager | None = None,
     on_update_ready: Callable[[], None] | None = None,
+    runtime_file: str | Path | None = None,
 ) -> FastAPI:
     """Create an application and own the supplied manager for its lifespan."""
 
@@ -92,6 +95,11 @@ def create_app(
     update_tool = update_manager or UpdateManager(
         selected_data_dir,
         install_enabled=on_update_ready is not None,
+    )
+    mcp_tool = mcp_integration or McpIntegrationManager(
+        selected_data_dir,
+        runtime_file=runtime_file,
+        registration_enabled=runtime_file is not None,
     )
 
     @asynccontextmanager
@@ -108,6 +116,7 @@ def create_app(
     app.state.port_inspector = port_tool
     app.state.process_inspector = process_tool
     app.state.update_manager = update_tool
+    app.state.mcp_integration = mcp_tool
     app.state.token = token
 
     async def managed_processes() -> dict[int, str]:
@@ -173,6 +182,22 @@ def create_app(
         if bool(update.get("restart_required")) and on_update_ready is not None:
             background_tasks.add_task(on_update_ready)
         return {"update": update}
+
+    @api.get("/mcp-integration")
+    async def mcp_integration_status() -> dict[str, dict[str, object]]:
+        return {"mcp": await asyncio.to_thread(mcp_tool.status)}
+
+    @api.post("/mcp-integration/install")
+    async def install_mcp_integration() -> dict[str, dict[str, object]]:
+        return {"mcp": await asyncio.to_thread(mcp_tool.install)}
+
+    @api.post("/mcp-integration/test")
+    async def test_mcp_integration() -> dict[str, dict[str, object]]:
+        return {"mcp": await asyncio.to_thread(mcp_tool.test)}
+
+    @api.delete("/mcp-integration")
+    async def remove_mcp_integration() -> dict[str, dict[str, object]]:
+        return {"mcp": await asyncio.to_thread(mcp_tool.remove)}
 
     @api.get("/services")
     async def list_services() -> dict[str, list[dict[str, object]]]:

@@ -25,9 +25,16 @@ interface PortsViewProps {
   active: boolean;
   onError: (title: string, message: string) => void;
   onSuccess: (title: string, message: string) => void;
-  onImportProcess: (pid: number) => Promise<void>;
+  onImportProcess: (process: ProcessImportHint) => Promise<void>;
   refreshSignal: number;
 }
+
+export interface ProcessImportHint {
+  pid: number;
+  processName: string;
+  ports: number[];
+}
+
 interface PortGroup {
   key: string;
   pid: number | null;
@@ -183,7 +190,11 @@ export function PortsView({ api, active, onError, onSuccess, onImportProcess, re
     if (group.pid === null) return;
     setImportingPid(group.pid);
     try {
-      await onImportProcess(group.pid);
+      await onImportProcess({
+        pid: group.pid,
+        processName: group.processName,
+        ports: group.ports,
+      });
     } catch (error) {
       onError("读取进程失败", error instanceof Error ? error.message : String(error));
     } finally {

@@ -40,7 +40,14 @@ function renderSettings(status: AppUpdateStatus, handlers = {
       resolvedTheme="light"
       updateStatus={status}
       updateOperation={null}
+      mcpStatus={null}
+      mcpOperation={null}
       onPreferenceChange={vi.fn()}
+      onInstallMcp={vi.fn()}
+      onRefreshMcp={vi.fn()}
+      onTestMcp={vi.fn()}
+      onCopyMcpConfig={vi.fn()}
+      onRemoveMcp={vi.fn()}
       {...handlers}
     />,
   );
@@ -71,7 +78,7 @@ describe("SettingsView app updates", () => {
     expect(releaseLink.getAttribute("href")).toBe(
       "https://github.com/yzbf-lin/service-console/releases/tag/v0.2.0",
     );
-    expect(screen.getByRole("status").textContent).toBe("发现新版本");
+    expect(screen.getByText("发现新版本").closest("[role=status]")).toBeTruthy();
   });
 
   it("shows download progress from byte counts", () => {
@@ -136,10 +143,17 @@ describe("SettingsView app updates", () => {
       resolvedTheme: "light" as const,
       updateStatus: updateStatus("downloaded"),
       updateOperation: null,
+      mcpStatus: null,
+      mcpOperation: null,
       onPreferenceChange: vi.fn(),
       onCheckForUpdates: vi.fn(),
       onDownloadUpdate: vi.fn(),
       onInstallUpdate: vi.fn(),
+      onInstallMcp: vi.fn(),
+      onRefreshMcp: vi.fn(),
+      onTestMcp: vi.fn(),
+      onCopyMcpConfig: vi.fn(),
+      onRemoveMcp: vi.fn(),
     };
     const { rerender } = render(<SettingsView {...props} />);
     fireEvent.click(screen.getByRole("button", { name: "安装并重启" }));

@@ -208,6 +208,48 @@ class FakeUpdateManager:
         return self.snapshot("restarting", restart_required=True)
 
 
+class FakeMcpIntegration:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def snapshot(self, state: str) -> dict[str, object]:
+        return {
+            "state": state,
+            "transport": "stdio",
+            "controller_ready": True,
+            "bridge_available": True,
+            "codex_cli_available": True,
+            "codex_registered": state == "installed",
+            "server_name": "service-console",
+            "bridge_command": "/Applications/Service Console.app/Contents/MacOS/Service Console MCP",
+            "bridge_args": ["--runtime-file", "/tmp/controller.json"],
+            "config_snippet": "codex mcp add service-console -- 'Service Console MCP'",
+            "tools": ["service_list", "service_restart", "service_logs"],
+            "last_test": (
+                {"ok": True, "tested_at": "2026-08-28T00:00:00+00:00", "error": None}
+                if state == "installed"
+                else None
+            ),
+            "error": None,
+        }
+
+    def status(self) -> dict[str, object]:
+        self.calls.append("status")
+        return self.snapshot("not_installed")
+
+    def install(self) -> dict[str, object]:
+        self.calls.append("install")
+        return self.snapshot("installed")
+
+    def test(self) -> dict[str, object]:
+        self.calls.append("test")
+        return self.snapshot("installed")
+
+    def remove(self) -> dict[str, object]:
+        self.calls.append("remove")
+        return self.snapshot("not_installed")
+
+
 def test_authenticated_service_lifecycle() -> None:
     manager = FakeManager()
     app = create_app(token="secret", manager=manager)
@@ -267,6 +309,26 @@ def test_authenticated_app_update_lifecycle_runs_restart_callback() -> None:
     assert installed.json()["update"]["state"] == "restarting"
     assert updater.calls == ["status", "check", "download", "install"]
     assert restart_requests == [True]
+
+
+def test_authenticated_mcp_integration_lifecycle() -> None:
+    integration = FakeMcpIntegration()
+    app = create_app(
+        token="secret",
+        manager=FakeManager(),
+        mcp_integration=integration,  # type: ignore[arg-type]
+    )
+    headers = {"Authorization": "Bearer secret"}
+
+    with TestClient(app) as client:
+        assert client.get("/api/mcp-integration").status_code == 401
+        assert client.get("/api/mcp-integration", headers=headers).json()["mcp"]["state"] == "not_installed"
+        assert client.post("/api/mcp-integration/install", headers=headers).json()["mcp"]["state"] == "installed"
+        tested = client.post("/api/mcp-integration/test", headers=headers).json()["mcp"]
+        assert tested["last_test"]["ok"] is True
+        assert client.delete("/api/mcp-integration", headers=headers).json()["mcp"]["state"] == "not_installed"
+
+    assert integration.calls == ["status", "install", "test", "remove"]
 
 
 def test_authenticated_service_definition_update() -> None:

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { PortsView } from "@/components/ports-view";
+import { PortsView, type ProcessImportHint } from "@/components/ports-view";
 import { usePorts } from "@/hooks/use-ports";
 import type { ServiceConsoleApiClient } from "@/lib/api-client";
 import type { NormalizedPortRow } from "@/lib/types";
@@ -41,7 +41,7 @@ function renderPortsView({
   terminate?: ReturnType<typeof vi.fn>;
   onError?: NotificationHandler;
   onSuccess?: NotificationHandler;
-  onImportProcess?: (pid: number) => Promise<void>;
+  onImportProcess?: (process: ProcessImportHint) => Promise<void>;
 }) {
   const loadPorts = vi.fn();
   const apiClient = api ?? ({ listPorts: vi.fn() } as unknown as ServiceConsoleApiClient);
@@ -74,15 +74,26 @@ function renderPortsView({
 
 describe("PortsView process grouping", () => {
   it("sends a process PID to the add-service shortcut and disables unknown processes", async () => {
-    const onImportProcess = vi.fn<(pid: number) => Promise<void>>().mockResolvedValue(undefined);
+    const onImportProcess = vi.fn<(process: ProcessImportHint) => Promise<void>>().mockResolvedValue(undefined);
     const { onImportProcess: importProcess } = renderPortsView({
-      ports: [portFixture(), portFixture({ port: 9_000, pid: null, processName: "未知进程" })],
+      ports: [
+        portFixture({ command: "node server.js --token secret-value" }),
+        portFixture({ port: 9_000, pid: null, processName: "未知进程" }),
+      ],
       onImportProcess,
     });
 
     fireEvent.click(screen.getByRole("button", { name: "将 PID 42 添加为服务" }));
-    await waitFor(() => expect(importProcess).toHaveBeenCalledWith(42));
-    expect(onImportProcess).toHaveBeenCalledWith(42);
+    await waitFor(() => expect(importProcess).toHaveBeenCalledWith({
+      pid: 42,
+      processName: "node",
+      ports: [8_000],
+    }));
+    expect(onImportProcess).toHaveBeenCalledWith({
+      pid: 42,
+      processName: "node",
+      ports: [8_000],
+    });
     expect((screen.getByRole("button", { name: "缺少 PID，添加服务不可用" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
