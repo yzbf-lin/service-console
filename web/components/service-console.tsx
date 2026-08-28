@@ -13,6 +13,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { PortsView, type ProcessImportHint } from "@/components/ports-view";
+import { JenkinsView } from "@/components/jenkins-view";
 import { ServiceControlView } from "@/components/service-control-view";
 import { ServiceFormDialog, type ServiceFormMode } from "@/components/service-form-dialog";
 import { ServiceListPanel } from "@/components/service-list-panel";
@@ -76,6 +77,7 @@ function ServiceConsoleContent() {
   ));
   const [refreshing, setRefreshing] = useState(false);
   const [portRefreshSignal, setPortRefreshSignal] = useState(0);
+  const [jenkinsRefreshSignal, setJenkinsRefreshSignal] = useState(0);
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<ServiceFormMode>("create");
   const [formSource, setFormSource] = useState<NormalizedService | null>(null);
@@ -246,6 +248,9 @@ function ServiceConsoleContent() {
       if (activeView === "ports") {
         setPortRefreshSignal((value) => value + 1);
         await serviceState.checkHealth();
+      } else if (activeView === "jenkins") {
+        setJenkinsRefreshSignal((value) => value + 1);
+        await serviceState.checkHealth();
       } else {
         await Promise.all([serviceState.loadServices(), serviceState.checkHealth()]);
       }
@@ -270,6 +275,17 @@ function ServiceConsoleContent() {
         onError={showError}
         onSuccess={showSuccess}
         onImportProcess={openProcessForm}
+      />
+    );
+  } else if (activeView === "jenkins") {
+    content = (
+      <JenkinsView
+        api={serviceState.api}
+        active
+        refreshSignal={jenkinsRefreshSignal}
+        theme={resolvedTheme}
+        onError={showError}
+        onSuccess={showSuccess}
       />
     );
   } else if (activeView === "settings") {

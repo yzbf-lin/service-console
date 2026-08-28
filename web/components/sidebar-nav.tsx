@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Network, ServerCog, Settings } from "lucide-react";
+import { Network, ServerCog, Settings, Workflow } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import type { ViewId } from "@/lib/types";
@@ -23,6 +23,7 @@ interface NavigationItem {
 const primaryItems: NavigationItem[] = [
   { id: "services", label: "服务控制", description: "进程与实时日志", icon: ServerCog },
   { id: "ports", label: "端口进程", description: "监听端口与占用", icon: Network },
+  { id: "jenkins", label: "Jenkins", description: "任务、构建与日志", icon: Workflow },
 ];
 
 const secondaryItems: NavigationItem[] = [

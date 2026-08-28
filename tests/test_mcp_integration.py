@@ -7,8 +7,11 @@ from pathlib import Path
 import pytest
 
 import service_console.mcp_integration as mcp_integration_module
-from service_console.mcp_integration import McpIntegrationError, McpIntegrationManager
-from service_console.mcp_integration import _windows_batch_invocation
+from service_console.mcp_integration import (
+    McpIntegrationError,
+    McpIntegrationManager,
+    _windows_batch_invocation,
+)
 
 
 def executable(path: Path) -> Path:
@@ -75,8 +78,12 @@ def test_status_reports_a_token_free_stdio_command(monkeypatch: pytest.MonkeyPat
         str((tmp_path / "data").resolve()),
     ]
     assert "service_list" in status["tools"]
+    assert "jenkins_instance_list" in status["tools"]
+    assert "jenkins_build_trigger" in status["tools"]
+    assert "jenkins_queue_cancel" in status["tools"]
     assert "Authorization" not in str(status)
     assert "Bearer " not in str(status)
+    assert "--token" not in status["bridge_args"]
 
 
 def test_browser_controller_disables_desktop_only_registration(tmp_path: Path) -> None:

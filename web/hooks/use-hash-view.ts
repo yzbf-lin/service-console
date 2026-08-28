@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { ViewId } from "@/lib/types";
 
-const views = new Set<ViewId>(["services", "ports", "settings"]);
+const views = new Set<ViewId>(["services", "ports", "jenkins", "settings"]);
 
 function viewFromLocation(): ViewId {
   if (typeof window === "undefined") return "services";

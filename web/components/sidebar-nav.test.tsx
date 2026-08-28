@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SidebarNav } from "@/components/sidebar-nav";
 
 describe("SidebarNav information architecture", () => {
-  it("keeps Services and Ports above the service content and Settings in the lower section", () => {
+  it("keeps Services, Ports and Jenkins above the service content and Settings in the lower section", () => {
     const { container } = render(
       <SidebarNav activeView="services" onViewChange={vi.fn()}>
         <div data-testid="service-list">服务列表</div>
@@ -29,11 +29,13 @@ describe("SidebarNav information architecture", () => {
 
     expect(within(primary as HTMLElement).getByRole("button", { name: /^服务控制/ }).getAttribute("aria-current")).toBe("page");
     expect(within(primary as HTMLElement).getByRole("button", { name: /^端口进程/ })).toBeTruthy();
+    expect(within(primary as HTMLElement).getByRole("button", { name: /^Jenkins/ })).toBeTruthy();
     expect(within(primary as HTMLElement).queryByRole("button", { name: /^设置/ })).toBeNull();
 
     expect(within(secondary as HTMLElement).getByRole("button", { name: /^设置/ })).toBeTruthy();
     expect(within(secondary as HTMLElement).queryByRole("button", { name: /^服务控制/ })).toBeNull();
     expect(within(secondary as HTMLElement).queryByRole("button", { name: /^端口进程/ })).toBeNull();
+    expect(within(secondary as HTMLElement).queryByRole("button", { name: /^Jenkins/ })).toBeNull();
   });
 
   it("dispatches the selected lower-section view", () => {

@@ -30,6 +30,8 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 - 分服务持久化 stdout/stderr，并通过 WebSocket 实时推送。
 - 使用 xterm.js 显示 ANSI 日志，支持搜索、复制、链接、换行和滚动历史。
 - 查看监听端口及占用进程，并通过 PID/端口二次校验安全终止进程。
+- 配置多个 Jenkins 控制器，通过实例 item 切换，浏览 Folder/Job、构建、队列和日志，并在桌面端直接
+  触发构建、停止运行或取消排队。
 - 自动发现桌面端新版本，验证 Ed25519 签名清单与安装包 SHA-256，并在用户确认后安装重启。
 - 搜索当前用户的运行中进程（包括无端口 Worker），自动提取 `uv`/`pnpm` 启动命令和工作目录；
   Windows 无权读取完整元数据时可安全降级为手动补全。
@@ -59,6 +61,22 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 
 可按端口筛选、展开按进程聚合的 TCP/UDP 监听记录、将占用进程添加为服务，或在 PID 与预期端口
 二次校验后终止进程。
+
+### 管理多个 Jenkins 实例
+
+在主侧栏打开 **Jenkins**，可以添加一个或多个控制器。每个实例显示为独立 item，包含显示名称、主机、
+启用状态和本次连接结果；选中 item 后，Folder/Job 列表、构建历史、队列、详情与控制台日志会一起切换
+到该实例，并在本机恢复最近一次选择。窗口较窄时，同一工作区会切换为单面板 tab，避免同时渲染多个
+重内容区域。
+
+Jenkins 工作区支持 Job 搜索、Folder 导航、普通或参数化构建、构建状态与历史、停止构建、取消排队，
+以及 progressiveText 增量日志。这些记录由本地 Service Console 控制器按需查询 Jenkins，不会额外复制
+一套本地 Jenkins 数据库。切换 UI item 不会改变已经发起的 MCP 操作，因为每个 Jenkins API 与 MCP
+调用都会显式携带实例 ID。
+
+参数化构建会保留 Jenkins 默认值：密码参数留空时不会随请求提交，而是交由 Jenkins 使用已配置的默认值。
+当前版本会识别 Jenkins 文件参数，但不负责上传文件；包含文件参数的 Job 会标记为暂不支持，并禁止从
+Service Console 触发。需要上传文件时请直接在 Jenkins 中运行。
 
 ### 保存外观偏好
 
@@ -139,6 +157,23 @@ Windows 可能把同一账户表示为 `DOMAIN\User` 或 `User`；Service Consol
 进程”页面选择权限受限的进程时，也会进入同一个手动补全流程。应用默认按当前用户权限运行，不需要仅为
 导入进程而以管理员身份启动；目标若属于其他账户或高完整性管理员进程，Windows 仍可能限制元数据读取。
 
+### 配置 Jenkins 连接
+
+使用 **Jenkins → 添加实例** 配置显示名称、基础 URL、用户名、API Token、可选 CA 证书包、启用状态和
+请求超时。每个实例都可独立编辑、复制、删除或测试连接。Token 在界面中只写不回显：Service Console
+通过 Python `keyring` 保存到操作系统凭据后端（macOS Keychain / Windows Credential Locker），普通
+JSON 配置只保存非敏感实例字段。Linux 仅接受安全的 Secret Service、KWallet 或 libsecret 后端；若没有
+可用的安全凭据后端，Token 只保留在当前应用进程内存中，重启后需要重新输入。API 回包最多返回
+`token_present`，浏览器与 MCP 工具结果都不会取得 Token，也不会降级写入明文 Token 文件。
+
+建议为 Service Console 创建专用 Jenkins 用户或 API Token，并只授予已启用操作所需权限。只读浏览通常
+需要 `Overall/Read` 与 `Job/Read`；触发构建还需要 `Job/Build`，停止构建或取消排队需要
+`Job/Cancel`。本机仍需能够访问每个 Jenkins 地址；若系统信任库不包含私有 CA，需要为该实例显式提供
+CA 证书包。
+
+Jenkins 地址应优先使用 HTTPS。为兼容旧版或隔离内网控制器，应用仍支持 HTTP，但 Basic Auth 会在缺少
+传输加密时明文发送用户名和 API Token，因此只应在受信任网络中使用。
+
 ## 常用命令
 
 | 操作 | 命令 |
@@ -215,6 +250,26 @@ AI 调用 `project_apply_config` 后会创建、更新或跳过未变化的服�
 Bridge 还提供 `service_list/status/upsert/start/stop/restart/logs`、`port_list`、
 `process_list/import/terminate`。其中停止、重启和终止进程会改变本机进程状态，AI 客户端可根据 MCP
 annotations 显示确认提示。
+
+### Jenkins MCP 工具
+
+AI 应先调用 `jenkins_instance_list`，再把选中的 `instance_id` 显式传给其他每个 Jenkins 工具。UI 当前
+选中的 item 不会成为隐式默认值，因此操作人员切换实例时，不会把 AI 正在执行的操作重定向到另一个
+Jenkins。
+
+| 用途 | MCP 工具 |
+|---|---|
+| 浏览实例与 Job | `jenkins_instance_list`、`jenkins_job_list`、`jenkins_job_status` |
+| 查看构建与有限日志 | `jenkins_build_list`、`jenkins_build_status`、`jenkins_build_logs` |
+| 查看队列 | `jenkins_queue_list` |
+| 触发任务 | `jenkins_build_trigger` |
+| 停止或取消 | `jenkins_build_stop`、`jenkins_queue_cancel` |
+
+`jenkins_build_logs` 每次只读取一段有限的 progressiveText，输出受 `max_bytes` 限制（默认 64 KiB，
+最大 1 MiB）；需要继续读取时，使用返回的 `next_offset` 再显式调用，不会开启无限日志流。触发构建是
+非幂等操作，Bridge 在传输失败后不会自动重试；停止构建和取消队列标记为 destructive，其余浏览、状态
+与日志工具标记为只读。Jenkins Token 不是 MCP 参数，也不会返回给 AI；本地控制器会根据选中的实例从
+系统 keyring 解析凭据。
 
 ## 浏览器控制器
 

@@ -10,21 +10,9 @@ from pathlib import Path
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
+from service_console.mcp_integration import MCP_TOOL_NAMES
 
-EXPECTED_TOOLS = {
-    "service_list",
-    "service_status",
-    "service_upsert",
-    "service_start",
-    "service_stop",
-    "service_restart",
-    "service_logs",
-    "port_list",
-    "process_list",
-    "process_import",
-    "process_terminate",
-    "project_apply_config",
-}
+EXPECTED_TOOLS = set(MCP_TOOL_NAMES)
 
 
 async def verify(helper: Path, timeout: float) -> None:

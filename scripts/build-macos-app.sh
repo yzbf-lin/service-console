@@ -38,7 +38,9 @@ uv run --locked --group desktop pyinstaller \
   --icon "$ICON_PATH" \
   --paths "$ROOT_DIR/src" \
   --copy-metadata service-console \
+  --copy-metadata keyring \
   --collect-data service_console \
+  --collect-all keyring \
   --collect-all webview \
   --hidden-import webview.platforms.cocoa \
   "$ROOT_DIR/src/service_console/desktop.py"
