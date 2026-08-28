@@ -102,8 +102,17 @@ jobs:
       - name: Smoke-test executable
         shell: pwsh
         run: |
-          & "dist/Service Console/Service Console.exe" --help
-          if ($LASTEXITCODE -ne 0) { throw "Desktop executable smoke test failed" }
+          $process = Start-Process `
+            -FilePath "dist/Service Console/Service Console.exe" `
+            -ArgumentList "--help" `
+            -PassThru
+          if (-not $process.WaitForExit(30000)) {
+            Stop-Process -Id $process.Id -Force
+            throw "Desktop executable smoke test timed out"
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "Desktop executable smoke test failed with exit code $($process.ExitCode)"
+          }
       - name: Package application
         shell: pwsh
         run: |
