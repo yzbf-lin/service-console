@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ MAX_PACKAGE_BYTES = 512 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 100_000
 MAX_RESTART_ARGUMENTS_BYTES = 128 * 1024
+UPDATE_HELPER_START_TIMEOUT = 8.0
 
 UPDATE_READY_FILE_ENV = "SERVICE_CONSOLE_UPDATE_READY_FILE"
 UPDATE_RESTART_ARGUMENTS_ENV = "SERVICE_CONSOLE_UPDATE_RESTART_ARGUMENTS"
@@ -615,11 +617,13 @@ class UpdateManager:
                 prepared = extract_update_archive(archive, prepared_dir, cast(str, self.platform))
                 verify_prepared_update(prepared, cast(str, self.platform), manifest.version)
                 helper_path = archive.parent / (
-                    "install-update.ps1" if self.platform == "windows-x86_64" else "install-update.sh"
+                    "install-update.exe" if self.platform == "windows-x86_64" else "install-update.sh"
                 )
                 ready_file = archive.parent / "install-update.ready"
+                started_file = archive.parent / "install-update.started"
                 log_file = archive.parent / "install-update.log"
                 ready_file.unlink(missing_ok=True)
+                started_file.unlink(missing_ok=True)
                 _launch_install_helper(
                     platform_name=cast(str, self.platform),
                     helper_path=helper_path,
@@ -628,6 +632,7 @@ class UpdateManager:
                     process_id=os.getpid(),
                     launch_arguments=sys.argv[1:],
                     ready_file=ready_file,
+                    started_file=started_file,
                     log_file=log_file,
                 )
                 with self._lock:
@@ -852,9 +857,11 @@ def _launch_install_helper(
     process_id: int,
     launch_arguments: Sequence[str],
     ready_file: Path,
+    started_file: Path,
     log_file: Path,
 ) -> None:
     helper_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
     encoded_arguments = encode_restart_arguments(launch_arguments)
     if platform_name == "darwin-arm64":
         helper_path.write_text(_MACOS_INSTALL_HELPER, encoding="utf-8")
@@ -866,20 +873,24 @@ def _launch_install_helper(
             str(prepared.root),
             str(installed.root),
             str(ready_file),
+            str(started_file),
             str(log_file),
             encoded_arguments,
         ]
         try:
-            subprocess.Popen(
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-                start_new_session=True,
-            )
+            with log_file.open("ab", buffering=0) as output:
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(helper_path.parent),
+                    stdin=subprocess.DEVNULL,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    close_fds=True,
+                    start_new_session=True,
+                )
         except OSError as exc:
             raise UpdateError(f"Unable to start the macOS update helper: {exc}") from exc
+        _wait_for_install_helper_start(process, started_file, log_file)
         return
 
     if platform_name != "windows-x86_64":
@@ -888,48 +899,94 @@ def _launch_install_helper(
         relative_executable = prepared.executable.relative_to(prepared.root)
     except ValueError as exc:
         raise UpdateError("The prepared Windows executable is outside its application directory") from exc
-    helper_path.write_text(_WINDOWS_INSTALL_HELPER, encoding="utf-8-sig")
-    powershell = shutil.which("powershell.exe") or "powershell.exe"
+    packaged_helper = prepared.root / "Service Console Updater.exe"
+    if not packaged_helper.is_file():
+        raise UpdateError("The Windows update package does not contain Service Console Updater.exe")
+    temporary_helper = helper_path.with_name(f".{helper_path.name}.{os.getpid()}.tmp")
+    try:
+        shutil.copy2(packaged_helper, temporary_helper)
+        os.replace(temporary_helper, helper_path)
+    except OSError as exc:
+        temporary_helper.unlink(missing_ok=True)
+        raise UpdateError(f"Unable to prepare the native Windows update helper: {exc}") from exc
     command = [
-        powershell,
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
         str(helper_path),
-        "-ProcessId",
+        "--process-id",
         str(process_id),
-        "-Source",
+        "--source",
         str(prepared.root),
-        "-Target",
+        "--target",
         str(installed.root),
-        "-LaunchRelative",
+        "--launch-relative",
         str(relative_executable),
-        "-ReadyFile",
+        "--ready-file",
         str(ready_file),
-        "-LogFile",
+        "--started-file",
+        str(started_file),
+        "--log-file",
         str(log_file),
-        "-RestartArguments",
+        "--restart-arguments",
         encoded_arguments,
     ]
     creation_flags = (
-        getattr(subprocess, "DETACHED_PROCESS", 0)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     )
     try:
-        subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            creationflags=creation_flags,
-        )
+        with log_file.open("ab", buffering=0) as output:
+            process = subprocess.Popen(
+                command,
+                cwd=str(helper_path.parent),
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                close_fds=True,
+                creationflags=creation_flags,
+            )
     except OSError as exc:
         raise UpdateError(f"Unable to start the Windows update helper: {exc}") from exc
+    _wait_for_install_helper_start(process, started_file, log_file)
+
+
+def _wait_for_install_helper_start(
+    process: subprocess.Popen[bytes],
+    started_file: Path,
+    log_file: Path,
+    timeout: float = UPDATE_HELPER_START_TIMEOUT,
+) -> None:
+    """Keep the desktop open until the external helper confirms it is durable."""
+
+    deadline = time.monotonic() + timeout
+    while True:
+        if started_file.is_file():
+            return
+        return_code = process.poll()
+        if return_code is not None:
+            detail = _install_log_tail(log_file)
+            suffix = f": {detail}" if detail else ""
+            raise UpdateError(
+                f"The update helper exited with status {return_code} before starting{suffix}"
+            )
+        if time.monotonic() >= deadline:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+            raise UpdateError(
+                f"The update helper did not confirm startup within {timeout:g} seconds"
+            )
+        time.sleep(0.05)
+
+
+def _install_log_tail(log_file: Path, limit: int = 2048) -> str:
+    try:
+        with log_file.open("rb") as source:
+            source.seek(0, os.SEEK_END)
+            size = source.tell()
+            source.seek(max(0, size - limit))
+            return source.read().decode("utf-8", errors="replace").strip().replace("\n", " | ")
+    except OSError:
+        return ""
 
 
 def _exception_message(exc: Exception) -> str:
@@ -990,8 +1047,9 @@ PID="$1"
 SOURCE="$2"
 TARGET="$3"
 READY_FILE="$4"
-LOG_FILE="$5"
-RESTART_ARGUMENTS="$6"
+STARTED_FILE="$5"
+LOG_FILE="$6"
+RESTART_ARGUMENTS="$7"
 INCOMING="${TARGET}.update-new"
 BACKUP="${TARGET}.update-backup"
 EXECUTABLE="$TARGET/Contents/MacOS/Service Console"
@@ -1000,6 +1058,10 @@ NEW_PID=""
 umask 077
 mkdir -p "$(dirname "$LOG_FILE")"
 touch "$LOG_FILE"
+mkdir -p "$(dirname "$STARTED_FILE")"
+STARTED_TEMP="${STARTED_FILE}.$$"
+printf '{"pid":%s,"started_at":"%s"}\n' "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >"$STARTED_TEMP"
+mv "$STARTED_TEMP" "$STARTED_FILE"
 
 log() {
   printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >>"$LOG_FILE"
@@ -1110,110 +1172,4 @@ while [ "$COUNT" -lt 450 ]; do
   sleep 0.2
 done
 rollback "updated application did not become ready within 90 seconds"
-"""
-
-
-_WINDOWS_INSTALL_HELPER = r"""param(
-    [Parameter(Mandatory = $true)][int]$ProcessId,
-    [Parameter(Mandatory = $true)][string]$Source,
-    [Parameter(Mandatory = $true)][string]$Target,
-    [Parameter(Mandatory = $true)][string]$LaunchRelative,
-    [Parameter(Mandatory = $true)][string]$ReadyFile,
-    [Parameter(Mandatory = $true)][string]$LogFile,
-    [Parameter(Mandatory = $true)][string]$RestartArguments
-)
-$ErrorActionPreference = "Stop"
-$Incoming = "$Target.update-new"
-$Backup = "$Target.update-backup"
-$NewProcess = $null
-
-function Write-InstallLog([string]$Message) {
-    try {
-        $Timestamp = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ")
-        Add-Content -LiteralPath $LogFile -Value "$Timestamp $Message" -Encoding UTF8
-    } catch {
-        # Logging is best-effort; replacement and rollback remain authoritative.
-    }
-}
-
-function Start-ServiceConsole([bool]$HealthCheck) {
-    $env:SERVICE_CONSOLE_UPDATE_RESTART_ARGUMENTS = $RestartArguments
-    if ($HealthCheck) {
-        $env:SERVICE_CONSOLE_UPDATE_READY_FILE = $ReadyFile
-    } else {
-        Remove-Item Env:\SERVICE_CONSOLE_UPDATE_READY_FILE -ErrorAction SilentlyContinue
-    }
-    return Start-Process -FilePath (Join-Path $Target $LaunchRelative) -PassThru
-}
-
-New-Item -ItemType Directory -Path (Split-Path -Parent $LogFile) -Force | Out-Null
-Write-InstallLog "Waiting for desktop process $ProcessId to exit"
-while (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
-    Start-Sleep -Milliseconds 200
-}
-Write-InstallLog "Desktop process exited; preparing application swap"
-
-if (-not (Test-Path -LiteralPath $Target) -and (Test-Path -LiteralPath $Backup)) {
-    Rename-Item -LiteralPath $Backup -NewName (Split-Path -Leaf $Target)
-}
-if (-not (Test-Path -LiteralPath $Target)) {
-    Write-InstallLog "Installed application is missing"
-    exit 1
-}
-Remove-Item -LiteralPath $Incoming, $Backup -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
-
-try {
-    Copy-Item -LiteralPath $Source -Destination $Incoming -Recurse
-    Rename-Item -LiteralPath $Target -NewName (Split-Path -Leaf $Backup)
-    Rename-Item -LiteralPath $Incoming -NewName (Split-Path -Leaf $Target)
-    $NewProcess = Start-ServiceConsole $true
-    Write-InstallLog "Started updated application process $($NewProcess.Id)"
-    $ReadyDeadline = [DateTime]::UtcNow.AddSeconds(90)
-    while (-not (Test-Path -LiteralPath $ReadyFile) -and
-           -not $NewProcess.HasExited -and
-           [DateTime]::UtcNow -lt $ReadyDeadline) {
-        Start-Sleep -Milliseconds 200
-        $NewProcess.Refresh()
-    }
-    if ($NewProcess.HasExited) {
-        throw "Updated application exited before becoming ready"
-    }
-    if (-not (Test-Path -LiteralPath $ReadyFile)) {
-        throw "Updated application did not become ready within 90 seconds"
-    }
-    Remove-Item -LiteralPath $Backup -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
-    Write-InstallLog "Update completed after the desktop readiness marker"
-    exit 0
-} catch {
-    Write-InstallLog "Update failed: $($_.Exception.Message)"
-    if ($null -ne $NewProcess) {
-        $NewProcess.Refresh()
-        if (-not $NewProcess.HasExited) {
-            Stop-Process -Id $NewProcess.Id -Force -ErrorAction SilentlyContinue
-            Wait-Process -Id $NewProcess.Id -ErrorAction SilentlyContinue
-        }
-    }
-    Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
-    if (Test-Path -LiteralPath $Backup) {
-        Remove-Item -LiteralPath $Target -Recurse -Force -ErrorAction SilentlyContinue
-        if (-not (Test-Path -LiteralPath $Target)) {
-            Rename-Item -LiteralPath $Backup -NewName (Split-Path -Leaf $Target)
-        }
-    }
-    Remove-Item -LiteralPath $Incoming -Recurse -Force -ErrorAction SilentlyContinue
-    $RollbackExecutable = Join-Path $Target $LaunchRelative
-    if (Test-Path -LiteralPath $RollbackExecutable) {
-        try {
-            $NewProcess = Start-ServiceConsole $false
-            Write-InstallLog "Rollback restored and relaunched the previous version"
-        } catch {
-            Write-InstallLog "Rollback failed: $($_.Exception.Message)"
-        }
-    } else {
-        Write-InstallLog "Rollback failed: restored executable is missing"
-    }
-    exit 1
-}
 """

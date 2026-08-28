@@ -116,6 +116,10 @@ jobs:
           if ($process.ExitCode -ne 0) {
             throw "Desktop executable smoke test failed with exit code $($process.ExitCode)"
           }
+          & "dist/Service Console/Service Console Updater.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Updater smoke test failed with exit code $LASTEXITCODE"
+          }
           & "dist/Service Console/Service Console MCP.exe" --help | Out-Null
           if ($LASTEXITCODE -ne 0) {
             throw "MCP helper smoke test failed with exit code $LASTEXITCODE"

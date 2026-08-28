@@ -45,6 +45,7 @@ def _windows_archive() -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("Service Console/Service Console.exe", b"desktop-binary")
+        archive.writestr("Service Console/Service Console Updater.exe", b"updater-binary")
         archive.writestr("Service Console/README.md", b"release notes")
     return output.getvalue()
 
@@ -469,6 +470,9 @@ def test_install_launches_external_helper_for_frozen_application(
     assert launched["ready_file"] == (
         tmp_path / "data" / "updates" / "v0.2.0" / "install-update.ready"
     )
+    assert launched["started_file"] == (
+        tmp_path / "data" / "updates" / "v0.2.0" / "install-update.started"
+    )
     assert launched["log_file"] == (
         tmp_path / "data" / "updates" / "v0.2.0" / "install-update.log"
     )
@@ -503,9 +507,16 @@ def test_macos_helper_command_preserves_restart_arguments(
     )
     calls: list[tuple[list[str], dict[str, object]]] = []
 
-    def fake_popen(command: list[str], **kwargs: object) -> object:
+    started_file = tmp_path / "started marker"
+
+    class FakeProcess:
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
         calls.append((command, kwargs))
-        return object()
+        started_file.write_text("started", encoding="utf-8")
+        return FakeProcess()
 
     monkeypatch.setattr(update_module.subprocess, "Popen", fake_popen)
     arguments = ["--data-dir", str(tmp_path / "configuration with spaces"), "--debug"]
@@ -519,6 +530,7 @@ def test_macos_helper_command_preserves_restart_arguments(
         process_id=1234,
         launch_arguments=arguments,
         ready_file=tmp_path / "ready marker",
+        started_file=started_file,
         log_file=tmp_path / "failure log",
     )
 
@@ -526,6 +538,7 @@ def test_macos_helper_command_preserves_restart_arguments(
     assert command[:2] == ["/bin/sh", str(helper_path)]
     assert update_module.decode_restart_arguments(command[-1]) == arguments
     assert kwargs["start_new_session"] is True
+    assert kwargs["cwd"] == str(helper_path.parent)
     if os.name != "nt":
         assert helper_path.stat().st_mode & stat.S_IXUSR
 
@@ -539,36 +552,51 @@ def test_windows_helper_command_preserves_restart_arguments(
         root=prepared_root,
         executable=prepared_root / "bin with spaces" / "Service Console.exe",
     )
+    prepared.executable.parent.mkdir(parents=True)
+    prepared.executable.write_bytes(b"desktop")
+    packaged_helper = prepared_root / "Service Console Updater.exe"
+    packaged_helper.write_bytes(b"native-updater")
     installed = InstalledApplication(
         root=tmp_path / "installed target" / "Service Console",
         executable=tmp_path / "installed target" / "Service Console" / "Service Console.exe",
     )
-    calls: list[list[str]] = []
-    monkeypatch.setattr(update_module.shutil, "which", lambda _name: "powershell.exe")
-    monkeypatch.setattr(
-        update_module.subprocess,
-        "Popen",
-        lambda command, **_kwargs: calls.append(command),
-    )
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    started_file = tmp_path / "started marker"
+
+    class FakeProcess:
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
+        calls.append((command, kwargs))
+        started_file.write_text("started", encoding="utf-8")
+        return FakeProcess()
+
+    monkeypatch.setattr(update_module.subprocess, "Popen", fake_popen)
     arguments = ["--runtime-file", str(tmp_path / "runtime with spaces.json"), "--debug"]
+    helper_path = tmp_path / "updates with spaces" / "install-update.exe"
 
     update_module._launch_install_helper(
         platform_name="windows-x86_64",
-        helper_path=tmp_path / "updates with spaces" / "install-update.ps1",
+        helper_path=helper_path,
         prepared=prepared,
         installed=installed,
         process_id=4321,
         launch_arguments=arguments,
         ready_file=tmp_path / "ready marker",
+        started_file=started_file,
         log_file=tmp_path / "failure log",
     )
 
-    command = calls[0]
-    assert command[command.index("-LaunchRelative") + 1] == str(
+    command, kwargs = calls[0]
+    assert command[0] == str(helper_path)
+    assert command[command.index("--launch-relative") + 1] == str(
         Path("bin with spaces") / "Service Console.exe"
     )
-    encoded = command[command.index("-RestartArguments") + 1]
+    encoded = command[command.index("--restart-arguments") + 1]
     assert update_module.decode_restart_arguments(encoded) == arguments
+    assert kwargs["cwd"] == str(helper_path.parent)
+    assert helper_path.read_bytes() == b"native-updater"
 
 
 def test_install_helpers_wait_for_exit_without_deadline_and_commit_after_readiness() -> None:
@@ -579,14 +607,26 @@ def test_install_helpers_wait_for_exit_without_deadline_and_commit_after_readine
     assert macos_ready < macos.index('rm -rf "$BACKUP"', macos_ready)
     assert "rollback \"updated application did not become ready" in macos
     assert "Update failed:" in macos
+    assert 'mv "$STARTED_TEMP" "$STARTED_FILE"' in macos
 
-    windows = update_module._WINDOWS_INSTALL_HELPER
-    assert "while (Get-Process -Id $ProcessId" in windows
-    assert "AddSeconds(120)" not in windows
-    windows_ready = windows.index("if (-not (Test-Path -LiteralPath $ReadyFile))")
-    assert windows_ready < windows.index("Remove-Item -LiteralPath $Backup", windows_ready)
-    assert "Rollback restored and relaunched" in windows
-    assert "Write-InstallLog \"Update failed:" in windows
+
+def test_helper_start_failure_keeps_application_open_and_exposes_log(
+    tmp_path: Path,
+) -> None:
+    log_file = tmp_path / "install-update.log"
+    log_file.write_text("native updater failed to initialize\n", encoding="utf-8")
+
+    class FailedProcess:
+        def poll(self) -> int:
+            return 17
+
+    with pytest.raises(UpdateError, match="native updater failed to initialize"):
+        update_module._wait_for_install_helper_start(
+            FailedProcess(),  # type: ignore[arg-type]
+            tmp_path / "missing-started-marker",
+            log_file,
+            timeout=0.01,
+        )
 
 
 def test_update_directory_cleanup_keeps_current_and_most_recent(tmp_path: Path) -> None:
