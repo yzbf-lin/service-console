@@ -25,11 +25,19 @@ once, then start, stop, restart, monitor, and inspect its isolated logs from a d
 dashboard, command-line client, or terminal UI. It launches ordinary processes directly instead of
 requiring Docker or another container runtime.
 
+<p align="center">
+  <img src="docs/assets/screenshots/service-control.png" width="100%" alt="Service Console service control workspace">
+</p>
+
+<p align="center">
+  <sub>Service list, live xterm.js output, lifecycle controls, and runtime metrics in one compact workspace.</sub>
+</p>
+
 ## Highlights
 
 - Register commands with a working directory, environment variables, auto-start policy, and graceful
   stop timeout.
-- Start, stop, restart, edit, copy, remove, and inspect services from compact service cards.
+- Start, stop, restart, edit, copy, remove, and inspect services from a compact three-pane workspace.
 - Track PID, uptime, exit code, restart count, CPU, and memory.
 - Capture stdout and stderr in independent persistent logs and bounded live buffers.
 - Render ANSI output with xterm.js search, selection, links, wrapping, and scrollback.
@@ -41,6 +49,39 @@ requiring Docker or another container runtime.
   and Lucide React, with persistent light and dark themes.
 - Keep desktop automation private with a random loopback port, temporary bearer token, and a `0600`
   runtime descriptor.
+
+## Feature tour
+
+The screenshots below use isolated, anonymized demo processes. No personal service definitions,
+credentials, or production logs are included.
+
+### Create a service from a running process
+
+<p align="center">
+  <img src="docs/assets/screenshots/add-service.png" width="100%" alt="Create a Service Console definition from a running process">
+</p>
+
+Search by process name, command, or PID, then copy the inferred command and working directory into an
+editable service definition. Existing stdout and stderr are not attached; managed log capture begins
+the next time Service Console starts the saved command.
+
+### Inspect ports and process ownership
+
+<p align="center">
+  <img src="docs/assets/screenshots/ports-processes.png" width="100%" alt="Inspect listening ports and owning processes">
+</p>
+
+Filter by port, expand grouped TCP/UDP listeners, create a service from the owning process, or
+terminate it after Service Console verifies both the PID and expected port.
+
+### Persist appearance preferences
+
+<p align="center">
+  <img src="docs/assets/screenshots/settings.png" width="100%" alt="Service Console theme and connection settings">
+</p>
+
+Follow the operating system or select a persistent light or dark theme. Optional Supabase connection
+settings remain separate from the local FastAPI controller and are not required for local operation.
 
 ### Appearance
 
@@ -171,7 +212,8 @@ open "dist/Service Console.app"
 
 The build script:
 
-1. regenerates the multi-resolution ICNS icon from `assets/service-console-icon-1024.png`;
+1. regenerates the multi-resolution ICNS icon from `assets/service-console-icon-1024.png`; the
+   original transparent product mark is retained in `assets/service-console-logo.png`;
 2. builds and statically exports the Next.js dashboard into the Python package;
 3. installs the desktop dependency group;
 4. bundles CPython, pywebview, FastAPI, and the complete dashboard with PyInstaller;
@@ -181,6 +223,15 @@ The resulting app runs without Node.js or network access. It matches the build m
 the current build has been tested on Apple Silicon. It is ad-hoc signed and not notarized with an
 Apple Developer ID, so downloaded builds may trigger a Gatekeeper warning. `dist/` is intentionally
 ignored; publish distributable binaries through GitHub Releases.
+
+When replacing the product mark, save the transparent source as
+`assets/service-console-logo.png`, then regenerate the desktop, README, top-bar, and favicon assets:
+
+```bash
+uv run --group icon python scripts/build_brand_assets.py
+./scripts/build-macos-icon.sh
+pnpm run build:web-assets
+```
 
 ## Build the Windows application
 

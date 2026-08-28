@@ -24,7 +24,7 @@ export const metadata: Metadata = {
   title: "Service Console",
   description: "本地进程与日志控制台",
   icons: {
-    icon: "/static/favicon.svg",
+    icon: process.env.NODE_ENV === "development" ? "/favicon.png" : "/static/favicon.png",
   },
 };
 

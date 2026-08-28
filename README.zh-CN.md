@@ -14,10 +14,18 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 命令行或终端界面执行启动、停止、重启、状态监控和独立日志查看。所有命令都直接作为宿主机进程运行，
 不依赖 Docker 或其他容器运行时。
 
+<p align="center">
+  <img src="docs/assets/screenshots/service-control.png" width="100%" alt="Service Console 服务控制工作区">
+</p>
+
+<p align="center">
+  <sub>服务列表、xterm.js 实时日志、生命周期控制与运行指标集中在同一个紧凑工作区。</sub>
+</p>
+
 ## 主要功能
 
 - 配置命令、工作目录、环境变量、自动启动和优雅停止超时。
-- 从紧凑的服务卡片启动、停止、重启、编辑、复制或删除服务。
+- 在紧凑的三栏工作区中启动、停止、重启、编辑、复制、删除或检查服务。
 - 查看 PID、运行时间、退出码、重启次数、CPU 和内存。
 - 分服务持久化 stdout/stderr，并通过 WebSocket 实时推送。
 - 使用 xterm.js 显示 ANSI 日志，支持搜索、复制、链接、换行和滚动历史。
@@ -26,6 +34,37 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 - 使用 Next.js、React、TypeScript、Tailwind CSS、shadcn/ui、Radix UI 与 Lucide React
   构建紧凑控制台，并支持可持久化的浅色/深色主题。
 - 桌面端使用随机回环端口、临时 Token 和权限为 `0600` 的运行描述文件。
+
+## 功能导览
+
+以下截图全部使用隔离、脱敏的临时演示进程，不包含个人服务配置、凭据或真实项目日志。
+
+### 从运行中进程创建服务
+
+<p align="center">
+  <img src="docs/assets/screenshots/add-service.png" width="100%" alt="从运行中进程创建 Service Console 服务配置">
+</p>
+
+可按进程名称、命令或 PID 搜索，再将识别出的启动命令与工作目录填入可编辑的服务定义。该操作不会
+挂接现有 stdout/stderr；保存后的命令下一次由 Service Console 启动时才开始采集受管日志。
+
+### 查看端口和占用进程
+
+<p align="center">
+  <img src="docs/assets/screenshots/ports-processes.png" width="100%" alt="查看监听端口和占用进程">
+</p>
+
+可按端口筛选、展开按进程聚合的 TCP/UDP 监听记录、将占用进程添加为服务，或在 PID 与预期端口
+二次校验后终止进程。
+
+### 保存外观偏好
+
+<p align="center">
+  <img src="docs/assets/screenshots/settings.png" width="100%" alt="Service Console 主题和连接设置">
+</p>
+
+支持跟随系统、浅色和深色主题，选择结果会持久化。Supabase 云端连接保持可选，并不影响本地
+FastAPI 控制器提供的启动、停止、日志与端口功能。
 
 ### 外观与主题
 
@@ -39,9 +78,17 @@ Supabase 是可选云端适配器。构建时提供 `NEXT_PUBLIC_SUPABASE_URL` �
 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 后，可供后续远程认证或状态同步使用。本地启动、停止、重启、日志和
 端口操作始终由 FastAPI 控制器执行，不配置 Supabase 也可完整离线使用。
 
-## 快速开始
+## 环境要求
 
-需要 Python 3.12+ 和 [uv](https://docs.astral.sh/uv/)：
+| 用途 | 要求 |
+|---|---|
+| 控制器、CLI、TUI | Python 3.12+ 和 [uv](https://docs.astral.sh/uv/) |
+| Web 资源开发 | Node.js 22+ 和 pnpm 11 |
+| 原生桌面窗口 | macOS、Windows，或 pywebview 支持的 Linux 环境 |
+| 构建 macOS `.app` | macOS、Xcode Command Line Tools、Node.js、pnpm 和 uv |
+| 构建 Windows `.exe` | Windows、PowerShell 7、Node.js、pnpm 和 uv |
+
+## 快速开始
 
 ```bash
 git clone https://github.com/yzbf-lin/service-console.git
@@ -122,12 +169,21 @@ uv run service-console serve --host 127.0.0.1 --port 8787
 open "dist/Service Console.app"
 ```
 
-脚本会从 `assets/service-console-icon-1024.png` 生成多分辨率 ICNS 图标，静态导出 Next.js 与
-xterm.js 界面，再用 PyInstaller 打包 CPython、pywebview、FastAPI 和完整界面。Bundle 版本自动与
-`pyproject.toml` 同步并进行 ad-hoc 签名。
+脚本会从 `assets/service-console-icon-1024.png` 生成多分辨率 ICNS 图标；用户提供的透明产品标志原图
+保留在 `assets/service-console-logo.png`。随后静态导出 Next.js 与 xterm.js 界面，再用 PyInstaller 打包
+CPython、pywebview、FastAPI 和完整界面。Bundle 版本自动与 `pyproject.toml` 同步并进行 ad-hoc 签名。
 
 产物匹配构建机器架构，目前已在 Apple Silicon 上验证。它尚未使用 Apple Developer ID 签名和公证，
 通过 GitHub 下载后可能触发 Gatekeeper 提示。`dist/` 默认不进入 Git，应通过 GitHub Releases 分发。
+
+更换产品标志时，将透明原图保存为 `assets/service-console-logo.png`，再统一生成桌面图标、README 图标、
+顶栏 Logo 和 favicon：
+
+```bash
+uv run --group icon python scripts/build_brand_assets.py
+./scripts/build-macos-icon.sh
+pnpm run build:web-assets
+```
 
 ## 打包 Windows 应用
 

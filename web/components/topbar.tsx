@@ -1,10 +1,12 @@
 "use client";
 
-import { Moon, Plus, RefreshCw, Sun, TerminalSquare } from "lucide-react";
+import Image from "next/image";
+import { Moon, Plus, RefreshCw, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import type { ConnectionState, ViewId } from "@/lib/types";
+import productLogo from "@/public/service-console-logo.png";
 
 interface TopbarProps {
   activeView: ViewId;
@@ -75,8 +77,8 @@ export function Topbar({
   return (
     <header className="service-topbar z-40 grid h-12 min-h-12 items-center border-b bg-[var(--toolbar)]">
       <div className="flex h-full min-w-0 items-center gap-2 border-r px-3" aria-label="Service Console">
-        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
-          <TerminalSquare className="size-4" strokeWidth={1.8} aria-hidden="true" />
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg border border-black/10 bg-[#f7f8fa] shadow-sm">
+          <Image className="size-5 object-contain" src={productLogo} alt="" aria-hidden="true" />
         </span>
         <div className="min-w-0">
           <h1 className="truncate text-[13px] font-semibold tracking-tight">Service Console</h1>
