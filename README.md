@@ -206,6 +206,19 @@ stopping builds or cancelling queued items adds `Job/Cancel`. Service Console mu
 reach every configured Jenkins URL, and a private CA must be supplied explicitly when the system trust
 store does not contain it.
 
+#### Troubleshoot Jenkins `403` responses
+
+For controllers configured with username and password credentials, Service Console automatically
+requests the Jenkins CSRF crumb before each write action and reuses the same session cookie for the
+request. API token authentication is normally exempt from crumb checks and is the recommended option
+for automation.
+
+A `403` can still have several causes. First test the connection: if read requests also fail, verify
+the username and credential. If browsing works but build, stop, or queue actions fail, verify the
+required `Job/Build` or `Job/Cancel` permission. If Jenkins specifically reports a missing or invalid
+crumb, check the controller's CSRF and reverse-proxy session-cookie configuration; Service Console
+does not reuse crumbs across different sessions.
+
 Prefer an HTTPS Jenkins URL. Plain HTTP remains available for legacy or isolated internal
 controllers, but Basic authentication sends the username and API token without transport
 encryption, so it should be used only on a trusted network.

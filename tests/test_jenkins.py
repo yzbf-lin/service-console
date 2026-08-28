@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import ssl
@@ -58,6 +59,27 @@ class ChunkStream(httpx.AsyncByteStream):
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class PausedStream(httpx.AsyncByteStream):
+    def __init__(
+        self,
+        *,
+        content: bytes,
+        started: asyncio.Event,
+        release: asyncio.Event,
+    ) -> None:
+        self.content = content
+        self.started = started
+        self.release = release
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.started.set()
+        await self.release.wait()
+        yield self.content
+
+    async def aclose(self) -> None:
+        return None
 
 
 def instance(**overrides: object) -> JenkinsInstance:
@@ -348,6 +370,229 @@ async def test_gateway_isolates_cookie_jars_for_same_host_different_instances() 
 
 
 @pytest.mark.asyncio
+async def test_concurrent_writes_keep_each_crumb_paired_with_its_session() -> None:
+    first_crumb_started = asyncio.Event()
+    release_first_crumb = asyncio.Event()
+    crumb_calls = 0
+    post_calls = {1: 0, 2: 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal crumb_calls
+        if request.method == "GET" and request.url.path == "/jenkins/crumbIssuer/api/json":
+            crumb_calls += 1
+            index = crumb_calls
+            payload = json.dumps(
+                {"crumbRequestField": "Jenkins-Crumb", "crumb": f"crumb-{index}"}
+            ).encode()
+            headers = {
+                "Content-Type": "application/json",
+                "Set-Cookie": f"JSESSIONID=session-{index}; Path=/jenkins; HttpOnly",
+            }
+            if index == 1:
+                return httpx.Response(
+                    200,
+                    headers=headers,
+                    stream=PausedStream(
+                        content=payload,
+                        started=first_crumb_started,
+                        release=release_first_crumb,
+                    ),
+                )
+            return httpx.Response(200, headers=headers, content=payload)
+
+        if request.method == "POST" and request.url.path.endswith("/stop"):
+            number = int(request.url.path.split("/")[-2])
+            post_calls[number] += 1
+            assert request.headers["Jenkins-Crumb"] == f"crumb-{number}"
+            assert request.headers["Cookie"] == f"JSESSIONID=session-{number}"
+            return httpx.Response(200)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    selected = instance()
+    first = asyncio.create_task(
+        gateway.stop_build(selected, "secret-token", job="api", number=1)
+    )
+    await asyncio.wait_for(first_crumb_started.wait(), timeout=1)
+    second = asyncio.create_task(
+        gateway.stop_build(selected, "secret-token", job="api", number=2)
+    )
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    second_crumb_was_blocked = crumb_calls == 1
+    release_first_crumb.set()
+
+    await asyncio.gather(first, second)
+    assert second_crumb_was_blocked is True
+    assert crumb_calls == 2
+    assert post_calls == {1: 1, 2: 1}
+    await gateway.close()
+    assert gateway._session_locks == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_get_cannot_replace_session_between_crumb_and_post() -> None:
+    crumb_started = asyncio.Event()
+    release_crumb = asyncio.Event()
+    get_calls = 0
+    post_calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal get_calls, post_calls
+        if request.method == "GET" and request.url.path == "/jenkins/crumbIssuer/api/json":
+            payload = json.dumps(
+                {"crumbRequestField": "Jenkins-Crumb", "crumb": "write-crumb"}
+            ).encode()
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Type": "application/json",
+                    "Set-Cookie": "JSESSIONID=write-session; Path=/jenkins; HttpOnly",
+                },
+                stream=PausedStream(content=payload, started=crumb_started, release=release_crumb),
+            )
+        if request.method == "GET" and request.url.path == "/jenkins/api/json":
+            get_calls += 1
+            return httpx.Response(
+                200,
+                json={"nodeName": "reader"},
+                headers={"Set-Cookie": "JSESSIONID=read-session; Path=/jenkins; HttpOnly"},
+            )
+        if request.method == "POST" and request.url.path == "/jenkins/job/api/1/stop":
+            post_calls += 1
+            assert request.headers["Jenkins-Crumb"] == "write-crumb"
+            assert request.headers["Cookie"] == "JSESSIONID=write-session"
+            return httpx.Response(200)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    selected = instance()
+    write = asyncio.create_task(
+        gateway.stop_build(selected, "secret-token", job="api", number=1)
+    )
+    await asyncio.wait_for(crumb_started.wait(), timeout=1)
+    read = asyncio.create_task(gateway.test_connection(selected, "secret-token"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    read_was_blocked = get_calls == 0
+    release_crumb.set()
+
+    await asyncio.gather(write, read)
+    assert read_was_blocked is True
+    assert post_calls == 1
+    assert get_calls == 1
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_different_pooled_clients_do_not_share_session_lock() -> None:
+    first_crumb_started = asyncio.Event()
+    release_first_crumb = asyncio.Event()
+    post_hosts: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            payload = json.dumps(
+                {"crumbRequestField": "Jenkins-Crumb", "crumb": f"crumb-{host}"}
+            ).encode()
+            headers = {
+                "Content-Type": "application/json",
+                "Set-Cookie": f"JSESSIONID=session-{host}; Path=/; HttpOnly",
+            }
+            if host == "first.example":
+                return httpx.Response(
+                    200,
+                    headers=headers,
+                    stream=PausedStream(
+                        content=payload,
+                        started=first_crumb_started,
+                        release=release_first_crumb,
+                    ),
+                )
+            return httpx.Response(200, headers=headers, content=payload)
+        if request.method == "POST" and request.url.path == "/job/api/1/stop":
+            post_hosts.append(host)
+            assert request.headers["Jenkins-Crumb"] == f"crumb-{host}"
+            assert request.headers["Cookie"] == f"JSESSIONID=session-{host}"
+            return httpx.Response(200)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    first = asyncio.create_task(
+        gateway.stop_build(
+            instance(id="first", base_url="https://first.example"),
+            "first-token",
+            job="api",
+            number=1,
+        )
+    )
+    await asyncio.wait_for(first_crumb_started.wait(), timeout=1)
+    second = asyncio.create_task(
+        gateway.stop_build(
+            instance(id="second", base_url="https://second.example"),
+            "second-token",
+            job="api",
+            number=1,
+        )
+    )
+    try:
+        await asyncio.wait_for(asyncio.shield(second), timeout=1)
+    finally:
+        release_first_crumb.set()
+    await first
+
+    assert post_hosts == ["second.example", "first.example"]
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_discard_waits_for_active_session_and_removes_its_lock() -> None:
+    post_started = asyncio.Event()
+    release_post = asyncio.Event()
+    created_clients: list[httpx.AsyncClient] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/jenkins/crumbIssuer/api/json":
+            return httpx.Response(
+                200,
+                json={"crumbRequestField": "Jenkins-Crumb", "crumb": "discard-crumb"},
+                headers={"Set-Cookie": "JSESSIONID=discard-session; Path=/jenkins"},
+            )
+        if request.method == "POST" and request.url.path == "/jenkins/job/api/1/stop":
+            assert request.headers["Jenkins-Crumb"] == "discard-crumb"
+            assert request.headers["Cookie"] == "JSESSIONID=discard-session"
+            return httpx.Response(
+                200,
+                stream=PausedStream(content=b"", started=post_started, release=release_post),
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    def client_factory(_context: ssl.SSLContext) -> httpx.AsyncClient:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        created_clients.append(client)
+        return client
+
+    gateway = JenkinsGateway(client_factory)
+    write = asyncio.create_task(
+        gateway.stop_build(instance(), "secret-token", job="api", number=1)
+    )
+    await asyncio.wait_for(post_started.wait(), timeout=1)
+    discard = asyncio.create_task(gateway.discard_instance("instance-1"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    discard_waited = not discard.done()
+    release_post.set()
+
+    await asyncio.gather(write, discard)
+    assert discard_waited is True
+    assert created_clients and created_clients[0].is_closed
+    assert gateway._session_locks == {}
+    assert gateway._retiring_instances == {}
+    await gateway.close()
+
+
+@pytest.mark.asyncio
 async def test_gateway_reports_invalid_custom_ca_without_network(tmp_path: Path) -> None:
     gateway = JenkinsGateway()
     with pytest.raises(JenkinsApiError) as captured:
@@ -393,8 +638,10 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
     credentials = FakeCredentialStore()
     observed: list[httpx.Request] = []
     created_clients: list[httpx.AsyncClient] = []
+    crumb_calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal crumb_calls
         observed.append(request)
         auth = request.headers.get("Authorization", "")
         decoded_auth = base64.b64decode(auth.removeprefix("Basic ")).decode()
@@ -405,6 +652,23 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
 
         path = request.url.path
         tree = request.url.params.get("tree", "")
+        if request.method == "GET" and path == "/jenkins/crumbIssuer/api/json":
+            crumb_calls += 1
+            return httpx.Response(
+                200,
+                json={
+                    "crumbRequestField": "X-Service-Console-Crumb",
+                    "crumb": f"fresh-crumb-{crumb_calls}",
+                },
+                headers={
+                    "Set-Cookie": (
+                        f"JSESSIONID=crumb-session-{crumb_calls}; Path=/jenkins; HttpOnly"
+                    )
+                },
+            )
+        if request.method == "POST":
+            assert request.headers["X-Service-Console-Crumb"] == f"fresh-crumb-{crumb_calls}"
+            assert request.headers["Cookie"] == f"JSESSIONID=crumb-session-{crumb_calls}"
         if request.method == "GET" and path == "/jenkins/api/json":
             return httpx.Response(200, json={"nodeName": "built-in"}, headers={"X-Jenkins": "2.479.1"})
         if request.method == "GET" and path == "/jenkins/job/Team A/job/release#1/api/json":
@@ -641,15 +905,17 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
         assert all("token" not in item for item in listed)
 
     assert created_clients and all(client.is_closed for client in created_clients)
+    assert crumb_calls == 3
     assert all("super-secret-token" not in str(request.url) for request in observed)
 
 
 def test_build_trigger_failure_is_not_retried_and_error_is_redacted(tmp_path: Path) -> None:
     credentials = FakeCredentialStore()
+    crumb_calls = 0
     trigger_calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal trigger_calls
+        nonlocal crumb_calls, trigger_calls
         if request.method == "GET" and request.url.path == "/job/api/api/json":
             return httpx.Response(
                 200,
@@ -659,9 +925,16 @@ def test_build_trigger_failure_is_not_retried_and_error_is_redacted(tmp_path: Pa
                     "actions": [],
                 },
             )
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            crumb_calls += 1
+            return httpx.Response(
+                200,
+                json={"crumbRequestField": "Jenkins-Crumb", "crumb": "secret-crumb"},
+            )
         if request.method == "POST" and request.url.path.endswith("/build"):
             trigger_calls += 1
-            return httpx.Response(503, text="secret-token internal failure")
+            assert request.headers["Jenkins-Crumb"] == "secret-crumb"
+            return httpx.Response(503, text="secret-token secret-crumb internal failure")
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     transport = httpx.MockTransport(handler)
@@ -692,7 +965,117 @@ def test_build_trigger_failure_is_not_retried_and_error_is_redacted(tmp_path: Pa
     assert response.status_code == 502
     assert response.json() == {"detail": "Jenkins returned HTTP 503"}
     assert "secret-token" not in response.text
+    assert "secret-crumb" not in response.text
+    assert crumb_calls == 1
     assert trigger_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crumb_status", [401, 403, 404])
+async def test_write_continues_once_without_crumb_when_issuer_is_unavailable(
+    crumb_status: int,
+) -> None:
+    crumb_calls = 0
+    write_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal crumb_calls, write_calls
+        if request.method == "GET" and request.url.path == "/jenkins/crumbIssuer/api/json":
+            crumb_calls += 1
+            return httpx.Response(crumb_status, text="issuer unavailable secret-token")
+        if request.method == "POST" and request.url.path == "/jenkins/job/api/7/stop":
+            write_calls += 1
+            assert "Jenkins-Crumb" not in request.headers
+            return httpx.Response(200)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    await gateway.stop_build(instance(), "secret-token", job="api", number=7)
+
+    assert crumb_calls == 1
+    assert write_calls == 1
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"crumbRequestField": "Authorization", "crumb": "secret-crumb"},
+        {"crumbRequestField": "Jenkins-Crumb", "crumb": "secret-crumb\r\nInjected: yes"},
+        {"crumbRequestField": "Jenkins-Crumb"},
+    ],
+)
+async def test_invalid_crumb_response_blocks_write_and_redacts_secrets(
+    payload: dict[str, object],
+) -> None:
+    write_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal write_calls
+        if request.method == "GET" and request.url.path == "/jenkins/crumbIssuer/api/json":
+            return httpx.Response(200, json=payload)
+        if request.method == "POST":
+            write_calls += 1
+            return httpx.Response(200)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    with pytest.raises(JenkinsApiError) as captured:
+        await gateway.stop_build(instance(), "secret-token", job="api", number=7)
+
+    assert captured.value.status_code == 502
+    assert captured.value.detail == "Jenkins returned an invalid CSRF crumb response"
+    assert "secret-token" not in str(captured.value)
+    assert "secret-crumb" not in str(captured.value)
+    assert write_calls == 0
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("crumb_status", "write_detail", "expected_detail"),
+    [
+        (200, "permission denied secret-token", "Jenkins write permission denied"),
+        (200, "No valid crumb was included: secret-crumb", "Jenkins rejected the CSRF crumb"),
+        (
+            404,
+            "No valid crumb was included: secret-token",
+            "Jenkins requires a CSRF crumb, but no crumb was available",
+        ),
+    ],
+)
+async def test_write_denial_distinguishes_permissions_and_missing_crumb_without_leaks(
+    crumb_status: int,
+    write_detail: str,
+    expected_detail: str,
+) -> None:
+    write_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal write_calls
+        if request.method == "GET" and request.url.path == "/jenkins/crumbIssuer/api/json":
+            if crumb_status != 200:
+                return httpx.Response(crumb_status)
+            return httpx.Response(
+                200,
+                json={"crumbRequestField": "Jenkins-Crumb", "crumb": "secret-crumb"},
+            )
+        if request.method == "POST" and request.url.path == "/jenkins/job/api/7/stop":
+            write_calls += 1
+            return httpx.Response(403, text=write_detail)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    with pytest.raises(JenkinsApiError) as captured:
+        await gateway.stop_build(instance(), "secret-token", job="api", number=7)
+
+    assert captured.value.status_code == 403
+    assert captured.value.detail == expected_detail
+    assert "secret-token" not in str(captured.value)
+    assert "secret-crumb" not in str(captured.value)
+    assert write_calls == 1
+    await gateway.close()
 
 
 @pytest.mark.asyncio
@@ -700,9 +1083,11 @@ async def test_parameterized_build_uses_parameter_endpoint_and_omits_blank_passw
     tmp_path: Path,
 ) -> None:
     credentials = FakeCredentialStore()
+    crumb_calls = 0
     submitted_forms: list[dict[str, list[str]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal crumb_calls
         if request.method == "GET" and request.url.path == "/job/api/api/json":
             return httpx.Response(
                 200,
@@ -722,7 +1107,17 @@ async def test_parameterized_build_uses_parameter_endpoint_and_omits_blank_passw
                     ],
                 },
             )
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            crumb_calls += 1
+            return httpx.Response(
+                200,
+                json={
+                    "crumbRequestField": "Jenkins-Crumb",
+                    "crumb": f"parameter-crumb-{crumb_calls}",
+                },
+            )
         if request.method == "POST" and request.url.path == "/job/api/buildWithParameters":
+            assert request.headers["Jenkins-Crumb"] == f"parameter-crumb-{crumb_calls}"
             submitted_forms.append(parse_qs(request.content.decode()))
             return httpx.Response(201, headers={"Location": "/queue/item/7/"})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
@@ -747,6 +1142,7 @@ async def test_parameterized_build_uses_parameter_endpoint_and_omits_blank_passw
     )
 
     assert submitted_forms == [{}, {"ENV": ["production"]}]
+    assert crumb_calls == 2
     await service.shutdown()
 
 
