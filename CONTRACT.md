@@ -4,8 +4,8 @@
 
 - `ServiceDefinition`: `name`, `command`, `cwd`, `env`, `auto_start`, `stop_timeout`.
 - Runtime states: `STOPPED`, `STARTING`, `RUNNING`, `STOPPING`, `EXITED`, `FAILED`.
-- A controller owns all processes, starts each in a new Unix process group, captures stdout/stderr,
-  stops with `SIGTERM`, then falls back to `SIGKILL` after `stop_timeout`.
+- A controller owns all processes, isolates each service in a Unix process group or Windows process
+  tree, captures stdout/stderr, and escalates from graceful termination after `stop_timeout`.
 - Definitions persist as JSON below the selected data directory. Logs persist per service and are
   also held in a bounded in-memory buffer.
 
@@ -26,7 +26,7 @@
 ## Module map
 
 - `models.py`, `store.py`: persistent service definitions and runtime data models.
-- `manager.py`: process-group lifecycle, metrics, and log capture.
+- `manager.py`: platform process-tree lifecycle, metrics, and log capture.
 - `api.py`: HTTP and WebSocket controller surface.
 - `cli.py`, `tui.py`: command-line and terminal clients.
 - `desktop.py`, `runtime.py`: native window lifecycle and private local discovery.

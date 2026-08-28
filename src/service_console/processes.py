@@ -6,6 +6,7 @@ import getpass
 import os
 import re
 import shlex
+import subprocess
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from .ports import PortInspector
 ProcessRow = dict[str, object]
 ManagedProcesses = Mapping[int, str]
 ProcessIdentity = tuple[int, float]
+_IS_WINDOWS = os.name == "nt"
 
 _SAFE_ENV_KEYS = frozenset(
     {
@@ -33,7 +35,22 @@ _SAFE_ENV_KEYS = frozenset(
         "VIRTUAL_ENV",
     }
 )
-_SHELL_NAMES = frozenset({"bash", "dash", "fish", "sh", "tcsh", "zsh"})
+_SHELL_NAMES = frozenset(
+    {
+        "bash",
+        "cmd",
+        "cmd.exe",
+        "dash",
+        "fish",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "pwsh.exe",
+        "sh",
+        "tcsh",
+        "zsh",
+    }
+)
 _SENSITIVE_KEY = re.compile(
     r"(?:^|[_-])(?:"
     r"api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|secret|token|"
@@ -163,7 +180,7 @@ class ProcessInspector:
         argv = _read_process_value(launcher, "cmdline", warnings, "command line") or []
         argv = [str(item) for item in argv]
         masked_argv, redacted = _mask_sensitive_argv(argv)
-        command = shlex.join(masked_argv) if masked_argv else ""
+        command = _format_command(masked_argv) if masked_argv else ""
         cwd_value = _read_process_value(launcher, "cwd", warnings, "working directory")
         cwd = str(cwd_value) if cwd_value else ""
         name_value = _read_process_value(launcher, "name", warnings, "process name")
@@ -388,10 +405,19 @@ def _cmdline(process: psutil.Process) -> list[str]:
 
 
 def _get_process_group(pid: int) -> int | None:
+    getpgid = getattr(os, "getpgid", None)
+    if getpgid is None:
+        return None
     try:
-        return os.getpgid(pid)
+        return getpgid(pid)
     except (ProcessLookupError, PermissionError, OSError):
         return None
+
+
+def _format_command(argv: list[str]) -> str:
+    if _IS_WINDOWS:
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
 
 
 def _process_ancestry_identities(process: psutil.Process) -> list[ProcessIdentity]:

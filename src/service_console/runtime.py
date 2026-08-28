@@ -13,10 +13,21 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import urlsplit
 
-import fcntl
+import psutil
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - exercised on Windows
+    _fcntl = None
+
+try:
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover - exercised on POSIX
+    _msvcrt = None
 
 
 RUNTIME_FILENAME = "controller.json"
+_IS_WINDOWS = os.name == "nt"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +55,20 @@ def _is_loopback(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _process_exists(pid: int) -> bool:
+    if _IS_WINDOWS:
+        return psutil.pid_exists(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Sandboxed clients may be unable to signal a same-user desktop process. Treat the
+        # descriptor as live and let the authenticated HTTP request verify reachability.
+        return True
+    return True
 
 
 def _validated_connection(payload: object) -> RuntimeConnection:
@@ -98,12 +123,30 @@ def _exclusive_runtime_lock(destination: Path) -> Iterator[None]:
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(lock_path, flags, 0o600)
+    locked = False
     try:
-        os.fchmod(descriptor, 0o600)
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if _IS_WINDOWS:
+            if _msvcrt is None:
+                raise RuntimeError("Windows runtime locking is unavailable")
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            _msvcrt.locking(descriptor, _msvcrt.LK_LOCK, 1)
+            locked = True
+        else:
+            if _fcntl is None:
+                raise RuntimeError("POSIX runtime locking is unavailable")
+            os.fchmod(descriptor, 0o600)
+            _fcntl.flock(descriptor, _fcntl.LOCK_EX)
+            locked = True
         yield
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        if locked and _IS_WINDOWS and _msvcrt is not None:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            _msvcrt.locking(descriptor, _msvcrt.LK_UNLCK, 1)
+        elif locked and not _IS_WINDOWS and _fcntl is not None:
+            _fcntl.flock(descriptor, _fcntl.LOCK_UN)
         os.close(descriptor)
 
 
@@ -121,13 +164,15 @@ def _write_runtime_connection(destination: Path, connection: RuntimeConnection) 
             delete=False,
         ) as temporary:
             temporary_path = temporary.name
-            os.fchmod(temporary.fileno(), 0o600)
+            if not _IS_WINDOWS:
+                os.fchmod(temporary.fileno(), 0o600)
             json.dump(asdict(connection), temporary, ensure_ascii=False, indent=2)
             temporary.write("\n")
             temporary.flush()
             os.fsync(temporary.fileno())
         os.replace(temporary_path, destination)
-        destination.chmod(0o600)
+        if not _IS_WINDOWS:
+            destination.chmod(0o600)
     finally:
         if temporary_path is not None:
             Path(temporary_path).unlink(missing_ok=True)
@@ -161,24 +206,17 @@ def load_runtime_connection(
         raise ValueError(f"failed to inspect desktop controller descriptor: {exc}") from exc
     if not stat.S_ISREG(metadata.st_mode):
         raise ValueError("desktop controller descriptor must be a regular file")
-    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+    if not _IS_WINDOWS and hasattr(os, "getuid") and metadata.st_uid != os.getuid():
         raise ValueError("desktop controller descriptor is not owned by the current user")
-    if stat.S_IMODE(metadata.st_mode) & 0o077:
+    if not _IS_WINDOWS and stat.S_IMODE(metadata.st_mode) & 0o077:
         raise ValueError("desktop controller descriptor permissions must be 0600")
     try:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"failed to read desktop controller descriptor: {exc}") from exc
     connection = _validated_connection(payload)
-    if require_live_process:
-        try:
-            os.kill(connection.pid, 0)
-        except ProcessLookupError:
-            return None
-        except PermissionError:
-            # Sandboxed clients may be unable to signal a same-user desktop process. Treat the
-            # descriptor as live and let the authenticated HTTP request verify reachability.
-            pass
+    if require_live_process and not _process_exists(connection.pid):
+        return None
     return connection
 
 

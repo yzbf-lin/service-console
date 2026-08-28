@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,6 +12,15 @@ import pytest
 
 from service_console import processes
 from service_console.processes import ProcessInspector
+
+
+_TEST_UID = getattr(os, "getuid", lambda: 1_000)()
+
+
+def format_command(argv: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
 
 
 class FakeProcess:
@@ -37,7 +47,7 @@ class FakeProcess:
         self._created_at: float | list[float] = created_at
         self._environment = environment or {}
         self._username = username
-        self._uid = os.getuid() if uid is None else uid
+        self._uid = _TEST_UID if uid is None else uid
         self.registry: dict[int, FakeProcess] = {}
         self.cmdline_reads = 0
         self.cwd_reads = 0
@@ -107,7 +117,8 @@ def install_processes(
 
     monkeypatch.setattr(processes.psutil, "Process", process_factory)
     monkeypatch.setattr(processes.psutil, "process_iter", lambda: list(registry.values()))
-    monkeypatch.setattr(processes.os, "getpgid", getpgid)
+    monkeypatch.setattr(processes.os, "getuid", lambda: _TEST_UID, raising=False)
+    monkeypatch.setattr(processes.os, "getpgid", getpgid, raising=False)
 
 
 def process_tree(tmp_path: Path) -> dict[int, FakeProcess]:
@@ -207,7 +218,7 @@ def process_tree(tmp_path: Path) -> dict[int, FakeProcess]:
         cwd=tmp_path,
         created_at=500.25,
         username="other",
-        uid=os.getuid() + 1,
+        uid=_TEST_UID + 1,
     )
     return {
         process.pid: process
@@ -243,7 +254,7 @@ def test_list_processes_restores_launchers_and_includes_processes_without_ports(
     assert all(row["pid"] not in {90, 300, 301, 900} for row in rows)
     assert all(row["pid"] != 500 for row in rows)
     backend = next(row for row in rows if row["pid"] == 101)
-    assert backend["command"] == shlex.join(registry[101]._argv)
+    assert backend["command"] == format_command(registry[101]._argv)
     assert backend["ports"] == [8000]
     assert backend["safe_env"] == {"PYTHONUNBUFFERED": "1"}
     assert "TOKEN" not in backend["safe_env"]
@@ -276,7 +287,7 @@ def test_get_process_returns_resolved_uv_identity_and_marks_managed_children(
         "create_time": 101.25,
         "started_at": "1970-01-01T00:01:41.250000+00:00",
         "process_name": "uv",
-        "command": shlex.join(registry[101]._argv),
+        "command": format_command(registry[101]._argv),
         "cwd": str(tmp_path),
         "username": "tester",
         "ports": [8000],
@@ -440,7 +451,7 @@ def test_scripted_shells_are_restorable_launchers(
     rows = inspector.list_processes()
 
     assert [row["pid"] for row in rows] == [700]
-    assert rows[0]["command"] == shlex.join(shell_argv)
+    assert rows[0]["command"] == format_command(shell_argv)
     assert rows[0]["ports"] == [8123]
     assert rows[0]["restorable"] is True
 
@@ -519,3 +530,55 @@ def test_port_snapshot_is_discarded_when_owner_pid_changes_identity(
 def test_get_process_rejects_system_pids(pid: int) -> None:
     with pytest.raises(ValueError, match="greater than 1"):
         ProcessInspector(FakePortInspector(), controller_pid=999).get_process(pid)
+
+
+def test_windows_discovery_without_getpgid_uses_windows_command_quoting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    selected = FakeProcess(
+        800,
+        ppid=1,
+        pgid=800,
+        name="python.exe",
+        argv=[r"C:\Program Files\Python\python.exe", "app.py", "hello world"],
+        cwd=tmp_path,
+        created_at=800.25,
+    )
+    install_processes(monkeypatch, {800: selected})
+    monkeypatch.delattr(processes.os, "getpgid")
+    monkeypatch.setattr(processes, "_IS_WINDOWS", True)
+    inspector = ProcessInspector(FakePortInspector(), controller_pid=999)
+
+    row = inspector.get_process(800)
+
+    assert row["pid"] == 800
+    assert row["command"] == subprocess.list2cmdline(selected._argv)
+
+
+@pytest.mark.parametrize("shell", ["cmd.exe", "powershell.exe", "pwsh.exe"])
+def test_windows_interactive_shells_are_not_restorable_launchers(
+    shell: str,
+    tmp_path: Path,
+) -> None:
+    interactive = FakeProcess(
+        810,
+        ppid=1,
+        pgid=810,
+        name=shell,
+        argv=[shell],
+        cwd=tmp_path,
+        created_at=810.25,
+    )
+    scripted = FakeProcess(
+        811,
+        ppid=1,
+        pgid=811,
+        name=shell,
+        argv=[shell, "/c" if shell == "cmd.exe" else "-Command", "python app.py"],
+        cwd=tmp_path,
+        created_at=811.25,
+    )
+
+    assert processes._is_shell(interactive, interactive._argv) is True
+    assert processes._is_shell(scripted, scripted._argv) is False

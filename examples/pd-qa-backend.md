@@ -38,7 +38,7 @@ container runtime.
    - Celery beat, when explicitly started, remains `RUNNING` and emits scheduler logs.
    - Each service has an independent log view.
    - Restart changes the PID and increments `restart_count`.
-   - Stop reaches `STOPPED` and releases the corresponding process group.
+   - Stop reaches `STOPPED` and releases the corresponding process group or Windows process tree.
 
 5. For day-to-day work from the sibling `pd-qa-backend` checkout, use its stable project wrapper:
 

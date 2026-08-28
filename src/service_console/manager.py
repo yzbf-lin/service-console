@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -15,6 +16,17 @@ import psutil
 
 from .models import LogEntry, ServiceDefinition, ServiceRuntime, ServiceState, utc_now
 from .store import DefinitionStore
+
+
+_IS_WINDOWS = os.name == "nt"
+_CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+_SIGKILL = getattr(signal, "SIGKILL", 9)
+
+
+def _subprocess_group_options() -> dict[str, object]:
+    if _IS_WINDOWS:
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
 
 
 @dataclass(slots=True)
@@ -242,8 +254,8 @@ class ServiceManager:
                 env=environment,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
                 limit=1024 * 1024,
+                **_subprocess_group_options(),
             )
         except Exception as exc:
             service.runtime.state = ServiceState.FAILED
@@ -284,18 +296,42 @@ class ServiceManager:
 
         service.runtime.state = ServiceState.STOPPING
         self._emit_status(service)
+        process_tree: tuple[psutil.Process, ...] = ()
         try:
-            self._signal_process_group(process, signal.SIGTERM)
+            process_tree = self._signal_process_group(process, signal.SIGTERM)
             group_exited = await self._wait_for_process_group(
                 process,
                 timeout=service.definition.stop_timeout,
+                process_tree=process_tree,
             )
             if not group_exited:
-                self._signal_process_group(process, signal.SIGKILL)
+                process_tree = self._signal_process_group(
+                    process,
+                    _SIGKILL,
+                    process_tree=process_tree,
+                )
                 await asyncio.shield(process.wait())
+                if _IS_WINDOWS:
+                    await self._wait_for_process_group(
+                        process,
+                        timeout=max(1.0, service.definition.stop_timeout),
+                        process_tree=process_tree,
+                    )
         except asyncio.CancelledError:
-            self._signal_process_group(process, signal.SIGKILL)
+            process_tree = self._signal_process_group(
+                process,
+                _SIGKILL,
+                process_tree=process_tree,
+            )
             await asyncio.shield(process.wait())
+            if _IS_WINDOWS:
+                await asyncio.shield(
+                    self._wait_for_process_group(
+                        process,
+                        timeout=max(1.0, service.definition.stop_timeout),
+                        process_tree=process_tree,
+                    )
+                )
             raise
         finally:
             if process.returncode is not None and service.process is process:
@@ -467,11 +503,73 @@ class ServiceManager:
         return service.runtime.to_dict(service.definition, uptime_seconds=uptime_seconds)
 
     @staticmethod
-    def _signal_process_group(process: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    def _signal_process_group(
+        process: asyncio.subprocess.Process,
+        sig: signal.Signals | int,
+        *,
+        process_tree: tuple[psutil.Process, ...] = (),
+    ) -> tuple[psutil.Process, ...]:
+        if _IS_WINDOWS:
+            current_tree = ServiceManager._windows_process_tree(process.pid)
+            targets = ServiceManager._merge_process_trees(process_tree, current_tree)
+            if not targets:
+                try:
+                    if sig == _SIGKILL:
+                        process.kill()
+                    else:
+                        process.terminate()
+                except ProcessLookupError:
+                    pass
+                return targets
+            for target in targets:
+                try:
+                    if sig == _SIGKILL:
+                        target.kill()
+                    else:
+                        target.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+                    continue
+            return targets
         try:
             os.killpg(process.pid, sig)
         except ProcessLookupError:
-            return
+            pass
+        return ()
+
+    @staticmethod
+    def _windows_process_tree(pid: int) -> tuple[psutil.Process, ...]:
+        try:
+            root = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            return ()
+        try:
+            descendants = root.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            descendants = []
+        descendants.reverse()
+        return (*descendants, root)
+
+    @staticmethod
+    def _merge_process_trees(
+        existing: tuple[psutil.Process, ...],
+        current: tuple[psutil.Process, ...],
+    ) -> tuple[psutil.Process, ...]:
+        processes: dict[int, psutil.Process] = {}
+        for process in (*existing, *current):
+            processes.setdefault(process.pid, process)
+        return tuple(processes.values())
+
+    @staticmethod
+    def _windows_process_tree_exists(process_tree: tuple[psutil.Process, ...]) -> bool:
+        for process in process_tree:
+            try:
+                if process.is_running():
+                    return True
+            except psutil.NoSuchProcess:
+                continue
+            except (psutil.AccessDenied, OSError):
+                return True
+        return False
 
     @staticmethod
     def _process_group_exists(process_group_id: int) -> bool:
@@ -488,10 +586,15 @@ class ServiceManager:
         process: asyncio.subprocess.Process,
         *,
         timeout: float,
+        process_tree: tuple[psutil.Process, ...] = (),
     ) -> bool:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        while self._process_group_exists(process.pid):
+        while (
+            self._windows_process_tree_exists(process_tree)
+            if _IS_WINDOWS
+            else self._process_group_exists(process.pid)
+        ):
             remaining = deadline - loop.time()
             if remaining <= 0:
                 return False

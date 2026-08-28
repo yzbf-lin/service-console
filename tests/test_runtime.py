@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from service_console import runtime
 from service_console.runtime import (
     RuntimeConnection,
     load_runtime_connection,
@@ -32,7 +33,8 @@ def test_runtime_connection_round_trip_is_private_and_instance_scoped(tmp_path: 
 
     write_runtime_connection(path, current)
 
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert load_runtime_connection(path) == current
     assert remove_runtime_connection(path, "another-instance") is False
     assert path.exists()
@@ -49,6 +51,7 @@ def test_runtime_connection_rejects_non_loopback_url(tmp_path: Path) -> None:
     assert not path.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not expose POSIX permission bits")
 def test_runtime_connection_rejects_exposed_permissions(tmp_path: Path) -> None:
     path = tmp_path / "controller.json"
     write_runtime_connection(path, connection())
@@ -62,10 +65,7 @@ def test_runtime_connection_ignores_stale_process(monkeypatch: pytest.MonkeyPatc
     path = tmp_path / "controller.json"
     write_runtime_connection(path, connection())
 
-    def process_missing(_pid: int, _signal: int) -> None:
-        raise ProcessLookupError
-
-    monkeypatch.setattr("service_console.runtime.os.kill", process_missing)
+    monkeypatch.setattr(runtime, "_process_exists", lambda _pid: False)
     assert load_runtime_connection(path) is None
 
 
@@ -77,10 +77,7 @@ def test_runtime_connection_treats_permission_denied_process_as_live(
     current = connection()
     write_runtime_connection(path, current)
 
-    def process_hidden_by_sandbox(_pid: int, _signal: int) -> None:
-        raise PermissionError
-
-    monkeypatch.setattr("service_console.runtime.os.kill", process_hidden_by_sandbox)
+    monkeypatch.setattr(runtime, "_process_exists", lambda _pid: True)
     assert load_runtime_connection(path) == current
 
 
@@ -109,7 +106,41 @@ def test_runtime_connection_rejects_symbolic_link(tmp_path: Path) -> None:
     target = tmp_path / "target.json"
     target.write_text("{}", encoding="utf-8")
     path = tmp_path / "controller.json"
-    path.symlink_to(target)
+    try:
+        path.symlink_to(target)
+    except OSError:
+        pytest.skip("symbolic links are unavailable for this Windows runner")
 
     with pytest.raises(ValueError, match="regular file"):
         load_runtime_connection(path)
+
+
+def test_windows_runtime_uses_msvcrt_lock_and_skips_posix_permissions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeMsvcrt:
+        LK_LOCK = 1
+        LK_UNLCK = 2
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, int]] = []
+
+        def locking(self, descriptor: int, mode: int, length: int) -> None:
+            self.calls.append((mode, length, os.lseek(descriptor, 0, os.SEEK_CUR)))
+
+    fake_msvcrt = FakeMsvcrt()
+    monkeypatch.setattr(runtime, "_IS_WINDOWS", True)
+    monkeypatch.setattr(runtime, "_msvcrt", fake_msvcrt)
+    path = tmp_path / "controller.json"
+    current = connection()
+
+    write_runtime_connection(path, current)
+    path.chmod(0o644)
+
+    assert load_runtime_connection(path) == current
+    assert fake_msvcrt.calls == [
+        (fake_msvcrt.LK_LOCK, 1, 0),
+        (fake_msvcrt.LK_UNLCK, 1, 0),
+    ]
+    assert path.with_name("controller.json.lock").read_bytes() == b"\0"

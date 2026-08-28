@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -10,12 +11,16 @@ from pathlib import Path
 import psutil
 import pytest
 
+from service_console import manager as manager_module
 from service_console.manager import ServiceManager
 from service_console.models import ServiceDefinition
 
 
 def python_command(source: str) -> str:
-    return shlex.join([sys.executable, "-u", "-c", source])
+    argv = [sys.executable, "-u", "-c", source]
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
 
 
 async def wait_for_state(
@@ -174,6 +179,7 @@ async def test_running_service_update_applies_on_restart_and_persists(tmp_path: 
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="SIGTERM handling is POSIX-specific")
 async def test_stop_escalates_to_sigkill_for_term_ignoring_process(tmp_path: Path) -> None:
     manager = ServiceManager(tmp_path, monitor_interval=0.05)
     await manager.add_service(
@@ -230,6 +236,7 @@ async def test_resource_snapshot_reports_process_group_memory(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses process groups without os.getpgid")
 async def test_new_process_owns_its_unix_process_group(tmp_path: Path) -> None:
     manager = ServiceManager(tmp_path)
     await manager.add_service(
@@ -244,3 +251,48 @@ async def test_new_process_owns_its_unix_process_group(tmp_path: Path) -> None:
     assert os.getpgid(pid) == pid
     await manager.stop("group")
     await manager.shutdown()
+
+
+def test_windows_uses_new_process_group_and_signals_the_complete_process_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class FakeTreeProcess:
+        def __init__(self, pid: int, children: list[FakeTreeProcess] | None = None) -> None:
+            self.pid = pid
+            self._children = children or []
+
+        def children(self, *, recursive: bool) -> list[FakeTreeProcess]:
+            assert recursive is True
+            return list(self._children)
+
+        def terminate(self) -> None:
+            calls.append(("terminate", self.pid))
+
+        def kill(self) -> None:
+            calls.append(("kill", self.pid))
+
+        def is_running(self) -> bool:
+            return False
+
+    grandchild = FakeTreeProcess(103)
+    child = FakeTreeProcess(102)
+    root = FakeTreeProcess(101, [child, grandchild])
+    shell_process = type("ShellProcess", (), {"pid": 101})()
+    monkeypatch.setattr(manager_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(manager_module.psutil, "Process", lambda pid: root if pid == 101 else None)
+
+    assert manager_module._subprocess_group_options() == {
+        "creationflags": manager_module._CREATE_NEW_PROCESS_GROUP
+    }
+    tree = ServiceManager._signal_process_group(shell_process, manager_module.signal.SIGTERM)
+    assert [process.pid for process in tree] == [103, 102, 101]
+    assert calls == [("terminate", 103), ("terminate", 102), ("terminate", 101)]
+
+    ServiceManager._signal_process_group(
+        shell_process,
+        manager_module._SIGKILL,
+        process_tree=tree,
+    )
+    assert calls[-3:] == [("kill", 103), ("kill", 102), ("kill", 101)]
