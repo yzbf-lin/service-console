@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@tabler/core':
+        specifier: 1.4.0
+        version: 1.4.0
       '@xterm/addon-fit':
         specifier: 0.11.0
         version: 0.11.0
@@ -183,6 +186,13 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@popperjs/core@2.11.8':
+    resolution: {integrity: sha512-P1st0aksCrn9sGZhp8GMYwBnQsbvAWsZAX44oXNNvLHGqAOcoVxmjZiohstwQ7SqKnbR47akdNi+uleWD8+g6A==}
+
+  '@tabler/core@1.4.0':
+    resolution: {integrity: sha512-5BigzOlbOH9N0Is4u0rYNRCiwtnUXWO57K9zwuscygcicAa8UV9MGaS4zTgQsZEtZ9tsNANhN/YD8gCBGKYCiw==}
+    engines: {node: '>=20'}
+
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
 
@@ -194,6 +204,11 @@ packages:
 
   '@xterm/xterm@6.0.0':
     resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
+
+  bootstrap@5.3.7:
+    resolution: {integrity: sha512-7KgiD8UHjfcPBHEpDNg+zGz8L3LqR3GVwqZiBRFX04a1BCArZOz1r2kjly2HQ0WokqTO0v1nF+QAt8dsW4lKlw==}
+    peerDependencies:
+      '@popperjs/core': ^2.11.8
 
   esbuild@0.28.2:
     resolution: {integrity: sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==}
@@ -280,6 +295,13 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
+  '@popperjs/core@2.11.8': {}
+
+  '@tabler/core@1.4.0':
+    dependencies:
+      '@popperjs/core': 2.11.8
+      bootstrap: 5.3.7(@popperjs/core@2.11.8)
+
   '@xterm/addon-fit@0.11.0': {}
 
   '@xterm/addon-search@0.16.0': {}
@@ -287,6 +309,10 @@ snapshots:
   '@xterm/addon-web-links@0.12.0': {}
 
   '@xterm/xterm@6.0.0': {}
+
+  bootstrap@5.3.7(@popperjs/core@2.11.8):
+    dependencies:
+      '@popperjs/core': 2.11.8
 
   esbuild@0.28.2:
     optionalDependencies:

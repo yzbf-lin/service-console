@@ -5,7 +5,63 @@
   const SERVICE_POLL_INTERVAL = 5000;
   const PORT_POLL_INTERVAL = 5000;
   const HEALTH_POLL_INTERVAL = 15000;
+  const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   const token = new URLSearchParams(window.location.search).get("token") || "";
+
+  const TERMINAL_THEMES = {
+    light: {
+      background: "#f8fafc",
+      foreground: "#27364a",
+      cursor: "#2563eb",
+      selectionBackground: "#93c5fd66",
+      selectionInactiveBackground: "#bfdbfe66",
+      scrollbarSliderBackground: "#94a3b866",
+      scrollbarSliderHoverBackground: "#64748b88",
+      scrollbarSliderActiveBackground: "#475569aa",
+      black: "#182230",
+      brightBlack: "#64748b",
+      red: "#c9364b",
+      brightRed: "#df4c60",
+      green: "#14835d",
+      brightGreen: "#1f9d70",
+      yellow: "#a76b12",
+      brightYellow: "#c1811d",
+      blue: "#2563eb",
+      brightBlue: "#3b82f6",
+      magenta: "#7655c7",
+      brightMagenta: "#8b6bd8",
+      cyan: "#147d8c",
+      brightCyan: "#2494a5",
+      white: "#475569",
+      brightWhite: "#1e293b",
+    },
+    dark: {
+      background: "#101722",
+      foreground: "#d6deeb",
+      cursor: "#d6deeb",
+      selectionBackground: "#43658f99",
+      selectionInactiveBackground: "#34485f80",
+      scrollbarSliderBackground: "#48556a99",
+      scrollbarSliderHoverBackground: "#607089cc",
+      scrollbarSliderActiveBackground: "#71839eff",
+      black: "#101722",
+      brightBlack: "#68768a",
+      red: "#f28c98",
+      brightRed: "#ff9ba6",
+      green: "#73d3a4",
+      brightGreen: "#8fe6bb",
+      yellow: "#e7bd76",
+      brightYellow: "#f3ce8c",
+      blue: "#76a7f5",
+      brightBlue: "#95bafa",
+      magenta: "#c5a3ef",
+      brightMagenta: "#d8bbfa",
+      cyan: "#72c7d5",
+      brightCyan: "#8edce8",
+      white: "#d6deeb",
+      brightWhite: "#f2f5f9",
+    },
+  };
 
   const state = {
     services: new Map(),
@@ -31,6 +87,10 @@
     healthPollTimer: null,
     serviceFormMode: "create",
     editingServiceName: null,
+    themePreference: ["light", "dark"].includes(document.documentElement.dataset.themePreference)
+      ? document.documentElement.dataset.themePreference
+      : null,
+    theme: document.documentElement.getAttribute("data-bs-theme") === "dark" ? "dark" : "light",
   };
 
   let terminal = null;
@@ -42,11 +102,13 @@
   let terminalReplayActive = false;
   let terminalReplayService = null;
   let terminalPendingEntries = [];
+  let themeSaveQueue = Promise.resolve();
 
   const elements = {
     apiStatus: document.querySelector("#apiStatus"),
     socketStatus: document.querySelector("#socketStatus"),
     refreshButton: document.querySelector("#refreshButton"),
+    themeToggleButton: document.querySelector("#themeToggleButton"),
     openAddButton: document.querySelector("#openAddButton"),
     servicesViewButton: document.querySelector("#servicesViewButton"),
     portsViewButton: document.querySelector("#portsViewButton"),
@@ -96,6 +158,7 @@
     portTableWrap: document.querySelector("#portTableWrap"),
     portTableBody: document.querySelector("#portTableBody"),
     toastRegion: document.querySelector("#toastRegion"),
+    themeColor: document.querySelector('meta[name="theme-color"]'),
   };
 
   const icons = {
@@ -138,6 +201,24 @@
     }
   }
 
+  function applyTheme(theme) {
+    const resolvedTheme = theme === "dark" ? "dark" : "light";
+    state.theme = resolvedTheme;
+    document.documentElement.setAttribute("data-bs-theme", resolvedTheme);
+    document.documentElement.style.colorScheme = resolvedTheme;
+    if (elements.themeColor) {
+      elements.themeColor.content = resolvedTheme === "dark" ? "#111823" : "#f3f5f8";
+    }
+    const nextTheme = resolvedTheme === "dark" ? "light" : "dark";
+    const nextLabel = nextTheme === "dark" ? "切换到深色主题" : "切换到浅色主题";
+    elements.themeToggleButton?.setAttribute("aria-label", nextLabel);
+    elements.themeToggleButton?.setAttribute("title", nextLabel);
+    if (terminal) {
+      terminal.options.theme = TERMINAL_THEMES[resolvedTheme];
+      terminal.refresh(0, Math.max(0, terminal.rows - 1));
+    }
+  }
+
   function initializeTerminal() {
     const terminalLibrary = window.ServiceConsoleTerminal;
     if (!terminalLibrary) {
@@ -156,32 +237,7 @@
       fontSize: 12,
       lineHeight: 1.42,
       scrollback: MAX_LOG_ENTRIES * 5,
-      theme: {
-        background: "#111a27",
-        foreground: "#d5deea",
-        cursor: "#d5deea",
-        selectionBackground: "#43658f99",
-        selectionInactiveBackground: "#34485f80",
-        scrollbarSliderBackground: "#48556a99",
-        scrollbarSliderHoverBackground: "#607089cc",
-        scrollbarSliderActiveBackground: "#71839eff",
-        black: "#111a27",
-        brightBlack: "#68768a",
-        red: "#f28c98",
-        brightRed: "#ff9ba6",
-        green: "#73d3a4",
-        brightGreen: "#8fe6bb",
-        yellow: "#e7bd76",
-        brightYellow: "#f3ce8c",
-        blue: "#76a7f5",
-        brightBlue: "#95bafa",
-        magenta: "#c5a3ef",
-        brightMagenta: "#d8bbfa",
-        cyan: "#72c7d5",
-        brightCyan: "#8edce8",
-        white: "#d5deea",
-        brightWhite: "#f2f5f9",
-      },
+      theme: TERMINAL_THEMES[state.theme],
     });
     fitAddon = new FitAddon();
     searchAddon = new SearchAddon();
@@ -255,6 +311,20 @@
       throw new ApiError(errorMessage(payload, `请求失败（HTTP ${response.status}）`), response.status);
     }
     return payload;
+  }
+
+  function persistTheme(theme) {
+    state.themePreference = theme;
+    document.documentElement.dataset.themePreference = theme;
+    themeSaveQueue = themeSaveQueue
+      .catch(() => undefined)
+      .then(() => apiRequest("/api/ui-preferences", {
+        method: "PUT",
+        body: { theme },
+        keepalive: true,
+      }))
+      .catch((error) => showToast("主题偏好未保存", error.message, "error"));
+    return themeSaveQueue;
   }
 
   function asNumber(...values) {
@@ -405,7 +475,15 @@
   function actionButton(action, label, disabled, { iconOnly = false } = {}) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `action-button${iconOnly ? " action-button-icon" : ""}`;
+    const variants = {
+      start: "btn-outline-success",
+      stop: "btn-outline-danger",
+      restart: "btn-outline-primary",
+      edit: "btn-ghost-secondary",
+      copy: "btn-ghost-secondary",
+      delete: "btn-ghost-danger",
+    };
+    button.className = `action-button btn btn-sm ${variants[action] || "btn-ghost-secondary"}${iconOnly ? " action-button-icon btn-icon" : ""}`;
     button.dataset.action = action;
     button.disabled = disabled;
     button.innerHTML = `${icons[action]}<span>${label}</span>`;
@@ -420,7 +498,7 @@
     const isBusy = state.busyServices.has(service.name);
     const active = ["RUNNING", "STARTING", "STOPPING"].includes(service.status);
     const transitioning = ["STARTING", "STOPPING"].includes(service.status);
-    card.className = `service-card${state.selectedService === service.name ? " selected" : ""}`;
+    card.className = `service-card card card-sm${state.selectedService === service.name ? " selected" : ""}`;
     card.tabIndex = 0;
     card.dataset.service = service.name;
     card.setAttribute("aria-label", `${service.name}，${statusLabel(service.status)}`);
@@ -438,7 +516,7 @@
     name.title = service.name;
     nameRow.append(dot, name);
     const badge = document.createElement("span");
-    badge.className = `state-badge state-${statusKey}`;
+    badge.className = `state-badge state-${statusKey} badge`;
     badge.textContent = isBusy ? "处理中" : statusLabel(service.status);
     head.append(nameRow, badge);
 
@@ -528,7 +606,7 @@
     const row = document.createElement("tr");
     const protocol = portCell("协议", "", "port-protocol-cell");
     const protocolBadge = document.createElement("span");
-    protocolBadge.className = "port-protocol";
+    protocolBadge.className = "port-protocol badge";
     protocolBadge.textContent = item.protocol;
     protocol.append(protocolBadge);
 
@@ -543,7 +621,7 @@
 
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "terminate-process-button";
+    button.className = "terminate-process-button btn btn-sm btn-outline-danger";
     button.dataset.pid = Number.isInteger(item.pid) ? String(item.pid) : "";
     button.dataset.port = String(item.port);
     button.disabled = !Number.isInteger(item.pid) || state.busyPids.has(item.pid);
@@ -701,6 +779,8 @@
     elements.portsWorkspace.hidden = !showPorts;
     elements.servicesViewButton.classList.toggle("is-active", !showPorts);
     elements.portsViewButton.classList.toggle("is-active", showPorts);
+    elements.servicesViewButton.classList.toggle("active", !showPorts);
+    elements.portsViewButton.classList.toggle("active", showPorts);
     elements.servicesViewButton.setAttribute("aria-selected", String(!showPorts));
     elements.portsViewButton.setAttribute("aria-selected", String(showPorts));
     elements.openAddButton.hidden = showPorts;
@@ -723,7 +803,7 @@
     const statusKey = statusClass(service?.status);
     elements.consoleTitle.textContent = service?.name || "实时日志";
     elements.selectedStatus.textContent = service ? statusLabel(service.status) : "未选择";
-    elements.selectedStatus.className = `state-badge state-${statusKey}`;
+    elements.selectedStatus.className = `state-badge state-${statusKey} badge`;
     elements.selectedStatusDot.className = `status-indicator status-${statusKey}`;
     elements.selectedDescription.textContent = service?.command || "从左侧选择一个服务查看输出";
     elements.selectedDescription.title = service?.command || "";
@@ -1342,7 +1422,7 @@
 
   function showToast(title, message, kind = "info") {
     const toast = document.createElement("div");
-    toast.className = "toast";
+    toast.className = "toast show";
     toast.dataset.kind = kind;
     toast.setAttribute("role", kind === "error" ? "alert" : "status");
     const icon = document.createElement("span");
@@ -1357,7 +1437,7 @@
     content.append(heading, detail);
     const close = document.createElement("button");
     close.type = "button";
-    close.className = "toast-close";
+    close.className = "toast-close btn btn-icon btn-ghost-secondary";
     close.setAttribute("aria-label", "关闭通知");
     close.textContent = "×";
     close.addEventListener("click", () => toast.remove());
@@ -1374,6 +1454,14 @@
   }
 
   function bindEvents() {
+    elements.themeToggleButton.addEventListener("click", () => {
+      const nextTheme = state.theme === "dark" ? "light" : "dark";
+      applyTheme(nextTheme);
+      void persistTheme(nextTheme);
+    });
+    systemThemeQuery.addEventListener("change", (event) => {
+      if (state.themePreference === null) applyTheme(event.matches ? "dark" : "light");
+    });
     elements.refreshButton.addEventListener("click", async () => {
       elements.refreshButton.disabled = true;
       if (state.activeView === "ports") await Promise.all([loadPorts(), checkHealth()]);
@@ -1507,6 +1595,7 @@
   }
 
   async function initialize() {
+    applyTheme(state.theme);
     initializeTerminal();
     bindEvents();
     setServicesDrawer(false, { restoreFocus: false });

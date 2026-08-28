@@ -205,6 +205,35 @@ def test_authenticated_service_definition_update() -> None:
         ).status_code == 422
 
 
+def test_authenticated_ui_theme_persists_across_app_instances(tmp_path) -> None:
+    headers = {"Authorization": "Bearer secret"}
+    first_app = create_app(data_dir=tmp_path, token="secret", manager=FakeManager())
+
+    with TestClient(first_app) as client:
+        initial = client.get("/")
+        assert 'data-theme-preference="system"' in initial.text
+        assert initial.headers["cache-control"] == "no-store"
+        assert client.put("/api/ui-preferences", json={"theme": "dark"}).status_code == 401
+        assert client.put(
+            "/api/ui-preferences",
+            headers=headers,
+            json={"theme": "sepia"},
+        ).status_code == 422
+        saved = client.put(
+            "/api/ui-preferences",
+            headers=headers,
+            json={"theme": "dark"},
+        )
+        assert saved.status_code == 200
+        assert saved.json() == {"theme": "dark"}
+
+    second_app = create_app(data_dir=tmp_path, token="secret", manager=FakeManager())
+    with TestClient(second_app) as client:
+        restored = client.get("/")
+        assert 'data-theme-preference="dark"' in restored.text
+        assert 'data-theme-preference="system"' not in restored.text
+
+
 def test_websocket_token_and_event_forwarding() -> None:
     manager = FakeManager()
     app = create_app(token="secret", manager=manager)

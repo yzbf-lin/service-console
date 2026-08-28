@@ -1,19 +1,31 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme-preference="system">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#f4f6f8" />
     <title>Service Console</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <script>
+      (() => {
+        const preference = document.documentElement.dataset.themePreference;
+        const theme = ["light", "dark"].includes(preference)
+          ? preference
+          : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-bs-theme", theme);
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
+    <link rel="stylesheet" href="/static/vendor/tabler.min.css" />
     <link rel="stylesheet" href="/static/vendor/xterm.css" />
     <link rel="stylesheet" href="/static/styles.css" />
     <script src="/static/vendor/xterm-bundle.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
-  <body>
+  <body class="antialiased">
     <div class="app-shell">
-      <header class="topbar">
+      <header class="topbar navbar">
         <div class="brand" aria-label="Service Console">
           <span class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" focusable="false">
@@ -28,32 +40,36 @@
         </div>
 
         <div class="topbar-status" aria-label="连接状态">
-          <span class="connection-chip" id="apiStatus" data-state="pending">
+          <span class="connection-chip badge" id="apiStatus" data-state="pending">
             <span class="chip-dot" aria-hidden="true"></span>
             <span>API 检查中</span>
           </span>
-          <span class="connection-chip" id="socketStatus" data-state="pending">
+          <span class="connection-chip badge" id="socketStatus" data-state="pending">
             <span class="chip-dot" aria-hidden="true"></span>
             <span>实时连接中</span>
           </span>
         </div>
 
         <div class="topbar-actions">
-          <nav class="view-switcher" aria-label="主功能">
-            <button class="view-tab is-active" id="servicesViewButton" type="button" data-view="services" aria-selected="true">
+          <nav class="view-switcher nav nav-pills" aria-label="主功能">
+            <button class="view-tab nav-link active is-active" id="servicesViewButton" type="button" data-view="services" aria-selected="true">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a2 2 0 0 1 2 2v4H3V6a2 2 0 0 1 2-2ZM3 14h18v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4ZM7 7h.01M7 17h.01" /></svg>
               <span>服务控制</span>
             </button>
-            <button class="view-tab" id="portsViewButton" type="button" data-view="ports" aria-selected="false">
+            <button class="view-tab nav-link" id="portsViewButton" type="button" data-view="ports" aria-selected="false">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7V3M16 7V3M6 7h12v4a6 6 0 0 1-6 6v4M9 11h6" /></svg>
               <span>端口进程</span>
             </button>
           </nav>
-          <button class="button button-secondary icon-button-mobile" id="refreshButton" type="button">
+          <button class="theme-toggle btn btn-sm btn-icon btn-ghost-secondary" id="themeToggleButton" type="button" aria-label="切换到深色主题" title="切换到深色主题">
+            <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 14.4A8 8 0 0 1 9.6 3.6 8.5 8.5 0 1 0 20.4 14.4Z" /></svg>
+            <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.5" /><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42" /></svg>
+          </button>
+          <button class="button button-secondary icon-button-mobile btn btn-sm btn-outline-secondary" id="refreshButton" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 5v6h-6" /></svg>
             <span>刷新</span>
           </button>
-          <button class="button button-primary" id="openAddButton" type="button">
+          <button class="button button-primary btn btn-sm btn-primary" id="openAddButton" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
             <span>添加服务</span>
           </button>
@@ -87,12 +103,12 @@
           aria-label="关闭服务列表"
         ></button>
 
-        <aside class="panel services-panel" id="servicesPanel" aria-labelledby="servicesHeading">
+        <aside class="panel services-panel card" id="servicesPanel" aria-labelledby="servicesHeading">
           <div class="panel-heading services-heading">
             <div>
               <div class="heading-row">
                 <h2 id="servicesHeading">服务</h2>
-                <span class="count-badge" id="serviceCount">0</span>
+                <span class="count-badge badge" id="serviceCount">0</span>
               </div>
               <p id="runningSummary">正在读取服务状态</p>
             </div>
@@ -103,7 +119,7 @@
 
           <label class="search-box" for="serviceSearch">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-            <input id="serviceSearch" type="search" placeholder="筛选服务名称或命令" autocomplete="off" />
+            <input class="form-control form-control-sm" id="serviceSearch" type="search" placeholder="筛选服务名称或命令" autocomplete="off" />
           </label>
 
           <div class="service-list" id="serviceList" aria-live="polite" aria-busy="true">
@@ -114,30 +130,29 @@
           </div>
         </aside>
 
-        <section class="panel console-panel" aria-labelledby="consoleTitle">
+        <section class="panel console-panel card" aria-labelledby="consoleTitle">
           <div class="console-heading">
             <div class="console-identity">
               <span class="status-indicator status-unknown" id="selectedStatusDot" aria-hidden="true"></span>
               <div>
                 <div class="heading-row">
                   <h2 id="consoleTitle">实时日志</h2>
-                  <span class="state-badge state-unknown" id="selectedStatus">未选择</span>
+                  <span class="state-badge state-unknown badge" id="selectedStatus">未选择</span>
                 </div>
                 <p id="selectedDescription">从左侧选择一个服务查看输出</p>
               </div>
             </div>
 
             <div class="console-controls">
-              <label class="toggle-control" for="autoScrollToggle">
-                <input id="autoScrollToggle" type="checkbox" checked />
-                <span class="toggle-track" aria-hidden="true"><span></span></span>
-                <span>自动滚动</span>
+              <label class="toggle-control form-check form-switch" for="autoScrollToggle">
+                <input class="form-check-input" id="autoScrollToggle" type="checkbox" checked />
+                <span class="form-check-label">自动滚动</span>
               </label>
-              <button class="button button-ghost button-compact" id="searchLogsButton" type="button" aria-controls="terminalSearch" aria-expanded="false" disabled>
+              <button class="button button-ghost button-compact btn btn-sm btn-ghost-secondary" id="searchLogsButton" type="button" aria-controls="terminalSearch" aria-expanded="false" disabled>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg>
                 <span>搜索</span>
               </button>
-              <button class="button button-ghost button-compact" id="clearLogsButton" type="button" disabled>
+              <button class="button button-ghost button-compact btn btn-sm btn-ghost-secondary" id="clearLogsButton" type="button" disabled>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5" /></svg>
                 <span>清屏</span>
               </button>
@@ -164,13 +179,13 @@
       </main>
 
       <main class="ports-workspace" id="portsWorkspace" data-view-panel="ports" hidden>
-        <section class="panel ports-panel" aria-labelledby="portsHeading">
+        <section class="panel ports-panel card" aria-labelledby="portsHeading">
           <div class="ports-heading">
             <div>
               <span class="eyebrow">系统监听端口</span>
               <div class="heading-row">
                 <h2 id="portsHeading">端口与进程</h2>
-                <span class="count-badge" id="portCount">0</span>
+                <span class="count-badge badge" id="portCount">0</span>
               </div>
               <p id="portsSummary">正在读取本机端口占用</p>
             </div>
@@ -178,23 +193,23 @@
             <form class="port-filter" id="portFilterForm" role="search">
               <label for="portFilterInput">按端口筛选</label>
               <div class="port-filter-controls">
-                <input id="portFilterInput" name="port" type="number" min="1" max="65535" inputmode="numeric" placeholder="例如 8000" />
-                <button class="button button-secondary" type="submit">
+                <input class="form-control form-control-sm" id="portFilterInput" name="port" type="number" min="1" max="65535" inputmode="numeric" placeholder="例如 8000" />
+                <button class="button button-secondary btn btn-sm btn-outline-secondary" type="submit">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
                   <span>查询</span>
                 </button>
-                <button class="button button-ghost" id="clearPortFilterButton" type="button" disabled>清除</button>
+                <button class="button button-ghost btn btn-sm btn-ghost-secondary" id="clearPortFilterButton" type="button" disabled>清除</button>
               </div>
             </form>
           </div>
 
-          <div class="ports-notice" role="note">
+          <div class="ports-notice alert alert-warning" role="note">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5M12 17h.01" /><path d="M10.3 4.5 3.4 17a2 2 0 0 0 1.75 3h13.7a2 2 0 0 0 1.75-3L13.7 4.5a2 2 0 0 0-3.4 0Z" /></svg>
             <span>终止进程会同时释放该进程占用的其他端口。请先核对 PID 和命令。</span>
           </div>
 
           <div class="port-table-wrap" id="portTableWrap" aria-live="polite" aria-busy="true">
-            <table class="port-table">
+            <table class="port-table table table-sm table-vcenter table-hover">
               <thead>
                 <tr>
                   <th scope="col">协议</th>
@@ -239,34 +254,34 @@
         <div class="form-grid">
           <label class="field">
             <span>服务名称 <em>*</em></span>
-            <input id="serviceNameInput" name="name" type="text" placeholder="backend" pattern="[A-Za-z0-9._-]+" maxlength="80" required />
+            <input class="form-control form-control-sm" id="serviceNameInput" name="name" type="text" placeholder="backend" pattern="[A-Za-z0-9._-]+" maxlength="80" required />
             <small id="serviceNameHelp">仅使用字母、数字、点、下划线和连字符</small>
           </label>
 
           <label class="field field-wide">
             <span>启动命令 <em>*</em></span>
-            <textarea name="command" rows="3" placeholder="uv run backend/run.py" required></textarea>
+            <textarea class="form-control" name="command" rows="3" placeholder="uv run backend/run.py" required></textarea>
           </label>
 
           <label class="field field-wide">
             <span>工作目录 <em>*</em></span>
-            <input name="cwd" type="text" placeholder="/absolute/path/to/project" required />
+            <input class="form-control form-control-sm" name="cwd" type="text" placeholder="/absolute/path/to/project" required />
           </label>
 
           <label class="field field-wide">
             <span>环境变量</span>
-            <textarea name="env" rows="4" placeholder="APP_ENV=development&#10;PORT=8000"></textarea>
+            <textarea class="form-control" name="env" rows="4" placeholder="APP_ENV=development&#10;PORT=8000"></textarea>
             <small>每行一个 KEY=VALUE，也支持 JSON 对象</small>
           </label>
 
           <label class="field">
             <span>停止超时（秒）</span>
-            <input name="stop_timeout" type="number" value="10" min="0.1" max="300" step="0.1" required />
+            <input class="form-control form-control-sm" name="stop_timeout" type="number" value="10" min="0.1" max="300" step="0.1" required />
             <small>超时后将强制结束进程组</small>
           </label>
 
           <label class="checkbox-card">
-            <input name="auto_start" type="checkbox" />
+            <input class="form-check-input" name="auto_start" type="checkbox" />
             <span class="checkbox-mark" aria-hidden="true">
               <svg viewBox="0 0 16 16"><path d="m3.5 8 3 3 6-6" /></svg>
             </span>
@@ -275,14 +290,14 @@
         </div>
 
         <div class="dialog-actions">
-          <button class="button button-secondary" id="cancelServiceDialogButton" type="button">取消</button>
-          <button class="button button-primary" id="submitServiceButton" type="submit">
+          <button class="button button-secondary btn btn-outline-secondary" id="cancelServiceDialogButton" type="button">取消</button>
+          <button class="button button-primary btn btn-primary" id="submitServiceButton" type="submit">
             <span class="button-label">创建服务</span>
           </button>
         </div>
       </form>
     </dialog>
 
-    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+    <div class="toast-region toast-container" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
   </body>
 </html>

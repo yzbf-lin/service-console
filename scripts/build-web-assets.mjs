@@ -25,8 +25,17 @@ await cp(
   resolve(root, "node_modules/@xterm/xterm/css/xterm.css"),
   resolve(vendorDir, "xterm.css"),
 );
+const tablerStylesheetPath = resolve(vendorDir, "tabler.min.css");
+await cp(resolve(root, "node_modules/@tabler/core/dist/css/tabler.min.css"), tablerStylesheetPath);
+const tablerStylesheet = await readFile(tablerStylesheetPath, "utf8");
+await writeFile(
+  tablerStylesheetPath,
+  tablerStylesheet.replace(/\n?\/\*# sourceMappingURL=tabler\.min\.css\.map \*\/\s*$/, "\n"),
+  "utf8",
+);
 
 const packages = [
+  "@tabler/core",
   "@xterm/xterm",
   "@xterm/addon-fit",
   "@xterm/addon-search",
@@ -34,11 +43,22 @@ const packages = [
   "esbuild",
 ];
 const notices = [];
+notices.push(
+  `bootstrap@5.3.7\n${(
+    await readFile(resolve(root, "web/vendor-licenses/bootstrap-LICENSE.txt"), "utf8")
+  ).trim()}`,
+);
 for (const packageName of packages) {
   const packageDir = resolve(root, "node_modules", packageName);
   const metadata = JSON.parse(await readFile(resolve(packageDir, "package.json"), "utf8"));
-  const licenseFilename = packageName === "esbuild" ? "LICENSE.md" : "LICENSE";
-  const license = await readFile(resolve(packageDir, licenseFilename), "utf8");
+  let licensePath;
+  if (packageName === "@tabler/core") {
+    licensePath = resolve(root, "web/vendor-licenses/tabler-core-LICENSE.txt");
+  } else {
+    const licenseFilename = packageName === "esbuild" ? "LICENSE.md" : "LICENSE";
+    licensePath = resolve(packageDir, licenseFilename);
+  }
+  const license = await readFile(licensePath, "utf8");
   notices.push(`${metadata.name}@${metadata.version}\n${license.trim()}`);
 }
 await writeFile(

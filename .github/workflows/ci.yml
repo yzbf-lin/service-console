@@ -25,9 +25,11 @@ jobs:
           cache: pnpm
       - name: Install Python dependencies
         run: uv sync --group dev
-      - name: Install and build terminal assets
+      - name: Install and build web assets
         run: |
           pnpm install --frozen-lockfile
           pnpm run build:web-assets
+      - name: Verify generated web assets
+        run: git diff --exit-code -- src/service_console/static/vendor
       - name: Run tests
         run: uv run pytest

@@ -35,8 +35,17 @@ requiring Docker or another container runtime.
 - Render ANSI output with xterm.js search, selection, links, wrapping, and scrollback.
 - Inspect listening ports and safely terminate their owning processes with PID/port verification.
 - Use the same controller through the desktop app, Web UI, CLI, TUI, HTTP, or WebSocket.
+- Use a compact [Tabler](https://tabler.io/) dashboard with persistent light and dark themes.
 - Keep desktop automation private with a random loopback port, temporary bearer token, and a `0600`
   runtime descriptor.
+
+### Appearance
+
+The dashboard uses the locally bundled `@tabler/core` 1.4 component library. Use the sun/moon button
+in the top bar to switch themes without reloading. The first visit follows the operating-system color
+scheme; an explicit choice is saved in the controller data directory as `ui-preferences.json`, so it
+survives desktop restarts and random loopback ports. The selected palette also updates the xterm.js
+log console and browser theme-color metadata.
 
 ## Requirements
 
@@ -141,7 +150,7 @@ open "dist/Service Console.app"
 The build script:
 
 1. regenerates the multi-resolution ICNS icon from `assets/service-console-icon-1024.png`;
-2. compiles pinned xterm.js assets into the Python package;
+2. vendors pinned Tabler and xterm.js assets into the Python package;
 3. installs the desktop dependency group;
 4. bundles CPython, pywebview, FastAPI, and the complete dashboard with PyInstaller;
 5. synchronizes the bundle version with `pyproject.toml` and applies an ad-hoc signature.
@@ -153,8 +162,8 @@ ignored; publish distributable binaries through GitHub Releases.
 
 ## Terminal assets
 
-The log console uses xterm.js with Fit, Search, and WebLinks addons. Runtime assets are vendored and
-never loaded from a CDN:
+The interface uses Tabler components and an xterm.js console with Fit, Search, and WebLinks addons.
+Runtime assets are vendored and never loaded from a CDN:
 
 ```bash
 pnpm install --frozen-lockfile

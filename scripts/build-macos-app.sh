@@ -10,7 +10,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 if ! command -v pnpm >/dev/null 2>&1; then
-  printf '%s\n' "pnpm is required to build the local xterm.js assets." >&2
+  printf '%s\n' "pnpm is required to build the local Tabler and xterm.js assets." >&2
   exit 1
 fi
 

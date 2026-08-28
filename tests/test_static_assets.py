@@ -15,13 +15,15 @@ class StaticAssetManager:
         pass
 
 
-def test_dashboard_serves_local_xterm_assets() -> None:
-    app = create_app(manager=StaticAssetManager())
+def test_dashboard_serves_local_xterm_assets(tmp_path: Path) -> None:
+    app = create_app(data_dir=tmp_path, manager=StaticAssetManager())
 
     with TestClient(app) as client:
         index = client.get("/")
         bundle = client.get("/static/vendor/xterm-bundle.js")
         stylesheet = client.get("/static/vendor/xterm.css")
+        component_stylesheet = client.get("/static/vendor/tabler.min.css")
+        favicon = client.get("/static/favicon.svg")
         licenses = client.get("/static/vendor/THIRD_PARTY_LICENSES.txt")
 
     assert index.status_code == 200
@@ -39,8 +41,34 @@ def test_dashboard_serves_local_xterm_assets() -> None:
     assert stylesheet.headers["content-type"].startswith("text/css")
     assert ".xterm" in stylesheet.text
     assert "@import" not in stylesheet.text
+    assert component_stylesheet.status_code == 200
+    assert component_stylesheet.headers["content-type"].startswith("text/css")
+    assert "--tblr-primary" in component_stylesheet.text
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"].startswith("image/svg+xml")
+    assert '<link rel="icon" href="/static/favicon.svg"' in index.text
     assert licenses.status_code == 200
+    assert "bootstrap@5.3.7" in licenses.text
     assert "@xterm/xterm@6.0.0" in licenses.text
+    assert "@tabler/core@1.4.0" in licenses.text
+
+
+def test_dashboard_wires_persistent_light_and_dark_themes() -> None:
+    static_dir = Path(__file__).parents[1] / "src" / "service_console" / "static"
+    application = (static_dir / "app.js").read_text(encoding="utf-8")
+    index = (static_dir / "index.html").read_text(encoding="utf-8")
+    stylesheet = (static_dir / "styles.css").read_text(encoding="utf-8")
+
+    assert '/static/vendor/tabler.min.css' in index
+    assert 'id="themeToggleButton"' in index
+    assert '<dialog class="service-dialog modal-content"' not in index
+    assert 'data-theme-preference="system"' in index
+    assert 'data-bs-theme' in index
+    assert 'service-console:theme' not in application
+    assert 'apiRequest("/api/ui-preferences"' in application
+    assert 'function applyTheme(' in application
+    assert 'terminal.options.theme' in application
+    assert ':root[data-bs-theme="dark"]' in stylesheet
 
 
 def test_dashboard_wires_read_only_xterm_addons() -> None:

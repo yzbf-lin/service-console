@@ -7,7 +7,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -19,13 +19,14 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .manager import ServiceManager
 from .models import ServiceDefinition
 from .ports import PortInspector
+from .settings import UiPreferencesStore
 
 
 class ServiceCreateRequest(BaseModel):
@@ -57,6 +58,12 @@ class ProcessTerminateRequest(BaseModel):
     timeout: float = Field(default=3.0, gt=0, allow_inf_nan=False)
 
 
+class UiPreferencesRequest(BaseModel):
+    """Validated appearance preference stored outside the browser profile."""
+
+    theme: Literal["system", "light", "dark"]
+
+
 def _definition(name: str, body: ServiceCreateRequest | ServiceUpdateRequest) -> ServiceDefinition:
     values = body.model_dump()
     values["name"] = name
@@ -71,8 +78,10 @@ def create_app(
 ) -> FastAPI:
     """Create an application and own the supplied manager for its lifespan."""
 
-    service_manager = manager or ServiceManager(Path(data_dir).expanduser())
+    selected_data_dir = Path(data_dir).expanduser()
+    service_manager = manager or ServiceManager(selected_data_dir)
     process_inspector = port_inspector if port_inspector is not None else PortInspector()
+    ui_preferences = UiPreferencesStore(selected_data_dir)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -117,6 +126,11 @@ def create_app(
     @api.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @api.put("/ui-preferences")
+    async def update_ui_preferences(body: UiPreferencesRequest) -> dict[str, str]:
+        await asyncio.to_thread(ui_preferences.save_theme, body.theme)
+        return {"theme": body.theme}
 
     @api.get("/services")
     async def list_services() -> dict[str, list[dict[str, object]]]:
@@ -314,10 +328,17 @@ def create_app(
             service_manager.unsubscribe(queue)
 
     static_dir = Path(__file__).with_name("static")
+    index_template = (static_dir / "index.html").read_text(encoding="utf-8")
     app.mount("/static", StaticFiles(directory=static_dir, check_dir=False), name="static")
 
     @app.get("/", include_in_schema=False)
-    async def index() -> FileResponse:
-        return FileResponse(static_dir / "index.html")
+    async def index() -> HTMLResponse:
+        theme = await asyncio.to_thread(ui_preferences.load_theme)
+        html = index_template.replace(
+            'data-theme-preference="system"',
+            f'data-theme-preference="{theme}"',
+            1,
+        )
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     return app
