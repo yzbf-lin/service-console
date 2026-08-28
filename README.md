@@ -301,6 +301,17 @@ requires a writable install directory. Source runs, browser-only controllers, an
 architectures still discover a release but direct the user to its download page. The first version
 that contains this updater must be installed manually; subsequent releases can update in-app.
 
+On Windows, the Release package includes a native `Service Console Updater.exe`. Before the desktop
+closes, that helper is copied outside the installation directory and must acknowledge that it has
+started. It then waits for the exact desktop process, replaces the application directory, starts the
+new executable, and keeps the backup until the new window reports ready. A failed launch restores
+and relaunches the previous version. Diagnostic details are written to
+`%USERPROFILE%\.service-console\updates\vVERSION\install-update.log`.
+
+Windows releases 0.2.0 and 0.2.1 contain the legacy update launcher. If **Install and restart** only
+closes one of those versions, download and extract 0.2.2 or later manually once. In-app updates after
+that migration use the native helper and the readiness/rollback flow described above.
+
 ## Build the macOS application
 
 ```bash
@@ -342,8 +353,8 @@ pwsh ./scripts/build-windows-app.ps1
 ```
 
 The script generates a multi-resolution ICO icon, builds the same offline dashboard, and creates a
-PyInstaller directory bundle at `dist/Service Console`, including `Service Console MCP.exe`. Windows
-10/11 must have the Microsoft Edge
+PyInstaller directory bundle at `dist/Service Console`, including `Service Console MCP.exe` and the
+one-file native `Service Console Updater.exe`. Windows 10/11 must have the Microsoft Edge
 WebView2 Runtime installed. The executable is unsigned, so Windows may show a SmartScreen warning
 until the project is configured with a trusted code-signing certificate.
 

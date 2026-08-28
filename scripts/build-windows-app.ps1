@@ -23,6 +23,8 @@ $IconPath = Join-Path $RootDir "assets/windows/ServiceConsole.ico"
 $ExecutablePath = Join-Path $RootDir "dist/Service Console/Service Console.exe"
 $McpHelperBuildPath = Join-Path $RootDir "dist/Service Console MCP.exe"
 $McpHelperAppPath = Join-Path $RootDir "dist/Service Console/Service Console MCP.exe"
+$UpdaterBuildPath = Join-Path $RootDir "dist/Service Console Updater.exe"
+$UpdaterAppPath = Join-Path $RootDir "dist/Service Console/Service Console Updater.exe"
 
 pnpm install --frozen-lockfile
 pnpm run build:web-assets
@@ -49,6 +51,20 @@ uv run --locked --group desktop pyinstaller `
     --clean `
     --onefile `
     --console `
+    --name "Service Console Updater" `
+    --paths (Join-Path $RootDir "src") `
+    (Join-Path $RootDir "src/service_console/update_helper.py")
+
+if (-not (Test-Path $UpdaterBuildPath -PathType Leaf)) {
+    throw "PyInstaller did not create the expected updater: $UpdaterBuildPath"
+}
+Copy-Item -Force $UpdaterBuildPath $UpdaterAppPath
+
+uv run --locked --group desktop pyinstaller `
+    --noconfirm `
+    --clean `
+    --onefile `
+    --console `
     --name "Service Console MCP" `
     --paths (Join-Path $RootDir "src") `
     --copy-metadata service-console `
@@ -65,6 +81,10 @@ if (-not (Test-Path $ExecutablePath -PathType Leaf)) {
     throw "PyInstaller did not create the expected executable: $ExecutablePath"
 }
 
+& $UpdaterAppPath --help | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Updater smoke test failed with exit code $LASTEXITCODE"
+}
 & $McpHelperAppPath --help | Out-Null
 if ($LASTEXITCODE -ne 0) {
     throw "MCP helper smoke test failed with exit code $LASTEXITCODE"
