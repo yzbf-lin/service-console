@@ -394,6 +394,10 @@ groups, Windows Job Objects close with `KILL_ON_JOB_CLOSE`, and a local persiste
 next start safely clean a remnant after simultaneous failure. Cleanup runs before `auto_start`,
 preventing duplicate replacement processes after a crash.
 
+If an incompatible Windows host Job rejects the private nested Job, the guardian only falls back to
+marker-based cleanup after the root tree and inherited marker set are stable and fully verified. A
+descendant that later removes that marker or becomes unreadable is outside this degraded fallback.
+
 This ownership applies to processes launched by Service Console. Importing a running process creates
 only a definition and does not take ownership of the existing PID. A command that deliberately escapes
 its process group/Job, or strips the inherited management marker from escaped descendants, is outside

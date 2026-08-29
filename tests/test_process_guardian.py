@@ -163,7 +163,10 @@ def _lease(
     }
 
 
-def test_source_and_frozen_guardian_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_source_and_frozen_guardian_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     monkeypatch.delattr(process_guardian.sys, "frozen", raising=False)
     assert process_guardian._guardian_command() == [
         sys.executable,
@@ -171,12 +174,17 @@ def test_source_and_frozen_guardian_commands(monkeypatch: pytest.MonkeyPatch) ->
         "service_console.process_guardian",
     ]
 
+    executable = tmp_path / "Service Console" / "Service Console"
     monkeypatch.setattr(process_guardian.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(process_guardian.sys, "executable", "/opt/Service Console/Service Console")
+    monkeypatch.setattr(process_guardian.sys, "executable", str(executable))
     monkeypatch.setattr(process_guardian, "_IS_WINDOWS", False)
-    assert process_guardian._guardian_command() == ["/opt/Service Console/Service Console Guardian"]
+    assert process_guardian._guardian_command() == [
+        str(executable.resolve().with_name("Service Console Guardian"))
+    ]
     monkeypatch.setattr(process_guardian, "_IS_WINDOWS", True)
-    assert process_guardian._guardian_command() == ["/opt/Service Console/Service Console Guardian.exe"]
+    assert process_guardian._guardian_command() == [
+        str(executable.resolve().with_name("Service Console Guardian.exe"))
+    ]
 
 
 def test_ensure_started_is_thread_safe_and_state_is_private(tmp_path: Path) -> None:
@@ -298,6 +306,263 @@ def test_windows_track_fails_if_process_tree_never_stabilizes(
     assert all(process.killed for process in processes)
 
 
+def test_windows_nested_job_assignment_remains_the_primary_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def kill(self) -> None:
+            raise AssertionError("a successful nested Job assignment must not kill the service")
+
+    class FakeJob:
+        def __init__(self) -> None:
+            self.assignments: list[tuple[int, ...]] = []
+
+        def assign(self, processes: object) -> None:
+            self.assignments.append(tuple(process.pid for process in processes))  # type: ignore[union-attr]
+
+        def contains_process_in_any_job(self, _processes: object) -> bool:
+            raise AssertionError("host-Job detection only follows a denied assignment")
+
+        def close(self) -> None:
+            raise AssertionError("a successfully retained private Job must remain open")
+
+    root = FakeProcess(11_001)
+    child = FakeProcess(11_002)
+    job = FakeJob()
+    monkeypatch.setattr(process_guardian, "_IS_WINDOWS", True)
+    monkeypatch.setattr(process_guardian, "_WindowsJob", lambda: job)
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_process_tree",
+        lambda *_args, **_kwargs: (child, root),
+    )
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_marker_processes",
+        lambda _lease: (root, child),
+    )
+    worker = process_guardian._GuardianWorker(
+        tmp_path,
+        process_guardian._Owner(os.getpid(), psutil.Process().create_time()),
+    )
+    lease = process_guardian._Lease(
+        registration_id=uuid.uuid4().hex,
+        service="nested-job",
+        pid=root.pid,
+        create_time=time.time(),
+        pgid=None,
+        stop_timeout=0.1,
+    )
+
+    assert worker.track(lease) is True
+    assert job.assignments[0] == (root.pid, child.pid)
+    assert len(job.assignments) >= 2
+    assert worker.jobs[lease.registration_id] is job
+
+
+def test_windows_host_job_uses_verified_marker_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def kill(self) -> None:
+            raise AssertionError("a verified marker fallback must not kill the service")
+
+    class FakeJob:
+        closed = False
+
+        def assign(self, processes: object) -> None:
+            root_process = next(iter(processes))  # type: ignore[arg-type]
+            raise process_guardian._WindowsJobAssignmentError(
+                stage="AssignProcessToJobObject",
+                pid=root_process.pid,
+                winerror=process_guardian._ERROR_ACCESS_DENIED,
+                assigned_pids=(),
+            )
+
+        def contains_process_in_any_job(self, _processes: object) -> bool:
+            return True
+
+        def close(self) -> None:
+            self.closed = True
+
+    root = FakeProcess(12_001)
+    child = FakeProcess(12_002)
+    job = FakeJob()
+    monkeypatch.setattr(process_guardian, "_IS_WINDOWS", True)
+    monkeypatch.setattr(process_guardian, "_WindowsJob", lambda: job)
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_process_tree",
+        lambda *_args, **_kwargs: (child, root),
+    )
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_marker_processes",
+        lambda _lease: (root, child),
+    )
+    worker = process_guardian._GuardianWorker(
+        tmp_path,
+        process_guardian._Owner(os.getpid(), psutil.Process().create_time()),
+    )
+    lease = process_guardian._Lease(
+        registration_id=uuid.uuid4().hex,
+        service="host-job",
+        pid=root.pid,
+        create_time=time.time(),
+        pgid=None,
+        stop_timeout=0.1,
+    )
+
+    assert worker.track(lease) is True
+    assert job.closed is True
+    assert lease.registration_id in worker.leases
+    assert lease.registration_id not in worker.jobs
+
+
+def test_windows_partial_job_assignment_never_uses_marker_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+            self.killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    class FakeJob:
+        closed = False
+
+        def assign(self, processes: object) -> None:
+            root_process, child_process = tuple(processes)  # type: ignore[arg-type]
+            raise process_guardian._WindowsJobAssignmentError(
+                stage="AssignProcessToJobObject",
+                pid=child_process.pid,
+                winerror=process_guardian._ERROR_ACCESS_DENIED,
+                assigned_pids=(root_process.pid,),
+            )
+
+        def contains_process_in_any_job(self, _processes: object) -> bool:
+            raise AssertionError("partial assignment must fail before host-Job fallback")
+
+        def close(self) -> None:
+            self.closed = True
+
+    root = FakeProcess(12_101)
+    child = FakeProcess(12_102)
+    job = FakeJob()
+    monkeypatch.setattr(process_guardian, "_IS_WINDOWS", True)
+    monkeypatch.setattr(process_guardian, "_WindowsJob", lambda: job)
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_process_tree",
+        lambda *_args, **_kwargs: (child, root),
+    )
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_marker_processes",
+        lambda _lease: (root, child),
+    )
+    worker = process_guardian._GuardianWorker(
+        tmp_path,
+        process_guardian._Owner(os.getpid(), psutil.Process().create_time()),
+    )
+    lease = process_guardian._Lease(
+        registration_id=uuid.uuid4().hex,
+        service="partial-job",
+        pid=root.pid,
+        create_time=time.time(),
+        pgid=None,
+        stop_timeout=0.1,
+    )
+
+    assert worker.track(lease) is False
+    assert job.closed is True
+    assert root.killed is True
+    assert child.killed is True
+    assert worker.last_track_error is not None
+    assert "assigned_pids=[12101]" in worker.last_track_error
+    assert lease.registration_id not in worker.leases
+
+
+def test_windows_host_job_rejects_unverified_marker_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+            self.killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    class FakeJob:
+        closed = False
+
+        def assign(self, processes: object) -> None:
+            root_process = next(iter(processes))  # type: ignore[arg-type]
+            raise process_guardian._WindowsJobAssignmentError(
+                stage="AssignProcessToJobObject",
+                pid=root_process.pid,
+                winerror=process_guardian._ERROR_ACCESS_DENIED,
+                assigned_pids=(),
+            )
+
+        def contains_process_in_any_job(self, _processes: object) -> bool:
+            return True
+
+        def close(self) -> None:
+            self.closed = True
+
+    root = FakeProcess(13_001)
+    child = FakeProcess(13_002)
+    job = FakeJob()
+
+    def process_tree(
+        _lease: object,
+        *,
+        require_marker: bool,
+    ) -> tuple[FakeProcess, ...] | None:
+        return None if require_marker else (child, root)
+
+    monkeypatch.setattr(process_guardian, "_IS_WINDOWS", True)
+    monkeypatch.setattr(process_guardian, "_WindowsJob", lambda: job)
+    monkeypatch.setattr(process_guardian, "_windows_process_tree", process_tree)
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_marker_processes",
+        lambda _lease: (root,),
+    )
+    worker = process_guardian._GuardianWorker(
+        tmp_path,
+        process_guardian._Owner(os.getpid(), psutil.Process().create_time()),
+    )
+    lease = process_guardian._Lease(
+        registration_id=uuid.uuid4().hex,
+        service="host-job-marker-mismatch",
+        pid=root.pid,
+        create_time=time.time(),
+        pgid=None,
+        stop_timeout=0.1,
+    )
+
+    assert worker.track(lease) is False
+    assert job.closed is True
+    assert root.killed is True
+    assert child.killed is True
+    assert lease.registration_id not in worker.leases
+
+
 @pytest.mark.asyncio
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell exec timing is required")
 async def test_track_retries_the_create_subprocess_shell_exec_window(tmp_path: Path) -> None:
@@ -323,7 +588,7 @@ async def test_track_retries_the_create_subprocess_shell_exec_window(tmp_path: P
             create_time,
             process_group_id,
             0.1,
-        )
+        ), guardian.last_error
         await asyncio.to_thread(guardian.shutdown)
         await asyncio.wait_for(process.wait(), timeout=8)
     finally:
@@ -348,7 +613,7 @@ def test_parent_close_stops_tracked_process_tree(tmp_path: Path, close_method: s
             root_created,
             process_group_id,
             0.1,
-        )
+        ), guardian.last_error
         payload = json.loads((tmp_path / process_guardian.STATE_FILENAME).read_text(encoding="utf-8"))
         assert payload["leases"][0]["registration_id"] == registration_id
 
@@ -379,7 +644,7 @@ def test_worker_sigterm_stops_tracked_process_tree(tmp_path: Path) -> None:
             root_created,
             process_group_id,
             0.1,
-        )
+        ), guardian.last_error
         worker = guardian._process
         assert worker is not None
         reaper = threading.Thread(target=process.wait, daemon=True)
@@ -409,7 +674,7 @@ def test_release_removes_lease_after_service_has_stopped(tmp_path: Path) -> None
             root_created,
             process_group_id,
             0.1,
-        )
+        ), guardian.last_error
         # Reproduce a shell that exits while a detached/background descendant in its
         # original process group is still alive. release must reap, not merely forget it.
         process.kill()
@@ -438,7 +703,7 @@ def test_release_timeout_covers_term_and_kill_phases(tmp_path: Path) -> None:
             root_created,
             process_group_id,
             0.3,
-        )
+        ), guardian.last_error
         reaper = threading.Thread(target=process.wait, daemon=True)
         reaper.start()
 
@@ -631,7 +896,8 @@ def test_stale_windows_cleanup_uses_marker_instead_of_reused_pid(
     assert actions == (["terminate"] if should_terminate else [])
 
 
-def test_live_track_uses_private_pipe_identity_when_marker_is_temporarily_unreadable(
+@pytest.mark.skipif(os.name == "nt", reason="the live fixture exercises POSIX process-group trust")
+def test_live_posix_track_uses_private_pipe_identity_when_marker_is_temporarily_unreadable(
     tmp_path: Path,
 ) -> None:
     expected_registration = uuid.uuid4().hex
@@ -646,7 +912,7 @@ def test_live_track_uses_private_pipe_identity_when_marker_is_temporarily_unread
             root_created,
             process_group_id,
             0.1,
-        )
+        ), guardian.last_error
         assert process.poll() is None
         payload = json.loads((tmp_path / process_guardian.STATE_FILENAME).read_text(encoding="utf-8"))
         assert payload["leases"][0]["registration_id"] == expected_registration

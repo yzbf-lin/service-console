@@ -52,6 +52,7 @@ _TRACK_VALIDATION_TIMEOUT = 1.0
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 _SIGKILL = getattr(signal, "SIGKILL", 9)
+_ERROR_ACCESS_DENIED = 5
 
 
 def _cleanup_wait_budget(stop_timeout: float) -> float:
@@ -562,6 +563,28 @@ class _JobExtendedLimitInformation(ctypes.Structure):
     ]
 
 
+class _WindowsJobAssignmentError(RuntimeError):
+    """Describe the exact WinAPI stage and partial state of one Job assignment call."""
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        pid: int,
+        winerror: int,
+        assigned_pids: Sequence[int],
+    ) -> None:
+        self.stage = stage
+        self.pid = pid
+        self.winerror = winerror
+        self.assigned_pids = tuple(assigned_pids)
+        super().__init__(
+            "Windows Job assignment failed "
+            f"(stage={stage}, pid={pid}, winerror={winerror}, "
+            f"assigned_pids={list(self.assigned_pids)})"
+        )
+
+
 class _WindowsJob:
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
@@ -613,6 +636,53 @@ class _WindowsJob:
         if self._handle is None:
             raise RuntimeError("Windows Job Object is closed")
         access = self._PROCESS_TERMINATE | self._PROCESS_SET_QUOTA | self._PROCESS_QUERY_LIMITED_INFORMATION
+        assigned_pids: list[int] = []
+        for process in processes:
+            process_handle = self._kernel32.OpenProcess(access, False, process.pid)
+            if not process_handle:
+                error = ctypes.get_last_error()
+                if not psutil.pid_exists(process.pid):
+                    continue
+                raise _WindowsJobAssignmentError(
+                    stage="OpenProcess",
+                    pid=process.pid,
+                    winerror=error,
+                    assigned_pids=assigned_pids,
+                )
+            try:
+                already_assigned = ctypes.c_int()
+                if not self._kernel32.IsProcessInJob(
+                    process_handle, self._handle, ctypes.byref(already_assigned)
+                ):
+                    raise _WindowsJobAssignmentError(
+                        stage="IsProcessInJob",
+                        pid=process.pid,
+                        winerror=ctypes.get_last_error(),
+                        assigned_pids=assigned_pids,
+                    )
+                if already_assigned.value:
+                    continue
+                if not self._kernel32.AssignProcessToJobObject(self._handle, process_handle):
+                    error = ctypes.get_last_error()
+                    if not psutil.pid_exists(process.pid):
+                        continue
+                    raise _WindowsJobAssignmentError(
+                        stage="AssignProcessToJobObject",
+                        pid=process.pid,
+                        winerror=error,
+                        assigned_pids=assigned_pids,
+                    )
+                assigned_pids.append(process.pid)
+            finally:
+                self._kernel32.CloseHandle(process_handle)
+
+    def contains_process_in_any_job(
+        self,
+        processes: Sequence[psutil.Process],
+    ) -> bool:  # pragma: no cover - Windows only
+        """Return whether a target is already constrained by an inherited host Job."""
+
+        access = self._PROCESS_QUERY_LIMITED_INFORMATION
         for process in processes:
             process_handle = self._kernel32.OpenProcess(access, False, process.pid)
             if not process_handle:
@@ -622,17 +692,16 @@ class _WindowsJob:
             try:
                 already_assigned = ctypes.c_int()
                 if not self._kernel32.IsProcessInJob(
-                    process_handle, self._handle, ctypes.byref(already_assigned)
+                    process_handle,
+                    None,
+                    ctypes.byref(already_assigned),
                 ):
                     raise ctypes.WinError(ctypes.get_last_error())
                 if already_assigned.value:
-                    continue
-                if not self._kernel32.AssignProcessToJobObject(self._handle, process_handle):
-                    if not psutil.pid_exists(process.pid):
-                        continue
-                    raise ctypes.WinError(ctypes.get_last_error())
+                    return True
             finally:
                 self._kernel32.CloseHandle(process_handle)
+        return False
 
     def close(self) -> None:  # pragma: no cover - Windows only
         handle = getattr(self, "_handle", None)
@@ -696,6 +765,24 @@ def _windows_marker_processes(lease: _Lease) -> tuple[psutil.Process, ...] | Non
     except (psutil.Error, OSError):
         return None
     return tuple(matches)
+
+
+def _stable_windows_marker_tree(lease: _Lease) -> tuple[psutil.Process, ...] | None:
+    """Validate a marker-owned tree when a host Job prevents private Job assignment."""
+
+    previous_pids: set[int] | None = None
+    for _attempt in range(5):
+        root_tree = _windows_process_tree(lease, require_marker=True)
+        marker_processes = _windows_marker_processes(lease)
+        if root_tree is None or marker_processes is None:
+            return None
+        processes = {process.pid: process for process in (*root_tree, *marker_processes)}
+        current_pids = set(processes)
+        if current_pids == previous_pids:
+            return tuple(processes.values())
+        previous_pids = current_pids
+        time.sleep(0.02)
+    return None
 
 
 def _windows_cleanup_targets(
@@ -767,6 +854,7 @@ class _GuardianWorker:
         self.leases: dict[str, _Lease] = {}
         self.jobs: dict[str, _WindowsJob] = {}
         self.trusted_registrations: set[str] = set()
+        self.last_track_error: str | None = None
 
     def initialize(self) -> None:
         self.lock.acquire()
@@ -781,9 +869,13 @@ class _GuardianWorker:
         self.store.save(self.owner, self.leases)
 
     def track(self, lease: _Lease) -> bool:
+        self.last_track_error = None
         current = self.leases.get(lease.registration_id)
         if current is not None:
-            return current == lease
+            if current == lease:
+                return True
+            self.last_track_error = "registration id is already bound to another process"
+            return False
         job: _WindowsJob | None = None
         validation_deadline = time.monotonic() + _TRACK_VALIDATION_TIMEOUT
         while True:
@@ -799,34 +891,65 @@ class _GuardianWorker:
                 break
             time.sleep(0.02)
         if not valid:
+            self.last_track_error = "process identity could not be verified"
             return False
         if _IS_WINDOWS:
             known_processes = {process.pid: process for process in processes}
             try:
                 if processes:
                     job = _WindowsJob()
-                    # _windows_process_tree returns the authenticated root last;
-                    # assign it first so later children inherit the Job.
-                    job.assign(tuple(reversed(processes)))
-                    previous_pids: set[int] = set()
-                    stable = False
-                    for _attempt in range(5):
-                        root_tree = _windows_process_tree(lease, require_marker=False)
-                        marker_processes = _windows_marker_processes(lease)
-                        if root_tree is None or marker_processes is None:
-                            raise RuntimeError("managed Windows process tree became unverifiable")
-                        for candidate in (*root_tree, *marker_processes):
+                    ordered_processes = tuple(reversed(processes))
+                    try:
+                        # Windows 8+ supports nested Jobs, so always attempt the stronger
+                        # private KILL_ON_JOB_CLOSE containment before considering fallback.
+                        job.assign(ordered_processes)
+                    except _WindowsJobAssignmentError as exc:
+                        failed_process = next(
+                            (candidate for candidate in ordered_processes if candidate.pid == exc.pid),
+                            None,
+                        )
+                        host_job_incompatible = (
+                            exc.stage == "AssignProcessToJobObject"
+                            and exc.winerror == _ERROR_ACCESS_DENIED
+                            and not exc.assigned_pids
+                            and failed_process is not None
+                            and job.contains_process_in_any_job((failed_process,))
+                        )
+                        if not host_job_incompatible:
+                            raise
+                        # Some CI runners and enterprise launchers impose a Job that
+                        # rejects nested assignment. Only a completely verified,
+                        # stable marker tree may replace the still-empty private Job.
+                        marker_tree = _stable_windows_marker_tree(lease)
+                        if marker_tree is None:
+                            raise RuntimeError("managed Windows marker tree became unverifiable") from exc
+                        job.close()
+                        job = None
+                        for candidate in marker_tree:
                             known_processes[candidate.pid] = candidate
-                        current_pids = set(known_processes)
-                        job.assign(tuple(known_processes.values()))
-                        if current_pids == previous_pids:
-                            stable = True
-                            break
-                        previous_pids = current_pids
-                        time.sleep(0.02)
-                    if not stable:
-                        raise RuntimeError("managed Windows process tree did not stabilize")
-            except (OSError, RuntimeError):
+                    else:
+                        # _windows_process_tree returns the authenticated root last;
+                        # it was assigned first so later children inherit the Job.
+                        previous_pids: set[int] = set()
+                        stable = False
+                        for _attempt in range(5):
+                            root_tree = _windows_process_tree(lease, require_marker=False)
+                            marker_processes = _windows_marker_processes(lease)
+                            if root_tree is None or marker_processes is None:
+                                raise RuntimeError("managed Windows process tree became unverifiable")
+                            for candidate in (*root_tree, *marker_processes):
+                                known_processes[candidate.pid] = candidate
+                            current_pids = set(known_processes)
+                            job.assign(tuple(known_processes.values()))
+                            if current_pids == previous_pids:
+                                stable = True
+                                break
+                            previous_pids = current_pids
+                            time.sleep(0.02)
+                        if not stable:
+                            raise RuntimeError("managed Windows process tree did not stabilize")
+            except (OSError, RuntimeError) as exc:
+                self.last_track_error = str(exc)
                 if job is not None:
                     job.close()
                 # Closing the partial Job reaps assigned members. Best-effort kill
@@ -844,7 +967,8 @@ class _GuardianWorker:
             self.jobs[lease.registration_id] = job
         try:
             self.store.save(self.owner, self.leases)
-        except OSError:
+        except OSError as exc:
+            self.last_track_error = f"guardian state could not be saved: {exc}"
             self.leases.pop(lease.registration_id, None)
             self.trusted_registrations.discard(lease.registration_id)
             failed_job = self.jobs.pop(lease.registration_id, None)
@@ -1012,7 +1136,9 @@ def _run_worker(data_dir: Path, owner: _Owner, input_stream: BinaryIO, output_st
                     ok = worker.track(lease)
                     response: dict[str, object] = {"id": request_id, "ok": ok}
                     if not ok:
-                        response["error"] = "process identity could not be safely registered"
+                        response["error"] = (
+                            worker.last_track_error or "process identity could not be safely registered"
+                        )
                 elif action == "release":
                     registration_id = _bounded_text(payload.get("registration_id"), "registration id")
                     ok = worker.release(registration_id)
@@ -1066,6 +1192,7 @@ class ProcessGuardian:
         self._reader: threading.Thread | None = None
         self._tracked_timeouts: dict[str, float] = {}
         self._cleanup_unconfirmed = False
+        self.last_error: str | None = None
 
     def ensure_started(self) -> bool:
         with self._lock:
@@ -1091,13 +1218,26 @@ class ProcessGuardian:
                     "stop_timeout": stop_timeout,
                 }
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            with self._lock:
+                self.last_error = str(exc)
             return False
         with self._lock:
+            self.last_error = None
             if not self._ensure_started_locked():
+                self.last_error = "process guardian did not become ready"
                 return False
             response = self._request_locked({"action": "track", "lease": lease.to_dict()})
-            if response is None or response.get("ok") is not True:
+            if response is None:
+                self.last_error = "process guardian did not return a track response"
+                return False
+            if response.get("ok") is not True:
+                error = response.get("error")
+                self.last_error = (
+                    error
+                    if isinstance(error, str) and error
+                    else "process identity could not be safely registered"
+                )
                 return False
             self._tracked_timeouts[registration_id] = stop_timeout
             return True

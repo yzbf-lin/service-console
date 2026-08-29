@@ -337,6 +337,9 @@ uv run service-console serve --host 127.0.0.1 --port 8787
 pipe EOF 回收进程组，Windows 使用带 `KILL_ON_JOB_CLOSE` 的 Job Object；若控制器与 guardian 同时异常
 结束，下次启动会在执行 `auto_start` 前根据私有租约核验进程身份并清理遗留进程，避免重复实例。
 
+若不兼容的 Windows 宿主 Job 拒绝建立私有嵌套 Job，guardian 仅会在根进程树和继承 marker 连续稳定且
+完整验证通过后，降级为 marker 扫描回收；后续移除 marker 或环境变得不可读的后代不在该降级保证内。
+
 该所有权只覆盖由 Service Console 本次启动的进程。从“运行中进程”导入只创建配置，不会接管原 PID；
 主动逃离进程组/Job，或让逃离后的后代移除继承管理标记，也不属于托管生命周期。
 
