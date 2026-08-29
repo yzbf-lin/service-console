@@ -152,6 +152,14 @@ uv run service-console-desktop
 The desktop app starts a private FastAPI controller on a random loopback port and opens the dashboard
 in a native pywebview window. Definitions and logs are stored in `~/.service-console` by default.
 
+When the frozen macOS app is opened from Finder, Service Console captures the user's interactive
+login-shell environment once during desktop startup. Managed services therefore resolve Homebrew,
+`uv`, pnpm, pyenv, and other user-installed commands with the same exported `PATH` used by Terminal.
+Environment precedence is desktop process < login shell < the service definition's `env`. Source and
+CLI launches keep their existing process environment and do not start another shell. If shell startup
+fails or exceeds eight seconds, the desktop falls back to its process environment; set an explicit
+`PATH` in the service definition when troubleshooting an unusual shell profile.
+
 Register and control a native service:
 
 ```bash
