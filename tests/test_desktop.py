@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import sys
 import time
 from urllib.parse import parse_qs, urlparse
@@ -50,6 +51,29 @@ def test_desktop_controller_publishes_and_removes_runtime_descriptor(tmp_path) -
 
     controller.stop()
     assert not controller.runtime_path.exists()
+
+
+def test_desktop_keeps_runtime_descriptor_when_process_cleanup_is_unconfirmed(tmp_path) -> None:
+    controller = DesktopController(
+        tmp_path / "data",
+        token="fixed-local-token",
+        runtime_file=tmp_path / "controller.json",
+    )
+    controller.port = 43210
+    controller._publish_runtime_connection()
+
+    class FinishedThread:
+        def is_alive(self) -> bool:
+            return False
+
+    class FailedManager:
+        shutdown_succeeded = False
+
+    controller._thread = FinishedThread()  # type: ignore[assignment]
+    controller._service_manager = FailedManager()  # type: ignore[assignment]
+    controller.stop()
+
+    assert controller.runtime_path.exists()
 
 
 def test_desktop_controller_honors_runtime_file_override(monkeypatch, tmp_path) -> None:
@@ -120,6 +144,150 @@ def test_desktop_update_exit_closes_window_and_stops_server(tmp_path) -> None:
 
     assert window.destroyed is True
     assert server.should_exit is True
+
+
+def test_desktop_signal_handler_uses_window_close_path_and_restores_handler(tmp_path) -> None:
+    controller = DesktopController(tmp_path)
+
+    class FakeServer:
+        should_exit = False
+
+    class FakeWindow:
+        destroyed = False
+
+        def destroy(self) -> None:
+            self.destroyed = True
+
+    server = FakeServer()
+    window = FakeWindow()
+    controller._server = server  # type: ignore[assignment]
+    controller.attach_window(window)
+    previous = signal.getsignal(signal.SIGTERM)
+
+    with desktop_module._desktop_signal_handlers(controller):
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        handler(signal.SIGTERM, None)
+
+    assert signal.getsignal(signal.SIGTERM) is previous
+    assert window.destroyed is True
+    assert server.should_exit is True
+
+
+def test_run_desktop_wires_window_close_signal_and_final_shutdown(monkeypatch, tmp_path) -> None:
+    calls: list[str] = []
+
+    class FakeEvent:
+        def __init__(self) -> None:
+            self.handlers: list[object] = []
+
+        def __iadd__(self, handler: object):
+            self.handlers.append(handler)
+            return self
+
+        def emit(self) -> None:
+            for handler in self.handlers:
+                handler()  # type: ignore[operator]
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.events = type("Events", (), {"shown": FakeEvent(), "closed": FakeEvent()})()
+
+    window = FakeWindow()
+
+    class FakeController:
+        _service_manager = None
+        url = "http://127.0.0.1:12345/?token=fixture"
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            calls.append("init")
+
+        def start(self) -> None:
+            calls.append("start")
+
+        def attach_window(self, _window: object) -> None:
+            calls.append("attach")
+
+        def mark_application_ready(self, *_args: object) -> None:
+            calls.append("shown")
+
+        def request_stop(self, *_args: object) -> None:
+            calls.append("request-stop")
+
+        def request_application_exit(self, *_args: object) -> None:
+            calls.append("signal-exit")
+            self.request_stop()
+
+        def stop(self) -> None:
+            calls.append("stop")
+
+    class FakeWebview:
+        @staticmethod
+        def create_window(*_args, **_kwargs):
+            return window
+
+        @staticmethod
+        def start(*, debug: bool) -> None:
+            assert debug is False
+            window.events.shown.emit()
+            handler = signal.getsignal(signal.SIGTERM)
+            assert callable(handler)
+            handler(signal.SIGTERM, None)
+            window.events.closed.emit()
+
+    monkeypatch.setattr(desktop_module, "DesktopController", FakeController)
+    monkeypatch.setattr(desktop_module, "_load_webview", lambda: FakeWebview())
+
+    desktop_module.run_desktop(tmp_path)
+
+    assert calls == [
+        "init",
+        "start",
+        "attach",
+        "shown",
+        "signal-exit",
+        "request-stop",
+        "request-stop",
+        "stop",
+    ]
+
+
+def test_desktop_stop_uses_guardian_when_server_thread_is_stuck(tmp_path) -> None:
+    controller = DesktopController(tmp_path, shutdown_timeout=0.25)
+
+    class FakeServer:
+        should_exit = False
+        force_exit = False
+
+    class StuckThread:
+        def __init__(self) -> None:
+            self.join_timeouts: list[float | None] = []
+
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout: float | None = None) -> None:
+            self.join_timeouts.append(timeout)
+
+    class FakeManager:
+        emergency_calls = 0
+
+        def emergency_shutdown(self) -> None:
+            self.emergency_calls += 1
+
+    server = FakeServer()
+    thread = StuckThread()
+    manager = FakeManager()
+    controller._server = server  # type: ignore[assignment]
+    controller._thread = thread  # type: ignore[assignment]
+    controller._service_manager = manager  # type: ignore[assignment]
+
+    controller.stop()
+
+    assert thread.join_timeouts == [0.25, 1.0]
+    assert manager.emergency_calls == 1
+    assert server.should_exit is True
+    assert server.force_exit is True
 
 
 def test_desktop_marks_update_ready_after_shown_window_is_stable(tmp_path) -> None:

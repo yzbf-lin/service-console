@@ -23,6 +23,8 @@ $IconPath = Join-Path $RootDir "assets/windows/ServiceConsole.ico"
 $ExecutablePath = Join-Path $RootDir "dist/Service Console/Service Console.exe"
 $McpHelperBuildPath = Join-Path $RootDir "dist/Service Console MCP.exe"
 $McpHelperAppPath = Join-Path $RootDir "dist/Service Console/Service Console MCP.exe"
+$GuardianBuildPath = Join-Path $RootDir "dist/Service Console Guardian.exe"
+$GuardianAppPath = Join-Path $RootDir "dist/Service Console/Service Console Guardian.exe"
 $UpdaterBuildPath = Join-Path $RootDir "dist/Service Console Updater.exe"
 $UpdaterAppPath = Join-Path $RootDir "dist/Service Console/Service Console Updater.exe"
 
@@ -79,6 +81,21 @@ if (-not (Test-Path $McpHelperBuildPath -PathType Leaf)) {
 }
 Copy-Item -Force $McpHelperBuildPath $McpHelperAppPath
 
+uv run --locked --group desktop pyinstaller `
+    --noconfirm `
+    --clean `
+    --onefile `
+    --console `
+    --name "Service Console Guardian" `
+    --paths (Join-Path $RootDir "src") `
+    --copy-metadata service-console `
+    (Join-Path $RootDir "src/service_console/process_guardian.py")
+
+if (-not (Test-Path $GuardianBuildPath -PathType Leaf)) {
+    throw "PyInstaller did not create the expected process guardian: $GuardianBuildPath"
+}
+Copy-Item -Force $GuardianBuildPath $GuardianAppPath
+
 if (-not (Test-Path $ExecutablePath -PathType Leaf)) {
     throw "PyInstaller did not create the expected executable: $ExecutablePath"
 }
@@ -90,6 +107,10 @@ if ($LASTEXITCODE -ne 0) {
 & $McpHelperAppPath --help | Out-Null
 if ($LASTEXITCODE -ne 0) {
     throw "MCP helper smoke test failed with exit code $LASTEXITCODE"
+}
+& $GuardianAppPath --help | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Process guardian smoke test failed with exit code $LASTEXITCODE"
 }
 uv run --locked python (Join-Path $RootDir "scripts/smoke_test_mcp_helper.py") $McpHelperAppPath
 if ($LASTEXITCODE -ne 0) {

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import queue
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -14,6 +17,7 @@ import pytest
 from service_console import manager as manager_module
 from service_console.manager import ServiceManager
 from service_console.models import ServiceDefinition
+from service_console.process_guardian import STATE_FILENAME
 
 
 def python_command(source: str) -> str:
@@ -21,6 +25,18 @@ def python_command(source: str) -> str:
     if os.name == "nt":
         return subprocess.list2cmdline(argv)
     return shlex.join(argv)
+
+
+def matching_process_is_alive(pid: int, create_time: float) -> bool:
+    try:
+        process = psutil.Process(pid)
+        return (
+            abs(process.create_time() - create_time) <= 0.01
+            and process.is_running()
+            and process.status() != psutil.STATUS_ZOMBIE
+        )
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return False
 
 
 async def wait_for_state(
@@ -36,6 +52,34 @@ async def wait_for_state(
             return service
         await asyncio.sleep(0.02)
     raise AssertionError(f"service {name} did not reach one of {expected}")
+
+
+@pytest.mark.asyncio
+async def test_initialize_recovers_persisted_guardian_state_without_auto_start(tmp_path: Path) -> None:
+    class RecordingGuardian:
+        ensure_calls = 0
+        shutdown_calls = 0
+
+        def ensure_started(self) -> bool:
+            self.ensure_calls += 1
+            return True
+
+        def shutdown(self) -> bool:
+            self.shutdown_calls += 1
+            return True
+
+        def emergency_disconnect(self) -> None:
+            return None
+
+    (tmp_path / STATE_FILENAME).write_text("fixture", encoding="utf-8")
+    guardian = RecordingGuardian()
+    manager = ServiceManager(tmp_path, process_guardian=guardian)  # type: ignore[arg-type]
+
+    await manager.initialize()
+    assert guardian.ensure_calls == 1
+
+    await manager.shutdown()
+    assert guardian.shutdown_calls == 1
 
 
 @pytest.mark.asyncio
@@ -319,6 +363,167 @@ async def test_new_process_owns_its_unix_process_group(tmp_path: Path) -> None:
     assert os.getpgid(pid) == pid
     await manager.stop("group")
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="fixture command uses POSIX background-job syntax")
+async def test_shutdown_reaps_background_child_after_launcher_exits(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "background.pid"
+    manager = ServiceManager(tmp_path, monitor_interval=0.05)
+    await manager.add_service(
+        ServiceDefinition(
+            name="background",
+            command=f"sleep 30 & echo $! > {shlex.quote(str(child_pid_file))}",
+            cwd=str(tmp_path),
+            stop_timeout=0.25,
+        )
+    )
+    child_pid: int | None = None
+    child_create_time: float | None = None
+    try:
+        await manager.start("background")
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while child_pid is None:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("background child did not publish its PID")
+            try:
+                child_pid = int(child_pid_file.read_text().strip())
+            except (FileNotFoundError, ValueError):
+                child_pid = None
+                await asyncio.sleep(0.02)
+        child_create_time = psutil.Process(child_pid).create_time()
+        assert matching_process_is_alive(child_pid, child_create_time)
+
+        await manager.shutdown()
+
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while (
+            matching_process_is_alive(child_pid, child_create_time)
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.02)
+        assert not matching_process_is_alive(child_pid, child_create_time)
+    finally:
+        await manager.shutdown()
+        if (
+            child_pid is not None
+            and child_create_time is not None
+            and matching_process_is_alive(child_pid, child_create_time)
+        ):
+            psutil.Process(child_pid).kill()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="fixture command uses POSIX background-job syntax")
+async def test_rejected_guardian_track_kills_group_after_launcher_exits(tmp_path: Path) -> None:
+    child_pid_file = tmp_path / "rejected-background.pid"
+
+    class RejectingGuardian:
+        child_pid: int | None = None
+        child_create_time: float | None = None
+
+        def ensure_started(self) -> bool:
+            return True
+
+        def track(self, **_kwargs: object) -> bool:
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                try:
+                    self.child_pid = int(child_pid_file.read_text().strip())
+                    self.child_create_time = psutil.Process(self.child_pid).create_time()
+                    break
+                except (FileNotFoundError, ValueError, psutil.NoSuchProcess):
+                    time.sleep(0.02)
+            time.sleep(0.2)
+            return False
+
+        def shutdown(self) -> bool:
+            return True
+
+        def emergency_disconnect(self) -> None:
+            return None
+
+    guardian = RejectingGuardian()
+    manager = ServiceManager(tmp_path, process_guardian=guardian)  # type: ignore[arg-type]
+    await manager.add_service(
+        ServiceDefinition(
+            name="rejected-background",
+            command=f"sleep 30 & echo $! > {shlex.quote(str(child_pid_file))}",
+            cwd=str(tmp_path),
+            stop_timeout=0.25,
+        )
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="did not contain"):
+            await manager.start("rejected-background")
+        assert guardian.child_pid is not None
+        assert guardian.child_create_time is not None
+        deadline = asyncio.get_running_loop().time() + 3.0
+        while (
+            matching_process_is_alive(guardian.child_pid, guardian.child_create_time)
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.02)
+        assert not matching_process_is_alive(guardian.child_pid, guardian.child_create_time)
+    finally:
+        await manager.shutdown()
+        if (
+            guardian.child_pid is not None
+            and guardian.child_create_time is not None
+            and matching_process_is_alive(guardian.child_pid, guardian.child_create_time)
+        ):
+            psutil.Process(guardian.child_pid).kill()
+
+
+def test_controller_crash_reaps_managed_process_tree(tmp_path: Path) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "guardian_controller.py"
+    controller = subprocess.Popen(
+        [sys.executable, "-u", str(fixture), str(tmp_path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert controller.stdout is not None
+    output: queue.Queue[str] = queue.Queue()
+    reader = threading.Thread(target=lambda: output.put(controller.stdout.readline()), daemon=True)
+    reader.start()
+    process_ids: set[int] = set()
+    process_identities: dict[int, float] = {}
+    try:
+        payload = json.loads(output.get(timeout=10.0))
+        process_ids = {
+            int(payload["controller_pid"]),
+            int(payload["launcher_pid"]),
+            int(payload["workload_pid"]),
+        }
+        process_identities = {pid: psutil.Process(pid).create_time() for pid in process_ids}
+        assert all(matching_process_is_alive(pid, process_identities[pid]) for pid in process_ids)
+
+        controller.kill()
+        controller.wait(timeout=5.0)
+
+        deadline = time.monotonic() + 10.0
+        managed_ids = process_ids - {controller.pid}
+        state_path = tmp_path / "managed-processes.json"
+        while (
+            any(matching_process_is_alive(pid, process_identities[pid]) for pid in managed_ids)
+            or state_path.exists()
+        ) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not any(matching_process_is_alive(pid, process_identities[pid]) for pid in managed_ids)
+        assert not state_path.exists()
+    finally:
+        if controller.poll() is None:
+            controller.kill()
+            controller.wait(timeout=5.0)
+        for pid in process_ids - {controller.pid}:
+            try:
+                if matching_process_is_alive(pid, process_identities[pid]):
+                    psutil.Process(pid).kill()
+            except psutil.NoSuchProcess:
+                pass
 
 
 def test_windows_uses_new_process_group_and_signals_the_complete_process_tree(
