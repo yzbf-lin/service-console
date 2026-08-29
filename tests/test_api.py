@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -281,6 +282,27 @@ def test_authenticated_service_lifecycle() -> None:
 
         assert client.delete("/api/services/api", headers=headers).json() == {"deleted": "api"}
         assert client.post("/api/services/api/start", headers=headers).status_code == 404
+
+    assert manager.shutdown_called
+
+
+def test_manager_shutdown_runs_even_when_jenkins_shutdown_fails() -> None:
+    manager = FakeManager()
+
+    class FailingJenkins:
+        async def initialize(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            raise RuntimeError("fixture Jenkins teardown failure")
+
+    app = create_app(
+        manager=manager,
+        jenkins_service=FailingJenkins(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="fixture Jenkins teardown failure"), TestClient(app):
+        pass
 
     assert manager.shutdown_called
 

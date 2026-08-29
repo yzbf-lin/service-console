@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import signal
 import subprocess
 import time
@@ -16,17 +17,18 @@ from typing import Any
 import psutil
 
 from .models import LogEntry, ServiceDefinition, ServiceRuntime, ServiceState, utc_now
+from .process_guardian import MANAGED_PROCESS_ID_ENV, STATE_FILENAME, ProcessGuardian
 from .store import DefinitionStore
-
 
 _IS_WINDOWS = os.name == "nt"
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+_CREATE_SUSPENDED = getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 _SIGKILL = getattr(signal, "SIGKILL", 9)
 
 
 def _subprocess_group_options() -> dict[str, object]:
     if _IS_WINDOWS:
-        return {"creationflags": _CREATE_NEW_PROCESS_GROUP}
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED}
     return {"start_new_session": True}
 
 
@@ -41,6 +43,7 @@ class _ManagedService:
     successful_starts: int = 0
     started_monotonic: float | None = None
     resource_processes: dict[int, psutil.Process] = field(default_factory=dict)
+    guardian_registration_id: str | None = None
 
 
 class ServiceManager:
@@ -54,6 +57,7 @@ class ServiceManager:
         event_queue_size: int = 1_024,
         monitor_interval: float = 1.0,
         base_environment: Mapping[str, str] | None = None,
+        process_guardian: ProcessGuardian | None = None,
     ) -> None:
         if log_buffer_size <= 0:
             raise ValueError("log_buffer_size must be greater than zero")
@@ -71,6 +75,7 @@ class ServiceManager:
             if base_environment is None
             else {str(key): str(value) for key, value in base_environment.items()}
         )
+        self._process_guardian = process_guardian or ProcessGuardian(self.store.data_dir)
         self._services: dict[str, _ManagedService] = {}
         self._definitions_lock = asyncio.Lock()
         self._initialize_lock = asyncio.Lock()
@@ -78,6 +83,13 @@ class ServiceManager:
         self._tasks: set[asyncio.Task[Any]] = set()
         self._initialized = False
         self._shutting_down = False
+        self._shutdown_succeeded: bool | None = None
+
+    @property
+    def shutdown_succeeded(self) -> bool | None:
+        """Whether the guardian confirmed that all managed leases were cleaned."""
+
+        return self._shutdown_succeeded
 
     async def initialize(self) -> None:
         """Load persisted definitions and start definitions marked auto_start."""
@@ -87,32 +99,62 @@ class ServiceManager:
                 return
             definitions = self.store.load()
             for definition in definitions.values():
-                logs = deque(self.store.load_logs(definition.name, self.log_buffer_size), maxlen=self.log_buffer_size)
+                logs = deque(
+                    self.store.load_logs(definition.name, self.log_buffer_size),
+                    maxlen=self.log_buffer_size,
+                )
                 self._services[definition.name] = _ManagedService(definition=definition, logs=logs)
-            self._initialized = True
 
-            auto_start_names = [definition.name for definition in definitions.values() if definition.auto_start]
+            auto_start_names = [
+                definition.name for definition in definitions.values() if definition.auto_start
+            ]
+            guardian_state_exists = (self.store.data_dir / STATE_FILENAME).exists()
+            if guardian_state_exists or auto_start_names:
+                guardian_ready = await asyncio.to_thread(self._process_guardian.ensure_started)
+                if not guardian_ready:
+                    self._services.clear()
+                    raise RuntimeError("process guardian could not recover managed process state")
+
+            self._initialized = True
             if auto_start_names:
                 await asyncio.gather(*(self.start(name) for name in auto_start_names), return_exceptions=True)
 
     async def shutdown(self) -> None:
         """Stop every child and drain the controller's background tasks."""
 
-        if not self._initialized:
-            return
         self._shutting_down = True
-        names = list(self._services)
-        await asyncio.gather(*(self.stop(name) for name in names), return_exceptions=True)
+        try:
+            if self._initialized:
+                names = list(self._services)
+                await asyncio.gather(*(self.stop(name) for name in names), return_exceptions=True)
 
-        current = asyncio.current_task()
-        pending = [task for task in self._tasks if task is not current and not task.done()]
-        if pending:
-            done, still_pending = await asyncio.wait(pending, timeout=2.0)
-            del done
-            for task in still_pending:
-                task.cancel()
-            if still_pending:
-                await asyncio.gather(*still_pending, return_exceptions=True)
+                current = asyncio.current_task()
+                pending = [task for task in self._tasks if task is not current and not task.done()]
+                if pending:
+                    done, still_pending = await asyncio.wait(pending, timeout=2.0)
+                    del done
+                    for task in still_pending:
+                        task.cancel()
+                    if still_pending:
+                        await asyncio.gather(*still_pending, return_exceptions=True)
+        finally:
+            # The external guardian is the final containment boundary. Closing it releases
+            # every remaining lease even when an individual stop operation failed.
+            try:
+                guardian_cleaned = await asyncio.to_thread(self._process_guardian.shutdown)
+            except BaseException:
+                self._shutdown_succeeded = False
+                raise
+            self._shutdown_succeeded = guardian_cleaned
+            if not guardian_cleaned:
+                raise RuntimeError("process guardian could not confirm managed process cleanup")
+
+    def emergency_shutdown(self) -> None:
+        """Disconnect the guardian so it can reap children after a stuck controller exit."""
+
+        self._shutting_down = True
+        self._shutdown_succeeded = False
+        self._process_guardian.emergency_disconnect()
 
     async def add_service(self, definition: ServiceDefinition) -> dict[str, Any]:
         await self._ensure_initialized()
@@ -237,6 +279,8 @@ class ServiceManager:
             return self._snapshot(service)
         if self._shutting_down:
             raise RuntimeError("service manager is shutting down")
+        if service.guardian_registration_id is not None:
+            await self._release_guardian(service)
 
         service.generation += 1
         generation = service.generation
@@ -252,9 +296,16 @@ class ServiceManager:
         self._emit_status(service)
 
         definition = service.definition
+        registration_id = secrets.token_urlsafe(18)
         environment = dict(self._base_environment)
         environment.update(definition.env)
+        environment[MANAGED_PROCESS_ID_ENV] = registration_id
+        process = None
+        tracked = False
         try:
+            guardian_ready = await asyncio.to_thread(self._process_guardian.ensure_started)
+            if not guardian_ready:
+                raise RuntimeError("process guardian did not become ready")
             process = await asyncio.create_subprocess_shell(
                 definition.command,
                 cwd=definition.cwd,
@@ -264,15 +315,67 @@ class ServiceManager:
                 limit=1024 * 1024,
                 **_subprocess_group_options(),
             )
+            root_process: psutil.Process | None = None
+            try:
+                root_process = psutil.Process(process.pid)
+                create_time = root_process.create_time()
+            except (psutil.Error, OSError):
+                create_time = time.time()
+            tracked = await asyncio.to_thread(
+                self._process_guardian.track,
+                registration_id=registration_id,
+                service=definition.name,
+                pid=process.pid,
+                create_time=create_time,
+                process_group_id=None if _IS_WINDOWS else process.pid,
+                stop_timeout=definition.stop_timeout,
+            )
+            if not tracked:
+                detail = getattr(self._process_guardian, "last_error", None)
+                suffix = f": {detail}" if isinstance(detail, str) and detail else ""
+                raise RuntimeError(f"process guardian did not contain the launched process{suffix}")
+            if _IS_WINDOWS:
+                if root_process is None:
+                    raise RuntimeError("suspended process identity was unavailable for resume")
+                try:
+                    root_process.resume()
+                except (psutil.Error, OSError) as exc:
+                    raise RuntimeError(f"failed to resume suspended process {process.pid}: {exc}") from exc
         except Exception as exc:
+            guardian_cleanup_error: str | None = None
+            if tracked:
+                try:
+                    released = await asyncio.to_thread(
+                        self._process_guardian.release,
+                        registration_id,
+                    )
+                    if released:
+                        tracked = False
+                    else:
+                        guardian_cleanup_error = "process guardian did not release the failed start"
+                except Exception as cleanup_exc:  # noqa: BLE001 - best-effort failure cleanup
+                    guardian_cleanup_error = f"process guardian release failed: {cleanup_exc}"
+            if process is not None:
+                process_tree = self._signal_process_group(process, _SIGKILL)
+                await self._wait_for_process_group(
+                    process,
+                    timeout=max(1.0, min(5.0, definition.stop_timeout)),
+                    process_tree=process_tree,
+                )
+                if process.returncode is None:
+                    await asyncio.shield(process.wait())
+            error_message = str(exc)
+            if guardian_cleanup_error is not None:
+                error_message = f"{error_message}; {guardian_cleanup_error}"
             service.runtime.state = ServiceState.FAILED
-            service.runtime.last_error = str(exc)
+            service.runtime.last_error = error_message
             service.runtime.stopped_at = utc_now()
             self._emit_status(service)
-            self._record_log(service, "stderr", f"failed to start: {exc}")
-            raise RuntimeError(f"failed to start service {definition.name}: {exc}") from exc
+            self._record_log(service, "stderr", f"failed to start: {error_message}")
+            raise RuntimeError(f"failed to start service {definition.name}: {error_message}") from exc
 
         service.process = process
+        service.guardian_registration_id = registration_id if tracked else None
         service.runtime.state = ServiceState.RUNNING
         service.runtime.pid = process.pid
         service.runtime.started_at = utc_now()
@@ -289,6 +392,7 @@ class ServiceManager:
                 service,
                 process,
                 generation,
+                service.guardian_registration_id,
                 (stdout_task, stderr_task),
                 monitor_task,
             )
@@ -298,20 +402,38 @@ class ServiceManager:
 
     async def _stop_locked(self, service: _ManagedService) -> dict[str, Any]:
         process = service.process
-        if process is None or process.returncode is not None:
+        if (process is None or process.returncode is not None) and service.guardian_registration_id is None:
             return self._snapshot(service)
 
         service.runtime.state = ServiceState.STOPPING
         self._emit_status(service)
         process_tree: tuple[psutil.Process, ...] = ()
         try:
-            process_tree = self._signal_process_group(process, signal.SIGTERM)
-            group_exited = await self._wait_for_process_group(
-                process,
-                timeout=service.definition.stop_timeout,
-                process_tree=process_tree,
-            )
-            if not group_exited:
+            if process is not None and process.returncode is None:
+                process_tree = self._signal_process_group(process, signal.SIGTERM)
+                group_exited = await self._wait_for_process_group(
+                    process,
+                    timeout=service.definition.stop_timeout,
+                    process_tree=process_tree,
+                )
+                if not group_exited:
+                    process_tree = self._signal_process_group(
+                        process,
+                        _SIGKILL,
+                        process_tree=process_tree,
+                    )
+                    await asyncio.shield(process.wait())
+                    if _IS_WINDOWS:
+                        await self._wait_for_process_group(
+                            process,
+                            timeout=max(1.0, service.definition.stop_timeout),
+                            process_tree=process_tree,
+                        )
+            await self._release_guardian(service)
+            if process is not None and process.returncode is None:
+                await asyncio.shield(process.wait())
+        except asyncio.CancelledError:
+            if process is not None and process.returncode is None:
                 process_tree = self._signal_process_group(
                     process,
                     _SIGKILL,
@@ -319,35 +441,32 @@ class ServiceManager:
                 )
                 await asyncio.shield(process.wait())
                 if _IS_WINDOWS:
-                    await self._wait_for_process_group(
-                        process,
-                        timeout=max(1.0, service.definition.stop_timeout),
-                        process_tree=process_tree,
+                    await asyncio.shield(
+                        self._wait_for_process_group(
+                            process,
+                            timeout=max(1.0, service.definition.stop_timeout),
+                            process_tree=process_tree,
+                        )
                     )
-        except asyncio.CancelledError:
-            process_tree = self._signal_process_group(
-                process,
-                _SIGKILL,
-                process_tree=process_tree,
-            )
-            await asyncio.shield(process.wait())
-            if _IS_WINDOWS:
-                await asyncio.shield(
-                    self._wait_for_process_group(
-                        process,
-                        timeout=max(1.0, service.definition.stop_timeout),
-                        process_tree=process_tree,
-                    )
-                )
+            await asyncio.shield(self._release_guardian(service))
+            raise
+        except Exception as exc:
+            service.runtime.last_error = str(exc)
+            service.runtime.state = ServiceState.FAILED
+            self._emit_status(service)
             raise
         finally:
-            if process.returncode is not None and service.process is process:
+            if (
+                (process is None or process.returncode is not None)
+                and service.process is process
+                and service.guardian_registration_id is None
+            ):
                 service.process = None
                 service.started_monotonic = None
                 service.resource_processes.clear()
                 service.runtime.state = ServiceState.STOPPED
                 service.runtime.pid = None
-                service.runtime.exit_code = process.returncode
+                service.runtime.exit_code = process.returncode if process is not None else None
                 service.runtime.stopped_at = utc_now()
                 service.runtime.cpu_percent = 0.0
                 service.runtime.memory_rss = 0
@@ -379,6 +498,7 @@ class ServiceManager:
         service: _ManagedService,
         process: asyncio.subprocess.Process,
         generation: int,
+        guardian_registration_id: str | None,
         readers: tuple[asyncio.Task[Any], asyncio.Task[Any]],
         monitor_task: asyncio.Task[Any],
     ) -> None:
@@ -387,9 +507,23 @@ class ServiceManager:
         monitor_task.cancel()
         await asyncio.gather(monitor_task, return_exceptions=True)
 
+        guardian_error: Exception | None = None
+        if guardian_registration_id is not None:
+            try:
+                released = await asyncio.to_thread(
+                    self._process_guardian.release,
+                    guardian_registration_id,
+                )
+                if not released:
+                    raise RuntimeError("process guardian did not release the managed process")
+            except Exception as exc:  # final shutdown retries by closing the guardian pipe
+                guardian_error = exc
+
         async with service.lifecycle_lock:
             if service.process is not process or service.generation != generation:
                 return
+            if service.guardian_registration_id == guardian_registration_id and guardian_error is None:
+                service.guardian_registration_id = None
             was_stopping = service.runtime.state is ServiceState.STOPPING
             service.process = None
             service.started_monotonic = None
@@ -399,13 +533,26 @@ class ServiceManager:
             service.runtime.stopped_at = utc_now()
             service.runtime.cpu_percent = 0.0
             service.runtime.memory_rss = 0
-            if was_stopping:
+            if guardian_error is not None:
+                service.runtime.state = ServiceState.FAILED
+                service.runtime.last_error = f"process guardian cleanup failed: {guardian_error}"
+            elif was_stopping:
                 service.runtime.state = ServiceState.STOPPED
             elif return_code == 0:
                 service.runtime.state = ServiceState.EXITED
             else:
                 service.runtime.state = ServiceState.FAILED
             self._emit_status(service)
+
+    async def _release_guardian(self, service: _ManagedService) -> None:
+        registration_id = service.guardian_registration_id
+        if registration_id is None:
+            return
+        released = await asyncio.to_thread(self._process_guardian.release, registration_id)
+        if not released:
+            raise RuntimeError("process guardian did not release the managed process")
+        if service.guardian_registration_id == registration_id:
+            service.guardian_registration_id = None
 
     async def _monitor_resources(
         self,
@@ -539,7 +686,7 @@ class ServiceManager:
             return targets
         try:
             os.killpg(process.pid, sig)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         return ()
 

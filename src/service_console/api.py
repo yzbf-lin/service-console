@@ -159,8 +159,12 @@ def create_app(
             await jenkins_tool.initialize()
             yield
         finally:
-            await jenkins_tool.shutdown()
-            await service_manager.shutdown()
+            # Service cleanup is the primary shutdown invariant. Keep it independent from
+            # Jenkins client teardown so a remote-client error can never leave children alive.
+            try:
+                await service_manager.shutdown()
+            finally:
+                await jenkins_tool.shutdown()
 
     app = FastAPI(title="Service Console", lifespan=lifespan)
     app.state.manager = service_manager

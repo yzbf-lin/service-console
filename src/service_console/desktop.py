@@ -6,10 +6,12 @@ import argparse
 import json
 import os
 import secrets
+import signal
 import sys
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -54,6 +56,7 @@ class DesktopController:
         update_ready_file: str | Path | None = None,
         update_ready_delay: float = 1.5,
         service_environment: Mapping[str, str] | None = None,
+        shutdown_timeout: float = 15.0,
     ) -> None:
         self.data_dir = Path(data_dir).expanduser()
         self.startup_timeout = startup_timeout
@@ -71,6 +74,9 @@ class DesktopController:
             Path(update_ready_file).expanduser() if update_ready_file is not None else None
         )
         self.update_ready_delay = max(0.0, update_ready_delay)
+        if shutdown_timeout <= 0:
+            raise ValueError("shutdown_timeout must be greater than zero")
+        self.shutdown_timeout = shutdown_timeout
         self.service_environment = (
             resolve_desktop_service_environment()
             if service_environment is None
@@ -87,6 +93,7 @@ class DesktopController:
         self._update_ready_lock = threading.Lock()
         self._update_ready_timer: threading.Timer | None = None
         self._window: object | None = None
+        self._service_manager: ServiceManager | None = None
         self._stopped = False
 
     @property
@@ -108,6 +115,7 @@ class DesktopController:
             self.data_dir,
             base_environment=self.service_environment,
         )
+        self._service_manager = service_manager
         application = create_app(
             data_dir=self.data_dir,
             token=self.token,
@@ -128,7 +136,9 @@ class DesktopController:
         self._thread = threading.Thread(
             target=self._serve,
             name="service-console-desktop-server",
-            daemon=False,
+            # Graceful shutdown remains the normal path. A daemon thread prevents a stuck
+            # ASGI teardown from defeating the external process guardian during final exit.
+            daemon=True,
         )
         self._thread.start()
 
@@ -260,6 +270,11 @@ class DesktopController:
             timer.start()
 
     def _close_for_update(self) -> None:
+        self.request_application_exit()
+
+    def request_application_exit(self, *_args: object) -> None:
+        """Close the native window and ask the local controller to shut down."""
+
         try:
             destroy = getattr(self._window, "destroy", None)
             if callable(destroy):
@@ -278,16 +293,62 @@ class DesktopController:
                 if self._update_ready_timer is not None:
                     self._update_ready_timer.cancel()
                     self._update_ready_timer = None
-            try:
-                remove_runtime_connection(self.runtime_path, self.instance_id)
-            except OSError:
-                # Descriptor cleanup must never prevent the managed processes from stopping.
-                pass
             self.request_stop()
             if self._thread is not None and self._thread.is_alive():
-                self._thread.join()
+                self._thread.join(timeout=self.shutdown_timeout)
+                if self._thread.is_alive():
+                    if self._service_manager is not None:
+                        self._service_manager.emergency_shutdown()
+                    if self._server is not None:
+                        self._server.force_exit = True
+                    self._thread.join(timeout=1.0)
             elif self._listener is not None:
                 self._listener.close()
+            # Keep discovery metadata until the controller and its managed processes have
+            # completed shutdown. If teardown remains stuck, the descriptor is intentionally
+            # left stale and is rejected by PID validation after this process exits.
+            cleanup_confirmed = self._service_manager is None or (
+                getattr(self._service_manager, "shutdown_succeeded", False) is True
+            )
+            if (self._thread is None or not self._thread.is_alive()) and cleanup_confirmed:
+                try:
+                    remove_runtime_connection(self.runtime_path, self.instance_id)
+                except OSError:
+                    # Descriptor cleanup must never prevent the guardian from reaping children.
+                    pass
+
+
+@contextmanager
+def _desktop_signal_handlers(controller: DesktopController) -> Iterator[None]:
+    """Translate catchable process signals into the same graceful window-close path."""
+
+    previous: dict[signal.Signals, object] = {}
+    requested = False
+
+    def request_exit(_signum: int, _frame: object) -> None:
+        nonlocal requested
+        if requested:
+            if controller._service_manager is not None:
+                controller._service_manager.emergency_shutdown()
+            return
+        requested = True
+        controller.request_application_exit()
+
+    try:
+        for selected_signal in (signal.SIGINT, signal.SIGTERM):
+            try:
+                previous[selected_signal] = signal.getsignal(selected_signal)
+                signal.signal(selected_signal, request_exit)
+            except (OSError, ValueError):
+                # Signal registration is only available from Python's main thread.
+                continue
+        yield
+    finally:
+        for selected_signal, handler in previous.items():
+            try:
+                signal.signal(selected_signal, handler)
+            except (OSError, ValueError):
+                continue
 
 
 def _load_webview() -> ModuleType:
@@ -330,7 +391,8 @@ def run_desktop(
         controller.attach_window(window)
         window.events.shown += controller.mark_application_ready
         window.events.closed += controller.request_stop
-        webview.start(debug=debug)
+        with _desktop_signal_handlers(controller):
+            webview.start(debug=debug)
     finally:
         controller.stop()
 

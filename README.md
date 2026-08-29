@@ -43,6 +43,8 @@ requiring Docker or another container runtime.
   and runtime details panes.
 - Track PID, uptime, exit code, restart count, CPU, and memory.
 - Capture stdout and stderr in independent persistent logs and bounded live buffers.
+- Reap processes started by Service Console on window close, catchable termination signals, or
+  controller crashes through an external guardian and persistent process leases.
 - Render ANSI output with xterm.js search, selection, links, wrapping, and scrollback.
 - Inspect listening ports and safely terminate their owning processes with PID/port verification.
 - Configure multiple Jenkins controllers, switch between instance items, browse folders and jobs,
@@ -386,9 +388,20 @@ uv run service-console serve --host 127.0.0.1 --port 8787
 ```
 
 Open <http://127.0.0.1:8787>. The controller owns its child process groups. Closing the last desktop
-window or stopping the controller normally triggers graceful shutdown of all managed processes.
-Force-quitting or killing the controller can leave child processes behind, so inspect ports before
-starting replacements.
+window, stopping the controller, or sending a catchable termination signal first performs graceful
+shutdown. Every launched service also has an external guardian lease: pipe EOF reaps POSIX process
+groups, Windows Job Objects close with `KILL_ON_JOB_CLOSE`, and a local persisted lease lets the
+next start safely clean a remnant after simultaneous failure. Cleanup runs before `auto_start`,
+preventing duplicate replacement processes after a crash.
+
+If an incompatible Windows host Job rejects the private nested Job, the guardian only falls back to
+marker-based cleanup after the root tree and inherited marker set are stable and fully verified. A
+descendant that later removes that marker or becomes unreadable is outside this degraded fallback.
+
+This ownership applies to processes launched by Service Console. Importing a running process creates
+only a definition and does not take ownership of the existing PID. A command that deliberately escapes
+its process group/Job, or strips the inherited management marker from escaped descendants, is outside
+the managed lifecycle.
 
 Do not run `service-console serve` and `service-console-desktop` against the same data directory at
 the same time.
@@ -397,8 +410,12 @@ the same time.
 
 The desktop controller always listens on loopback. Once ready, it writes its random URL, PID,
 instance ID, and temporary token to `~/.service-console/controller.json` with mode `0600`. The
-descriptor is removed during graceful shutdown. A process lock prevents two live desktop instances
-from silently replacing each other's descriptor.
+descriptor is removed only after managed-process cleanup completes. A stuck teardown leaves a stale
+descriptor rather than advertising an early shutdown; PID validation rejects it after the old
+controller exits. Guardian leases contain only process identity and cleanup metadata, never commands,
+environments, logs, or credentials. On POSIX the lease file is restricted to mode `0600`; Windows uses
+the data directory's user ACL. A process lock prevents two live desktop instances from silently
+replacing each other's descriptor.
 
 Registered commands are trusted local configuration and run with the same OS permissions as the
 controller. Keep localhost as the default. For remote access, require a strong token and terminate TLS
