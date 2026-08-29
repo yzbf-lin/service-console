@@ -220,6 +220,13 @@ backend is available, the token remains in process memory only and must be enter
 restart. API responses expose only `token_present`; neither the browser nor MCP tool results receive
 the token, and Service Console never falls back to a plaintext token file.
 
+Expand **How to get an API token** while adding or editing an instance. After a Jenkins URL is entered,
+the dialog provides shortcuts to the current `/me/security` page and the legacy `/me/configure` page,
+plus the **Add new Token → Generate** steps. Use Configure when Security returns `404`; if an
+authenticated request still returns `403`, ask the Jenkins administrator to confirm access to the
+personal configuration page. An API token retains the owning account's existing permissions and does
+not expand its visible job scope.
+
 Create a dedicated Jenkins user or API token with only the permissions needed by the enabled actions.
 Read-only use normally needs `Overall/Read` and `Job/Read`; triggering builds adds `Job/Build`, while
 stopping builds or cancelling queued items adds `Job/Cancel`. Service Console must still be able to

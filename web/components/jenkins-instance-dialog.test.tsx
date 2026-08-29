@@ -97,4 +97,33 @@ describe("JenkinsInstanceDialog", () => {
       ca_bundle: "/etc/ssl/company.pem",
     })));
   });
+
+  it("explains how to create a token and builds version-compatible help links", () => {
+    render(
+      <JenkinsInstanceDialog
+        open
+        mode="create"
+        source={null}
+        submitting={false}
+        testing={false}
+        onOpenChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onTest={null}
+      />,
+    );
+
+    expect(screen.getByText("如何获取 API Token")).toBeTruthy();
+    fireEvent.click(screen.getByText("如何获取 API Token"));
+    expect(screen.getByText("先填写有效的 Jenkins HTTP(S) 地址，即可显示个人配置快捷入口。")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Jenkins 地址"), {
+      target: { value: "http://10.0.0.231:8082/jenkins/" },
+    });
+
+    expect(screen.getByRole("link", { name: /打开 Security/ }).getAttribute("href"))
+      .toBe("http://10.0.0.231:8082/jenkins/me/security");
+    expect(screen.getByRole("link", { name: /旧版 Configure/ }).getAttribute("href"))
+      .toBe("http://10.0.0.231:8082/jenkins/me/configure");
+    expect(screen.getByText(/Security 返回 404 时改用 Configure/)).toBeTruthy();
+  });
 });

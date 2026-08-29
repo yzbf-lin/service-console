@@ -1,6 +1,6 @@
 "use client";
 
-import { FlaskConical, LoaderCircle } from "lucide-react";
+import { ChevronDown, CircleHelp, ExternalLink, FlaskConical, LoaderCircle } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -40,6 +40,19 @@ interface FormState {
   requestTimeout: string;
 }
 
+function jenkinsHelpUrl(baseUrl: string, page: "/me/security" | "/me/configure"): string | null {
+  try {
+    const url = new URL(baseUrl.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    url.pathname = `${url.pathname.replace(/\/+$/, "")}${page}`;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 function initialState(mode: JenkinsInstanceDialogMode, source: JenkinsInstance | null): FormState {
   return {
     name: mode === "copy" && source ? `${source.name} 副本` : source?.name ?? "",
@@ -70,6 +83,8 @@ export function JenkinsInstanceDialog({
     : mode === "copy"
       ? "复制不会带出原实例 Token，请为副本重新填写。"
       : "推荐使用 Jenkins API Token，不要填写账户密码。";
+  const securityUrl = jenkinsHelpUrl(form.baseUrl, "/me/security");
+  const configureUrl = jenkinsHelpUrl(form.baseUrl, "/me/configure");
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -87,7 +102,7 @@ export function JenkinsInstanceDialog({
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !submitting && !testing && onOpenChange(nextOpen)}>
-      <DialogContent className="max-w-xl gap-3 p-5">
+      <DialogContent className="max-h-[calc(100vh-2rem)] max-w-xl gap-3 overflow-y-auto p-5">
         <DialogHeader>
           <DialogTitle className="text-base">{title}</DialogTitle>
           <DialogDescription className="text-xs">
@@ -134,6 +149,34 @@ export function JenkinsInstanceDialog({
             </label>
           </div>
           <p className="-mt-1 text-[10px] text-muted-foreground">{tokenHint}</p>
+
+          <details className="group -mt-1 rounded-md border bg-muted/20 px-2.5 py-2 text-[10px]">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium text-foreground outline-none [&::-webkit-details-marker]:hidden">
+              <CircleHelp className="size-3.5 text-muted-foreground" aria-hidden="true" />
+              如何获取 API Token
+              <ChevronDown className="ml-auto size-3.5 text-muted-foreground transition-transform group-open:rotate-180" aria-hidden="true" />
+            </summary>
+            <div className="mt-2 grid gap-2 border-t pt-2 leading-relaxed text-muted-foreground">
+              <ol className="list-decimal space-y-1 pl-4">
+                <li>登录 Jenkins，点击右上角自己的用户名。</li>
+                <li>打开 <strong className="font-medium text-foreground">Security</strong>；旧版 Jenkins 打开 <strong className="font-medium text-foreground">Configure</strong>。</li>
+                <li>在 API Token 区域选择 <strong className="font-medium text-foreground">Add new Token → Generate</strong>，并立即复制。</li>
+              </ol>
+              {securityUrl && configureUrl ? (
+                <div className="flex flex-wrap gap-2">
+                  <a className="inline-flex items-center gap-1 font-medium text-primary hover:underline" href={securityUrl} target="_blank" rel="noreferrer">
+                    打开 Security <ExternalLink className="size-3" aria-hidden="true" />
+                  </a>
+                  <a className="inline-flex items-center gap-1 font-medium text-primary hover:underline" href={configureUrl} target="_blank" rel="noreferrer">
+                    旧版 Configure <ExternalLink className="size-3" aria-hidden="true" />
+                  </a>
+                </div>
+              ) : (
+                <p>先填写有效的 Jenkins HTTP(S) 地址，即可显示个人配置快捷入口。</p>
+              )}
+              <p>Security 返回 404 时改用 Configure；403 时先重新登录，再联系管理员确认个人配置权限。Token 仅拥有当前账号已有权限。</p>
+            </div>
+          </details>
 
           <label className="grid gap-1 text-[11px] font-medium">
             CA 证书文件路径（可选）
