@@ -81,6 +81,8 @@ Cmd/Ctrl+F 搜索及上一项/下一项导航，可使用原生选择复制、�
 参数化构建会保留 Jenkins 默认值：密码参数留空时不会随请求提交，而是交由 Jenkins 使用已配置的默认值。
 当前版本会识别 Jenkins 文件参数，但不负责上传文件；包含文件参数的 Job 会标记为暂不支持，并禁止从
 Service Console 触发。需要上传文件时请直接在 Jenkins 中运行。
+参数发现同时兼容 Jenkins 核心的 `property` 导出和兼容的 `actions` 导出，因此 Pipeline 与 Freestyle
+任务被 Jenkins 标记为参数化后，会正确使用 `buildWithParameters` 触发。
 
 ### 保存外观偏好
 
