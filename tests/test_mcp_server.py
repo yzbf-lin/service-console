@@ -346,6 +346,8 @@ async def test_jenkins_tools_use_explicit_instance_routes_and_bounded_logs(
             return {"folder": "team", "jobs": [{"name": "backend"}]}
         if path.endswith("/job"):
             return {"job": {"name": "team/backend", "color": "blue"}}
+        if path.endswith("/job/parameters"):
+            return {"job": {"name": "team/backend", "parameters": [{"name": "MACHINE"}]}}
         if path.endswith("/builds") and method == "GET":
             return {"job": "team/backend", "builds": [{"number": 8}]}
         if path.endswith("/builds") and method == "POST":
@@ -378,6 +380,11 @@ async def test_jenkins_tools_use_explicit_instance_routes_and_bounded_logs(
     instances = await mcp_module.jenkins_instance_list()
     jobs = await mcp_module.jenkins_job_list("jenkins one", " team ", " backend ")
     job = await mcp_module.jenkins_job_status("jenkins one", " team/backend ", True)
+    reactive_job = await mcp_module.jenkins_job_status(
+        "jenkins one",
+        "team/backend",
+        parameters={"GROUP": ["server-a"]},
+    )
     builds = await mcp_module.jenkins_build_list("jenkins one", "team/backend", 10)
     build = await mcp_module.jenkins_build_status("jenkins one", "team/backend", 8)
     log = await mcp_module.jenkins_build_logs("jenkins one", "team/backend", 8, 20, 8)
@@ -393,6 +400,7 @@ async def test_jenkins_tools_use_explicit_instance_routes_and_bounded_logs(
     assert instances["instances"][0]["token_present"] is True  # type: ignore[index]
     assert jobs["folder"] == "team"
     assert job["job"]["name"] == "team/backend"  # type: ignore[index]
+    assert reactive_job["job"]["parameters"] == [{"name": "MACHINE"}]  # type: ignore[index]
     assert builds["builds"] == [{"number": 8}]
     assert build["build"]["building"] is True  # type: ignore[index]
     assert log == {
@@ -421,6 +429,14 @@ async def test_jenkins_tools_use_explicit_instance_routes_and_bounded_logs(
             "GET",
             f"{prefix}/job",
             {"params": {"job": "team/backend", "include_parameter_options": True}},
+        ),
+        (
+            "POST",
+            f"{prefix}/job/parameters",
+            {
+                "params": {"job": "team/backend"},
+                "json_body": {"parameters": {"GROUP": ["server-a"]}},
+            },
         ),
         ("GET", f"{prefix}/builds", {"params": {"job": "team/backend", "limit": 10}}),
         ("GET", f"{prefix}/builds/8", {"params": {"job": "team/backend"}}),

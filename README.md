@@ -113,9 +113,10 @@ Service Console therefore treats a one-item list without an explicitly selected/
 ambiguous and keeps local triggering disabled; set a valid default in Jenkins or run that case there.
 
 Parameter discovery supports both the Jenkins core `property` export and the compatible `actions`
-export. Static choices and Git Parameter `allValueItems` come from the Remote API. Active Choices and
-File System List options are not exported consistently, so the controller reads a bounded copy of the
-job's Jenkins build form only when **Run** is opened, extracts its server-rendered selects, and refreshes
+export. Static choices come from the Remote API first; if Git Parameter `allValueItems` fails, Service
+Console recovers the branch list from the same job's build form. Active Choices and File System List
+options are not exported consistently, so the controller reads a bounded copy of the job's Jenkins
+build form only when **Run** is opened, extracts its server-rendered controls, and refreshes
 and validates them again immediately before queuing. Active Choices `PT_SINGLE_SELECT` stays a single
 choice even when Jenkins renders a listbox; `PT_MULTI_SELECT` and `PT_CHECKBOX` use a compact checkbox
 menu and submit all selected strings. Hidden parameters are never returned to the UI and use the value
@@ -123,9 +124,12 @@ supplied by the same Jenkins form; separators are display-only. Form-backed plug
 classic structured `/build` request for compatibility with older plugins, while ordinary jobs continue
 to use `buildWithParameters`.
 
-Radio controls, reactive/cascade Active Choices, and true upload parameters remain disabled with an
-explicit explanation. Reactive choices stay in Jenkins until dependency-aware refresh is available.
-A form-backed job that also has a password parameter requires the password to be entered, because
+Radio, single-select, multi-select, and cascade Active Choices are supported. When a parent changes,
+the UI refreshes children through the bounded `doUpdate` / `getChoicesForUI` bindings published by the
+Jenkins build page; multi-level cascades update one level at a time. Dynamic Reference list output is
+shown as read-only guidance and is not mistakenly submitted as a build parameter. Arbitrary formatted
+HTML inputs and true file uploads are still not executed by the local form. A form-backed job that also
+has a password parameter requires the password to be entered, because
 the classic form cannot safely recover an unread secret default. Dynamic option discovery uses the
 authenticated job's read-only build-form page; Jenkins enforces `Job/Build` when the subsequent POST
 queues the build, so discovering choices is not itself a build-permission test. Keep Jenkins and the
@@ -377,10 +381,12 @@ to the AI—the local controller resolves the selected instance's credential fro
 To inspect Git Parameter, Active Choices, or File System List values, call `jenkins_job_status` with
 `include_parameter_options=true`, then pass returned choices to `jenkins_build_trigger`. A single-select
 parameter uses one string; a multi-select parameter uses a string array such as
-`{"GROUP":["server-a","server-b"]}`. Dynamic discovery can query SCM or the Jenkins controller's
-configured filesystem and is therefore disabled by default. The trigger path re-reads and validates
-these choices; stale selections, empty option sets, ambiguous one-item File System List results,
-reactive parameters, and unavailable option sets are rejected before any POST.
+`{"GROUP":["server-a","server-b"]}`. For cascade parameters, pass the current parent values through the
+tool's `parameters` argument, for example `{"GROUP":["server-a"],"MACHINE":"machine-a"}`, and call it
+again with the returned value to resolve another level. Dynamic discovery can query SCM or the Jenkins
+controller's configured filesystem and is therefore disabled by default. The trigger path re-reads and
+validates these choices; stale selections, empty option sets, ambiguous one-item File System List
+results, and unavailable option sets are rejected before the build request.
 
 ## Browser controller
 

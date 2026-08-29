@@ -169,7 +169,7 @@ function parameterOptionsState(parameter: JenkinsJobParameter): JenkinsJobParame
 }
 
 function isEditableParameter(parameter: JenkinsJobParameter): boolean {
-  return parameter.type !== "hidden" && parameter.type !== "separator";
+  return !["hidden", "reference", "separator"].includes(parameter.type);
 }
 
 function isReactiveParameter(parameter: JenkinsJobParameter): boolean {
@@ -240,10 +240,44 @@ function ParameterMultiSelect({
   );
 }
 
-function choiceUnavailableMessage(parameter: JenkinsJobParameter): string {
+function choiceUnavailableMessage(
+  parameter: JenkinsJobParameter,
+  values: Record<string, string | boolean | string[]>,
+): string {
+  const missingReference = (parameter.references ?? []).find((name) => {
+    const value = values[name];
+    return value === undefined || value === "" || (Array.isArray(value) && value.length === 0);
+  });
+  if (missingReference) return `请先选择 ${missingReference}。`;
   if (parameterOptionsState(parameter) === "not_loaded") return "候选项尚未加载，请关闭后重试。";
   if (parameterOptionsState(parameter) === "unavailable") return "未能读取候选项，请在 Jenkins 页面运行。";
   return "没有可用候选项，请在 Jenkins 页面运行。";
+}
+
+function reconcileReactiveValues(
+  current: Record<string, string | boolean | string[]>,
+  job: JenkinsJob,
+): Record<string, string | boolean | string[]> {
+  const next = { ...current };
+  job.parameters.forEach((parameter) => {
+    if (parameter.type !== "choice" || (parameter.references ?? []).length === 0) return;
+    if (parameter.multiple) {
+      const selected = Array.isArray(current[parameter.name]) ? current[parameter.name] as string[] : [];
+      const retained = selected.filter((value) => parameter.choices.includes(value));
+      const defaults = Array.isArray(parameter.defaultValue)
+        ? parameter.defaultValue.filter((value) => parameter.choices.includes(value))
+        : [];
+      next[parameter.name] = retained.length ? retained : defaults;
+      return;
+    }
+    const selected = String(current[parameter.name] ?? "");
+    if (parameter.choices.includes(selected)) return;
+    const defaultValue = parameter.defaultValue === null ? "" : String(parameter.defaultValue);
+    next[parameter.name] = parameter.choices.includes(defaultValue)
+      ? defaultValue
+      : parameter.choices[0] ?? "";
+  });
+  return next;
 }
 
 function ParameterChoiceSelect({
@@ -312,6 +346,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
 
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [parameterValues, setParameterValues] = useState<Record<string, string | boolean | string[]>>({});
+  const [resolvingParameters, setResolvingParameters] = useState(false);
   const [stopTarget, setStopTarget] = useState<JenkinsBuild | null>(null);
   const [cancelTarget, setCancelTarget] = useState<JenkinsQueueItem | null>(null);
 
@@ -332,7 +367,10 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const buildRequestRef = useRef(0);
   const queueRequestRef = useRef(0);
   const prepareRequestRef = useRef(0);
+  const reactiveRequestRef = useRef(0);
+  const parameterValuesRef = useRef(parameterValues);
   const pollingErrorsRef = useRef(new Set<string>());
+  parameterValuesRef.current = parameterValues;
 
   const activeInstance = useMemo(
     () => instances.find((instance) => instance.id === activeInstanceId) ?? null,
@@ -369,6 +407,15 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       : [],
     [parameterValues, triggerJob],
   );
+  const reactiveInputKey = useMemo(() => {
+    if (!triggerOpen || !triggerJob) return "";
+    const referencedNames = new Set(triggerJob.parameters.flatMap((parameter) => parameter.references ?? []));
+    return JSON.stringify([...referencedNames].sort().map((name) => [name, parameterValues[name] ?? ""]));
+  }, [parameterValues, triggerJob, triggerOpen]);
+  const hasReactiveTriggerParameters = useMemo(
+    () => triggerJob?.parameters.some((parameter) => (parameter.references ?? []).length > 0) ?? false,
+    [triggerJob],
+  );
   const selectedBuildUrl = useMemo(
     () => activeInstance && selectedBuild
       ? resolveJenkinsBuildUrl(activeInstance.baseUrl, selectedBuild.url)
@@ -381,6 +428,31 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     pollingErrorsRef.current.add(key);
     onError(title, errorText(error));
   }, [onError]);
+
+  useEffect(() => {
+    const instanceId = activeInstance?.id;
+    const jobName = triggerJob?.fullName;
+    if (!triggerOpen || !instanceId || !jobName || !hasReactiveTriggerParameters || !reactiveInputKey) return;
+    const requestId = ++reactiveRequestRef.current;
+    const timeoutId = window.setTimeout(() => {
+      setResolvingParameters(true);
+      void api.resolveJenkinsJobParameters(instanceId, jobName, parameterValuesRef.current)
+        .then((resolved) => {
+          if (requestId !== reactiveRequestRef.current || !triggerOpen) return;
+          setTriggerJob(resolved);
+          setParameterValues((current) => reconcileReactiveValues(current, resolved));
+        })
+        .catch((error) => {
+          if (requestId === reactiveRequestRef.current) {
+            onError("刷新 Jenkins 级联参数失败", errorText(error));
+          }
+        })
+        .finally(() => {
+          if (requestId === reactiveRequestRef.current) setResolvingParameters(false);
+        });
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeInstance?.id, api, hasReactiveTriggerParameters, onError, reactiveInputKey, triggerJob?.fullName, triggerOpen]);
 
   const recoverPollingError = useCallback((key: string) => {
     pollingErrorsRef.current.delete(key);
@@ -1131,6 +1203,10 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
 
       <Dialog open={triggerOpen} onOpenChange={(open) => {
         if (busyAction) return;
+        if (!open) {
+          reactiveRequestRef.current += 1;
+          setResolvingParameters(false);
+        }
         setTriggerOpen(open);
         if (!open) setTriggerJob(null);
       }}>
@@ -1170,7 +1246,14 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
                       }))}
                     />
                   ) : parameter.type === "choice" ? (
-                    <span className="rounded-md border border-warning/25 bg-warning/5 px-2 py-2 text-[10px] font-normal text-warning" role="alert">{choiceUnavailableMessage(parameter)}</span>
+                    <span className="flex items-center gap-1.5 rounded-md border border-warning/25 bg-warning/5 px-2 py-2 text-[10px] font-normal text-warning" role="alert">
+                      {resolvingParameters && (parameter.references ?? []).length ? <LoaderCircle className="size-3 animate-spin" /> : null}
+                      {choiceUnavailableMessage(parameter, parameterValues)}
+                    </span>
+                  ) : parameter.type === "reference" ? (
+                    <span className="rounded-md border bg-muted/25 px-2 py-2 text-[10px] font-normal text-muted-foreground">
+                      {parameter.choices.length ? parameter.choices.join("、") : (resolvingParameters ? "正在刷新…" : "暂无响应式内容")}
+                    </span>
                   ) : parameter.type === "boolean" ? (
                     <span className="flex h-8 items-center gap-2 rounded-md border px-2"><Switch checked={Boolean(parameterValues[parameter.name])} onCheckedChange={(checked) => setParameterValues((current) => ({ ...current, [parameter.name]: checked }))} aria-label={`参数 ${parameter.name}`} /><span className="text-[10px] text-muted-foreground">{parameterValues[parameter.name] ? "true" : "false"}</span></span>
                   ) : parameter.type === "file" ? (
@@ -1195,7 +1278,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
             })}
             {!editableTriggerParameters.length ? <p className="rounded-lg border bg-muted/25 p-3 text-xs text-muted-foreground">该任务没有需要填写的参数，将使用 Jenkins 中保存的配置运行。</p> : null}
           </div>
-          <DialogFooter><Button variant="outline" size="sm" disabled={Boolean(busyAction)} onClick={() => { setTriggerOpen(false); setTriggerJob(null); }}>取消</Button><Button size="sm" disabled={Boolean(busyAction) || Boolean(triggerUnsupportedMessage) || triggerInvalidChoiceParameters.length > 0 || triggerMissingPasswordParameters.length > 0} onClick={() => void confirmBuild()}>{busyAction === "trigger" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}确认运行</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" size="sm" disabled={Boolean(busyAction)} onClick={() => { reactiveRequestRef.current += 1; setResolvingParameters(false); setTriggerOpen(false); setTriggerJob(null); }}>取消</Button><Button size="sm" disabled={Boolean(busyAction) || resolvingParameters || Boolean(triggerUnsupportedMessage) || triggerInvalidChoiceParameters.length > 0 || triggerMissingPasswordParameters.length > 0} onClick={() => void confirmBuild()}>{busyAction === "trigger" || resolvingParameters ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}确认运行</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

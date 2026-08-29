@@ -113,6 +113,7 @@ describe("Jenkins API client", () => {
       { folder: "folder", jobs: [{ ...rawJob, last_build: { ...rawBuild, number: 0 } }] },
       { job: rawJob },
       { job: rawJob },
+      { job: rawJob },
       { job: "folder/job", builds: [{ ...rawBuild, number: 0 }, rawBuild] },
       { build: rawBuild },
       { queue: { id: 10, url: "queue/10", location: "queue/10" } },
@@ -143,6 +144,7 @@ describe("Jenkins API client", () => {
     expect(job.requiresExplicitPassword).toBe(true);
     const jobWithOptions = await client.getJenkinsJob(rawInstance.id, "folder/job", true);
     expect(jobWithOptions.parameters.find((parameter) => parameter.name === "BRANCH")?.choices).toEqual(["master", "feature/api"]);
+    await client.resolveJenkinsJobParameters(rawInstance.id, "folder/job", { ENV: "prod" });
     await expect(client.listJenkinsBuilds(rawInstance.id, "folder/job", 25)).resolves.toEqual([
       expect.objectContaining({ number: 42 }),
     ]);
@@ -166,6 +168,7 @@ describe("Jenkins API client", () => {
       ["/api/jenkins/instances/prod%2Fid/jobs?folder=folder&query=deploy", undefined],
       ["/api/jenkins/instances/prod%2Fid/job?job=folder%2Fjob", undefined],
       ["/api/jenkins/instances/prod%2Fid/job?job=folder%2Fjob&include_parameter_options=true", undefined],
+      ["/api/jenkins/instances/prod%2Fid/job/parameters?job=folder%2Fjob", "POST"],
       ["/api/jenkins/instances/prod%2Fid/builds?job=folder%2Fjob&limit=25", undefined],
       ["/api/jenkins/instances/prod%2Fid/builds/42?job=folder%2Fjob", undefined],
       ["/api/jenkins/instances/prod%2Fid/builds?job=folder%2Fjob", "POST"],
@@ -174,7 +177,10 @@ describe("Jenkins API client", () => {
       ["/api/jenkins/instances/prod%2Fid/queue/10/cancel", "POST"],
       ["/api/jenkins/instances/prod%2Fid/builds/42/log?job=folder%2Fjob&start=128", undefined],
     ]);
-    expect(JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      parameters: { ENV: "prod" },
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toEqual({
       parameters: { DRY_RUN: true, GROUP: ["server-a", "server-b"] },
     });
   });

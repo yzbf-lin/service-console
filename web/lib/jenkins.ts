@@ -166,7 +166,9 @@ function normalizeParameter(value: unknown): JenkinsJobParameter {
   const className = rawType.toLowerCase();
   const reportedType = text(source.type, "string").toLowerCase();
   let type = "string";
-  if (reportedType === "unsupported" || className.includes("cascadechoiceparameter") || className.includes("dynamicreferenceparameter")) type = "unsupported";
+  if (reportedType === "unsupported") type = "unsupported";
+  else if (reportedType === "reference" || className.includes("dynamicreferenceparameter")) type = "reference";
+  else if (className.includes("cascadechoiceparameter")) type = "choice";
   else if (reportedType === "separator" || className.includes("parameterseparator")) type = "separator";
   else if (reportedType === "hidden" || className.includes("hiddenparameter") || className.includes("hideparameter")) type = "hidden";
   else if (className.includes("filesystemlistparameter") || reportedType.includes("choice")) type = "choice";
@@ -194,6 +196,9 @@ function normalizeParameter(value: unknown): JenkinsJobParameter {
     optionsState,
     multiple: bool(source.multiple),
     header: text(source.header ?? source.section_header ?? source.sectionHeader),
+    references: Array.isArray(source.references)
+      ? source.references.filter((item): item is string => typeof item === "string")
+      : [],
   };
 }
 

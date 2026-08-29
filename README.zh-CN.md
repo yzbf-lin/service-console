@@ -87,16 +87,17 @@ Cmd/Ctrl+F 搜索及上一项/下一项导航，可使用原生选择复制、�
 成没有机器可读错误标识的本地化单个选项；因此，只有一个选项且 Jenkins 未显式选中/配置默认值时会被
 视为歧义状态并禁用本地触发，可在 Jenkins 设置有效默认值或直接在 Jenkins 页面运行。
 
-参数发现同时兼容 Jenkins 核心的 `property` 导出和兼容的 `actions` 导出。静态选项与 Git Parameter
-的 `allValueItems` 直接来自 Remote API。Active Choices 与 File System List 的选项没有一致的 JSON
-导出，因此本地控制器只在打开“运行”时读取受大小限制的 Jenkins 构建表单，提取服务端渲染的下拉项，
-并在真正排队前再次刷新和校验。Hidden 参数不会返回给 UI，而是强制使用同一次 Jenkins 表单提供的值；
+参数发现同时兼容 Jenkins 核心的 `property` 导出和兼容的 `actions` 导出。静态选项优先来自 Remote API；
+Git Parameter 的 `allValueItems` 读取失败时，会自动从同一 Job 的构建表单恢复分支列表。Active Choices 与
+File System List 的选项没有一致的 JSON 导出，因此本地控制器只在打开“运行”时读取受大小限制的 Jenkins
+构建表单，提取服务端渲染的控件，并在真正排队前再次刷新和校验。Hidden 参数不会返回给 UI，而是强制使用同一次 Jenkins 表单提供的值；
 Separator 只用于展示。包含这类表单插件的 Job 会使用 Jenkins classic structured `/build` 兼容旧插件，
 普通 Job 仍使用 `buildWithParameters`。
 
-Radio 控件、多选、级联/响应式 Active Choices 与真正的上传参数会明确提示并禁用；在支持依赖感知的
-动态刷新前，响应式选项仍需在 Jenkins 页面运行。若表单插件 Job 同时包含密码参数，则必须输入密码，因为 classic
-表单不能安全恢复一个不可读取的秘密默认值。动态选项发现读取的是当前账号可访问的 Job 构建表单；真正
+Radio、单选、多选及级联 Active Choices 均可使用。父参数变化后，界面会按 Jenkins 页面公开的
+`doUpdate` / `getChoicesForUI` 绑定自动刷新子参数；多级级联会逐级更新。Dynamic Reference 的列表内容
+作为只读提示展示，不会被误当成构建参数提交；任意格式化 HTML 输入和真正的文件上传仍不在本地表单中执行。
+若表单插件 Job 同时包含密码参数，则必须输入密码，因为 classic 表单不能安全恢复一个不可读取的秘密默认值。动态选项发现读取的是当前账号可访问的 Job 构建表单；真正
 发送排队 POST 时 Jenkins 才校验 `Job/Build`，所以“能看到候选项”不代表“具有构建权限”。Jenkins、Git
 Parameter、Active Choices 与 File System List 插件都应保持安全修复版本。候选数据畸形、截断、过期或
 页面结构不兼容时，Service Console 会阻止提交，而不会退化成允许任意文本输入。
@@ -320,9 +321,10 @@ Jenkins。
 系统 keyring 解析凭据。
 需要让 AI 查看 Git Parameter、Active Choices 或 File System List 的动态值时，调用
 `jenkins_job_status` 并设置 `include_parameter_options=true`，再把返回的某个 `choices` 值传给
-`jenkins_build_trigger`。动态发现可能查询 SCM 或 Jenkins 控制器配置的文件系统，因此默认不读取；触发
-前还会重新获取并校验，过期、空、File System List 单项歧义、多选、响应式或不可用的候选集都会在发送
-POST 前被拒绝。
+`jenkins_build_trigger`。级联参数还可把当前父参数值放到 `parameters`，例如
+`{"GROUP":["server-a"],"MACHINE":"machine-a"}`；工具会返回下一层实时 `choices`，多级级联可继续用
+返回值再次调用。动态发现可能查询 SCM 或 Jenkins 控制器配置的文件系统，因此默认不读取；触发前还会
+重新获取并校验，过期、空、File System List 单项歧义或不可用的候选集都会在发送构建请求前被拒绝。
 
 ## 浏览器控制器
 

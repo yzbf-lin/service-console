@@ -260,6 +260,7 @@ export interface JenkinsJobParameter {
   optionsState: "ready" | "not_loaded" | "unavailable" | "not_applicable";
   multiple: boolean;
   header: string;
+  references?: string[];
 }
 
 export interface JenkinsJob {

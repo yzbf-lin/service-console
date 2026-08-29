@@ -757,10 +757,18 @@ async def jenkins_job_status(
         bool,
         Field(description="Resolve dynamic choices; may query the job's configured SCM."),
     ] = False,
+    parameters: dict[str, str | int | float | bool | list[str]] | None = None,
 ) -> dict[str, object]:
-    """Return job status; resolving dynamic parameter options may query its configured SCM."""
+    """Return job status and resolve reactive choices when current parent values are provided."""
 
     params = _jenkins_job_params(job)
+    if parameters is not None:
+        return await _bridge.request(
+            "POST",
+            f"{_jenkins_instance_path(instance_id)}/job/parameters",
+            params=params,
+            json_body={"parameters": dict(parameters)},
+        )
     if include_parameter_options:
         params["include_parameter_options"] = True
     return await _bridge.request(
