@@ -83,6 +83,10 @@ Cmd/Ctrl+F 搜索及上一项/下一项导航，可使用原生选择复制、�
 Service Console 触发。需要上传文件时请直接在 Jenkins 中运行。
 参数发现同时兼容 Jenkins 核心的 `property` 导出和兼容的 `actions` 导出，因此 Pipeline 与 Freestyle
 任务被 Jenkins 标记为参数化后，会正确使用 `buildWithParameters` 触发。
+Git Parameter 插件提供的分支、Tag 等选项不是静态 `choices`。Service Console 会在点击“运行”时按需
+读取插件的 `allValueItems`，并使用 Radix Select 显示候选项；常规 4 秒状态轮询不会重复扫描远端 Git。
+该能力要求 Git Parameter 0.9.15+，且 Jenkins 账号具备目标 Job 的 Item/Build 权限；插件应保持为
+Jenkins Update Center 提供的最新安全修复版。
 
 ### 保存外观偏好
 
@@ -291,6 +295,9 @@ Jenkins。
 非幂等操作，Bridge 在传输失败后不会自动重试；停止构建和取消队列标记为 destructive，其余浏览、状态
 与日志工具标记为只读。Jenkins Token 不是 MCP 参数，也不会返回给 AI；本地控制器会根据选中的实例从
 系统 keyring 解析凭据。
+需要让 AI 查看 Git Parameter 的动态分支或 Tag 时，调用 `jenkins_job_status` 并设置
+`include_parameter_options=true`；该选项可能访问 Job 配置的 SCM，因此默认关闭。读取返回的 `choices`
+后，再把选中的值传给 `jenkins_build_trigger`。
 
 ## 浏览器控制器
 
