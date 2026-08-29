@@ -377,7 +377,7 @@ async def test_jenkins_tools_use_explicit_instance_routes_and_bounded_logs(
 
     instances = await mcp_module.jenkins_instance_list()
     jobs = await mcp_module.jenkins_job_list("jenkins one", " team ", " backend ")
-    job = await mcp_module.jenkins_job_status("jenkins one", " team/backend ")
+    job = await mcp_module.jenkins_job_status("jenkins one", " team/backend ", True)
     builds = await mcp_module.jenkins_build_list("jenkins one", "team/backend", 10)
     build = await mcp_module.jenkins_build_status("jenkins one", "team/backend", 8)
     log = await mcp_module.jenkins_build_logs("jenkins one", "team/backend", 8, 20, 8)
@@ -417,7 +417,11 @@ async def test_jenkins_tools_use_explicit_instance_routes_and_bounded_logs(
     assert fake.calls == [
         ("GET", "/api/jenkins/instances", {}),
         ("GET", f"{prefix}/jobs", {"params": {"folder": "team", "query": "backend"}}),
-        ("GET", f"{prefix}/job", {"params": {"job": "team/backend"}}),
+        (
+            "GET",
+            f"{prefix}/job",
+            {"params": {"job": "team/backend", "include_parameter_options": True}},
+        ),
         ("GET", f"{prefix}/builds", {"params": {"job": "team/backend", "limit": 10}}),
         ("GET", f"{prefix}/builds/8", {"params": {"job": "team/backend"}}),
         (

@@ -753,13 +753,20 @@ async def jenkins_job_list(
 async def jenkins_job_status(
     instance_id: Annotated[str, Field(min_length=1, max_length=200)],
     job: Annotated[str, Field(min_length=1, max_length=1_000)],
+    include_parameter_options: Annotated[
+        bool,
+        Field(description="Resolve dynamic choices; may query the job's configured SCM."),
+    ] = False,
 ) -> dict[str, object]:
-    """Return one Jenkins job's current status from the selected instance."""
+    """Return job status; resolving dynamic parameter options may query its configured SCM."""
 
+    params = _jenkins_job_params(job)
+    if include_parameter_options:
+        params["include_parameter_options"] = True
     return await _bridge.request(
         "GET",
         f"{_jenkins_instance_path(instance_id)}/job",
-        params=_jenkins_job_params(job),
+        params=params,
     )
 
 

@@ -105,6 +105,11 @@ not uploaded by this release; jobs containing one are marked unsupported and can
 from Service Console. Use Jenkins directly when a build requires a file upload.
 Parameter discovery supports both the Jenkins core `property` export and the compatible `actions`
 export, so Pipeline and Freestyle jobs use `buildWithParameters` whenever Jenkins marks them parameterized.
+Branches, tags, and other Git Parameter plugin values are dynamic rather than static `choices`.
+Service Console resolves the plugin's `allValueItems` only when **Run** is opened and renders the
+result with Radix Select; the regular four-second status poll does not rescan the remote Git repository.
+This requires Git Parameter 0.9.15+, Item/Build permission on the target job, and an up-to-date
+security-fixed plugin release from the Jenkins Update Center.
 
 ### Persist appearance preferences
 
@@ -334,6 +339,9 @@ than opening an endless stream. Build triggering is non-idempotent and the bridg
 automatically after a transport failure. Stop and queue-cancel tools are marked destructive, while
 the browse/status/log tools are read-only. Jenkins tokens are not MCP inputs and are never returned
 to the AI—the local controller resolves the selected instance's credential from the system keyring.
+To inspect dynamic Git Parameter branches or tags, call `jenkins_job_status` with
+`include_parameter_options=true`, then pass one of the returned `choices` to `jenkins_build_trigger`.
+The option may query the job's configured SCM and is therefore disabled by default.
 
 ## Browser controller
 
