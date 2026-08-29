@@ -114,6 +114,10 @@ class JenkinsBuildRequest(BaseModel):
         return parameters
 
 
+class JenkinsParameterResolutionRequest(JenkinsBuildRequest):
+    """Current form values used to refresh Jenkins reactive parameter choices."""
+
+
 def _definition(name: str, body: ServiceCreateRequest | ServiceUpdateRequest) -> ServiceDefinition:
     values = body.model_dump()
     values["name"] = name
@@ -329,6 +333,21 @@ def create_app(
                 instance_id,
                 job=job,
                 include_parameter_options=include_parameter_options,
+            )
+        }
+
+    @api.post("/jenkins/instances/{instance_id}/job/parameters")
+    async def resolve_jenkins_job_parameters(
+        instance_id: str,
+        body: JenkinsParameterResolutionRequest,
+        job: Annotated[str, Query(min_length=1, max_length=1_000)],
+    ) -> dict[str, dict[str, object]]:
+        return {
+            "job": await jenkins_tool.get_job(
+                instance_id,
+                job=job,
+                include_parameter_options=True,
+                parameter_values=body.parameters,
             )
         }
 

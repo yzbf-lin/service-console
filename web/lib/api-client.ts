@@ -101,6 +101,11 @@ export interface ServiceConsoleApiClient {
   testJenkinsInstance(id: string): Promise<JenkinsConnectionResult>;
   listJenkinsJobs(id: string, folder?: string, query?: string): Promise<JenkinsJob[]>;
   getJenkinsJob(id: string, job: string, includeParameterOptions?: boolean): Promise<JenkinsJob>;
+  resolveJenkinsJobParameters(
+    id: string,
+    job: string,
+    parameters: Record<string, JenkinsBuildParameterValue>,
+  ): Promise<JenkinsJob>;
   listJenkinsBuilds(id: string, job: string, limit?: number): Promise<JenkinsBuild[]>;
   getJenkinsBuild(id: string, job: string, number: number): Promise<JenkinsBuild>;
   triggerJenkinsBuild(
@@ -325,6 +330,13 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
         job,
         include_parameter_options: includeParameterOptions || undefined,
       }));
+      return normalizeJenkinsJob(responseRecord(payload, "job"));
+    },
+    async resolveJenkinsJobParameters(id, job, parameters) {
+      const payload = await request<unknown>(withQuery(jenkinsPath(id, "/job/parameters"), { job }), {
+        method: "POST",
+        body: { parameters },
+      });
       return normalizeJenkinsJob(responseRecord(payload, "job"));
     },
     async listJenkinsBuilds(id, job, limit = 30) {

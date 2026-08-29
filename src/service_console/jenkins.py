@@ -19,7 +19,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
-from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urljoin, urlsplit, urlunsplit
 
 import httpx
 import keyring
@@ -44,6 +44,7 @@ _RESERVED_CRUMB_HEADERS = frozenset(
 _MAX_LOG_CHUNK_BYTES = 2 * 1024 * 1024
 _MAX_BUILD_FORM_BYTES = 1024 * 1024
 _MAX_BUILD_FORM_OPTIONS = 5_000
+_MAX_ACTIVE_CHOICE_SCRIPT_BYTES = 256 * 1024
 _MAX_PARAMETER_VALUE_LENGTH = 16_384
 _MAX_MULTI_SELECT_VALUES = 5_000
 _MIN_BUILD_FORM_TIMEOUT_SECONDS = 30
@@ -77,6 +78,23 @@ class _BuildFormParameter:
     hidden_value: str | None
     has_hidden_value: bool
     has_select: bool
+    fill_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ActiveChoiceBinding:
+    name: str
+    references: tuple[str, ...]
+    endpoint: str
+    crumb: str
+    reference_only: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _BuildFormSnapshot:
+    parameters: dict[str, _BuildFormParameter]
+    active_choices: dict[str, _ActiveChoiceBinding]
+    referer: str
 
 
 @dataclass(slots=True)
@@ -94,6 +112,7 @@ class _PendingBuildFormParameter:
     option_disabled: bool = False
     option_text: list[str] | None = None
     option_count: int = 0
+    fill_url: str | None = None
 
 
 class _JenkinsBuildFormParser(HTMLParser):
@@ -150,6 +169,21 @@ class _JenkinsBuildFormParser(HTMLParser):
                 and len(value) <= _MAX_PARAMETER_VALUE_LENGTH
             ):
                 parameter.hidden_value = value
+            elif (
+                input_name == "value"
+                and str(attributes.get("type") or "").casefold() in {"checkbox", "radio"}
+                and isinstance(value, str)
+                and len(value) <= _MAX_PARAMETER_VALUE_LENGTH
+            ):
+                if parameter.choices is None:
+                    parameter.choices = []
+                    parameter.selected = []
+                if value not in parameter.choices and len(parameter.choices) < _MAX_BUILD_FORM_OPTIONS:
+                    parameter.choices.append(value)
+                if "checked" in attributes and value not in (parameter.selected or []):
+                    parameter.selected.append(value)
+                if str(attributes.get("type") or "").casefold() == "checkbox":
+                    parameter.multiple = True
             return
         if normalized_tag == "select" and str(attributes.get("name") or "").casefold() == "value":
             if parameter.select_depth is None:
@@ -157,6 +191,9 @@ class _JenkinsBuildFormParser(HTMLParser):
                 parameter.choices = []
                 parameter.selected = []
                 parameter.multiple = "multiple" in attributes
+                fill_url = attributes.get("fillurl")
+                if isinstance(fill_url, str) and len(fill_url) <= 4_096:
+                    parameter.fill_url = fill_url
             return
         if normalized_tag == "option" and parameter.select_depth is not None:
             self._finish_option(parameter)
@@ -266,10 +303,106 @@ class _JenkinsBuildFormParser(HTMLParser):
             hidden_value=(parameter.hidden_value if isinstance(parameter.hidden_value, str) else None),
             has_hidden_value=parameter.hidden_value is not _MISSING,
             has_select=parameter.choices is not None,
+            fill_url=parameter.fill_url,
         )
         existing = self.parameters.get(name)
         if existing is None or (parsed.has_select and not existing.has_select):
             self.parameters[name] = parsed
+
+
+class _JenkinsActiveChoiceScriptParser(HTMLParser):
+    """Extract bounded Active Choices Stapler bindings from inline build-form scripts."""
+
+    def __init__(self, expected_names: set[str]) -> None:
+        super().__init__(convert_charrefs=True)
+        self.expected_names = expected_names
+        self.bindings: dict[str, _ActiveChoiceBinding] = {}
+        self._script_depth = 0
+        self._script_parts: list[str] = []
+        self._script_bytes = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag.casefold() == "script":
+            self._script_depth += 1
+            if self._script_depth == 1:
+                self._script_parts = []
+                self._script_bytes = 0
+
+    def handle_data(self, data: str) -> None:
+        if self._script_depth != 1 or self._script_bytes >= _MAX_ACTIVE_CHOICE_SCRIPT_BYTES:
+            return
+        encoded = data.encode("utf-8", errors="ignore")
+        remaining = _MAX_ACTIVE_CHOICE_SCRIPT_BYTES - self._script_bytes
+        self._script_parts.append(encoded[:remaining].decode("utf-8", errors="ignore"))
+        self._script_bytes += min(len(encoded), remaining)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() != "script" or self._script_depth == 0:
+            return
+        if self._script_depth == 1:
+            self._finish_script("".join(self._script_parts))
+            self._script_parts = []
+            self._script_bytes = 0
+        self._script_depth -= 1
+
+    def _finish_script(self, script: str) -> None:
+        constructor = re.search(
+            r"new\s+UnoChoice\.(CascadeParameter|DynamicReferenceParameter)\(\s*(['\"])(.*?)\2",
+            script,
+            re.DOTALL,
+        )
+        proxy = re.search(
+            r"makeStaplerProxy\(\s*(['\"])(.*?)\1\s*,\s*(['\"])(.*?)\3\s*,\s*\[([^]]+)]",
+            script,
+            re.DOTALL,
+        )
+        if constructor is None or proxy is None:
+            return
+        name = _decode_js_string(constructor.group(3), constructor.group(2))
+        endpoint = _decode_js_string(proxy.group(2), proxy.group(1))
+        crumb = _decode_js_string(proxy.group(4), proxy.group(3))
+        methods = proxy.group(5)
+        if (
+            name not in self.expected_names
+            or re.fullmatch(
+                r"/(?:[0-9A-Za-z._~-]+/)*\$stapler/bound/[0-9A-Za-z-]{1,128}",
+                endpoint,
+            )
+            is None
+            or not crumb
+            or len(crumb) > 4_096
+            or _CRUMB_VALUE_PATTERN.fullmatch(crumb) is None
+            or "doUpdate" not in methods
+            or "getChoicesForUI" not in methods
+        ):
+            return
+        references: list[str] = []
+        for match in re.finditer(
+            r"referencedParameters\.push\(\s*(['\"])(.*?)\1\s*\)",
+            script,
+            re.DOTALL,
+        ):
+            reference = _decode_js_string(match.group(2), match.group(1))
+            if reference in self.expected_names and reference not in references:
+                references.append(reference)
+        self.bindings[name] = _ActiveChoiceBinding(
+            name=name,
+            references=tuple(references),
+            endpoint=endpoint,
+            crumb=crumb,
+            reference_only=constructor.group(1) == "DynamicReferenceParameter",
+        )
+
+
+def _decode_js_string(value: str, quote_character: str) -> str:
+    if quote_character == '"':
+        try:
+            decoded = json.loads(f'"{value}"')
+            return decoded if isinstance(decoded, str) else ""
+        except json.JSONDecodeError:
+            return ""
+    return value.replace(r"\'", "'").replace(r"\\", "\\")
 
 
 def _is_parameter_form(attributes: Mapping[str, str | None]) -> bool:
@@ -378,6 +511,13 @@ def _normalize_base_url(value: object) -> str:
         raise ValueError("Jenkins base URL must not contain a query or fragment")
     path = parsed.path.rstrip("/")
     return urlunsplit((parsed.scheme.lower(), parsed.netloc, path, "", ""))
+
+
+def _jenkins_relative_endpoint(instance: JenkinsInstance, path: str) -> str:
+    context_path = urlsplit(instance.base_url).path.rstrip("/")
+    if context_path and (path == context_path or path.startswith(f"{context_path}/")):
+        return path[len(context_path) :] or "/"
+    return path
 
 
 class JenkinsInstanceStore:
@@ -657,6 +797,7 @@ class JenkinsGateway:
         *,
         job: str,
         include_parameter_options: bool = False,
+        parameter_values: Mapping[str, str | int | float | bool | list[str]] | None = None,
     ) -> dict[str, object]:
         parameter_fields = "name,type,_class,description,choices,choiceType,sectionHeader"
         if include_parameter_options:
@@ -688,16 +829,37 @@ class JenkinsGateway:
             form_parameter_names = {
                 str(parameter["name"])
                 for parameter in parameters
-                if parameter.get("type") == "hidden" or parameter.get("_form_dynamic") is True
+                if (
+                    parameter.get("type") == "hidden"
+                    or parameter.get("_form_dynamic") is True
+                    or (
+                        parameter.get("_form_options") is True
+                        and parameter.get("options_state") != "ready"
+                    )
+                )
             }
             if form_parameter_names:
-                form_parameters = await self._get_build_parameter_form(
+                form_snapshot = await self._get_build_parameter_snapshot(
                     instance,
                     token,
                     job=job,
                     expected_names=form_parameter_names,
                 )
-                hidden_values = _merge_build_form_parameters(parameters, form_parameters)
+                await self._resolve_form_fill_choices(
+                    instance,
+                    token,
+                    job=job,
+                    snapshot=form_snapshot,
+                )
+                hidden_values = _merge_build_form_parameters(parameters, form_snapshot.parameters)
+                _apply_active_choice_bindings(parameters, form_snapshot.active_choices)
+                await self._resolve_active_choice_parameters(
+                    instance,
+                    token,
+                    snapshot=form_snapshot,
+                    parameters=parameters,
+                    parameter_values=parameter_values or {},
+                )
         detail["parameters"] = parameters
         detail["_hidden_values"] = hidden_values
         detail["parameterized"] = self._has_parameter_definitions(*parameter_sources)
@@ -943,10 +1105,26 @@ class JenkinsGateway:
         job: str,
         expected_names: set[str],
     ) -> dict[str, _BuildFormParameter]:
+        snapshot = await self._get_build_parameter_snapshot(
+            instance,
+            token,
+            job=job,
+            expected_names=expected_names,
+        )
+        return snapshot.parameters
+
+    async def _get_build_parameter_snapshot(
+        self,
+        instance: JenkinsInstance,
+        token: str,
+        *,
+        job: str,
+        expected_names: set[str],
+    ) -> _BuildFormSnapshot:
         """Read a bounded same-job HTML form without following or exposing redirects."""
 
         if not expected_names:
-            return {}
+            return _BuildFormSnapshot({}, {}, "")
         endpoint = f"{_job_path(job)}/build"
         url = f"{instance.base_url}{endpoint}"
         headers = _request_headers(instance, token)
@@ -978,10 +1156,10 @@ class JenkinsGateway:
                 ) as response:
                     status_code = response.status_code
                     if status_code not in {200, 405}:
-                        return {}
+                        return _BuildFormSnapshot({}, {}, "")
                     content_length = _optional_int(response.headers.get("Content-Length"))
                     if content_length is not None and content_length > _MAX_BUILD_FORM_BYTES:
-                        return {}
+                        return _BuildFormSnapshot({}, {}, "")
                     encoding = response.encoding
                     async for chunk in response.aiter_bytes():
                         remaining = _MAX_BUILD_FORM_BYTES - len(content)
@@ -990,11 +1168,11 @@ class JenkinsGateway:
                             break
                         content.extend(chunk)
             except (httpx.InvalidURL, httpx.TimeoutException, httpx.TransportError):
-                return {}
+                return _BuildFormSnapshot({}, {}, "")
         finally:
             session_lock.release()
         if oversized:
-            return {}
+            return _BuildFormSnapshot({}, {}, "")
 
         try:
             html = bytes(content).decode(encoding or "utf-8", errors="replace")
@@ -1005,10 +1183,180 @@ class JenkinsGateway:
             parser.feed(html)
             parser.close()
         except Exception:  # noqa: BLE001 - malformed remote HTML is an unavailable option source.
-            return {}
+            return _BuildFormSnapshot({}, {}, "")
         if not parser.has_valid_parameter_form:
-            return {}
-        return parser.parameters
+            return _BuildFormSnapshot({}, {}, "")
+        script_parser = _JenkinsActiveChoiceScriptParser(expected_names)
+        try:
+            script_parser.feed(html)
+            script_parser.close()
+        except Exception:  # noqa: BLE001 - malformed remote scripts are ignored safely.
+            script_parser.bindings.clear()
+        return _BuildFormSnapshot(
+            parameters=parser.parameters,
+            active_choices=script_parser.bindings,
+            referer=url,
+        )
+
+    async def _resolve_form_fill_choices(
+        self,
+        instance: JenkinsInstance,
+        token: str,
+        *,
+        job: str,
+        snapshot: _BuildFormSnapshot,
+    ) -> None:
+        job_path = _job_path(job)
+        descriptor_prefix = f"{job_path}/descriptorByName/"
+        for name, form_parameter in tuple(snapshot.parameters.items()):
+            fill_url = form_parameter.fill_url
+            if not fill_url:
+                continue
+            parsed = urlsplit(fill_url)
+            relative_path = _jenkins_relative_endpoint(instance, parsed.path)
+            if (
+                parsed.scheme
+                or parsed.netloc
+                or parsed.fragment
+                or not relative_path.startswith(descriptor_prefix)
+                or not relative_path.endswith("/fillValueItems")
+            ):
+                continue
+            query_items = parse_qsl(parsed.query, keep_blank_values=True)
+            if len(query_items) > 20 or dict(query_items).get("param") != name:
+                continue
+            try:
+                response = await self._request(
+                    instance,
+                    token,
+                    "GET",
+                    relative_path,
+                    params=dict(query_items),
+                )
+            except JenkinsApiError:
+                continue
+            if len(response.content) > _MAX_BUILD_FORM_BYTES:
+                continue
+            try:
+                payload = self._json_object(response)
+            except JenkinsApiError:
+                continue
+            choices = _fill_value_item_choices(payload)
+            if not choices:
+                continue
+            snapshot.parameters[name] = _BuildFormParameter(
+                choices=tuple(choices),
+                selected=form_parameter.selected,
+                multiple=form_parameter.multiple,
+                hidden_value=form_parameter.hidden_value,
+                has_hidden_value=form_parameter.has_hidden_value,
+                has_select=form_parameter.has_select,
+                fill_url=form_parameter.fill_url,
+            )
+
+    async def _resolve_active_choice_parameters(
+        self,
+        instance: JenkinsInstance,
+        token: str,
+        *,
+        snapshot: _BuildFormSnapshot,
+        parameters: list[dict[str, object]],
+        parameter_values: Mapping[str, str | int | float | bool | list[str]],
+    ) -> None:
+        if not snapshot.active_choices:
+            return
+        values = _active_choice_reference_values(parameters, snapshot.parameters, parameter_values)
+        client, session_lock = await self._acquire_client(instance, token)
+        try:
+            for parameter in parameters:
+                name = str(parameter.get("name") or "")
+                binding = snapshot.active_choices.get(name)
+                if binding is None:
+                    continue
+                reference_text = "__LESEP__".join(
+                    f"{reference}={_active_choice_reference_value(values.get(reference))}"
+                    for reference in binding.references
+                )
+                resolved = await self._request_active_choice_values(
+                    client,
+                    instance,
+                    token,
+                    binding=binding,
+                    referer=snapshot.referer,
+                    reference_text=reference_text,
+                )
+                if resolved is None:
+                    continue
+                choices, selected = resolved
+                parameter["choices"] = choices or None
+                parameter["options_state"] = "ready" if choices else "unavailable"
+                if selected:
+                    parameter["default"] = (
+                        selected if parameter.get("multiple") is True else selected[0]
+                    )
+                submitted = parameter_values.get(name, _MISSING)
+                if submitted is not _MISSING:
+                    values[name] = submitted
+                elif selected:
+                    values[name] = selected if parameter.get("multiple") is True else selected[0]
+                elif choices:
+                    values[name] = [] if parameter.get("multiple") is True else choices[0]
+        finally:
+            session_lock.release()
+
+    async def _request_active_choice_values(
+        self,
+        client: httpx.AsyncClient,
+        instance: JenkinsInstance,
+        token: str,
+        *,
+        binding: _ActiveChoiceBinding,
+        referer: str,
+        reference_text: str,
+    ) -> tuple[list[str], list[str]] | None:
+        headers = _request_headers(instance, token)
+        headers.update(
+            {
+                "Accept": "application/json",
+                "Content-Type": "application/x-stapler-method-invocation;charset=UTF-8",
+                "Crumb": binding.crumb,
+                "Referer": referer,
+                "User-Agent": "Mozilla/5.0 (compatible; Service-Console/Jenkins)",
+            }
+        )
+        timeout = min(
+            _MAX_BUILD_FORM_TIMEOUT_SECONDS,
+            max(_MIN_BUILD_FORM_TIMEOUT_SECONDS, instance.request_timeout),
+        )
+        endpoint = _jenkins_relative_endpoint(instance, binding.endpoint).rstrip("/")
+        if re.fullmatch(r"/\$stapler/bound/[0-9A-Za-z-]{1,128}", endpoint) is None:
+            return None
+        try:
+            update = await client.post(
+                f"{instance.base_url}{endpoint}/doUpdate",
+                content=json.dumps([reference_text], ensure_ascii=False, separators=(",", ":")),
+                headers=headers,
+                timeout=timeout,
+                follow_redirects=False,
+            )
+            if update.status_code not in {200, 204}:
+                return None
+            response = await client.post(
+                f"{instance.base_url}{endpoint}/getChoicesForUI",
+                content="[]",
+                headers=headers,
+                timeout=timeout,
+                follow_redirects=False,
+            )
+        except (httpx.InvalidURL, httpx.TimeoutException, httpx.TransportError):
+            return None
+        if response.status_code != 200 or len(response.content) > _MAX_BUILD_FORM_BYTES:
+            return None
+        try:
+            payload = response.json()
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            return None
+        return _normalize_active_choice_response(payload, reference_only=binding.reference_only)
 
     async def _request(
         self,
@@ -1280,6 +1628,8 @@ class JenkinsGateway:
                     }
                     if "unsupported" in candidate_kinds:
                         parameter_type = "unsupported"
+                    elif "reference" in candidate_kinds:
+                        parameter_type = "reference"
                     elif "file" in candidate_kinds and not filesystem_list:
                         parameter_type = "file"
                     elif "hidden" in candidate_kinds:
@@ -1294,11 +1644,20 @@ class JenkinsGateway:
                         _is_form_dynamic_parameter(classification_type)
                         or _is_form_dynamic_parameter(raw_type)
                         or _is_form_dynamic_parameter(choice_type)
+                        or _is_active_choice_parameter(classification_type)
+                        or _is_active_choice_parameter(raw_type)
                     )
                     dynamic_choice = (
-                        form_dynamic
+                        parameter_type == "choice" and form_dynamic
                         or _is_dynamic_choice_parameter(classification_type)
                         or _is_dynamic_choice_parameter(raw_type)
+                    )
+                    active_choice = any(
+                        _is_active_choice_parameter(candidate)
+                        for candidate in (classification_type, raw_type)
+                    )
+                    form_options = parameter_type == "choice" and (
+                        form_dynamic or dynamic_choice or active_choice
                     )
                     choices = _parameter_choices(definition)
                     options_state = "not_applicable"
@@ -1341,8 +1700,11 @@ class JenkinsGateway:
                                 else {}
                             ),
                             "_form_dynamic": form_dynamic,
+                            "_form_options": form_options or parameter_type == "reference",
                             "_dynamic_choice": dynamic_choice,
+                            "_active_choice": active_choice,
                             "_filesystem_list": filesystem_list,
+                            **({"references": []} if active_choice else {}),
                         }
                     )
         return result
@@ -1519,6 +1881,7 @@ class JenkinsService:
         *,
         job: str,
         include_parameter_options: bool = False,
+        parameter_values: Mapping[str, str | int | float | bool | list[str]] | None = None,
     ) -> dict[str, object]:
         instance, token = await self._connection(instance_id)
         return _public_job_detail(
@@ -1527,6 +1890,7 @@ class JenkinsService:
                 token,
                 job=job,
                 include_parameter_options=include_parameter_options,
+                parameter_values=parameter_values,
             )
         )
 
@@ -1551,6 +1915,7 @@ class JenkinsService:
             token,
             job=job,
             include_parameter_options=True,
+            parameter_values=parameters,
         )
         definitions_value = job_detail.get("parameters")
         definitions = definitions_value if isinstance(definitions_value, list) else []
@@ -1601,6 +1966,11 @@ class JenkinsService:
             for definition in definitions
             if isinstance(definition, dict) and definition.get("type") == "separator"
         }
+        reference_names = {
+            str(definition.get("name"))
+            for definition in definitions
+            if isinstance(definition, dict) and definition.get("type") == "reference"
+        }
         hidden_names = {
             str(definition.get("name"))
             for definition in definitions
@@ -1610,6 +1980,7 @@ class JenkinsService:
             name: value
             for name, value in parameters.items()
             if name not in separator_names
+            and name not in reference_names
             and name not in hidden_names
             and not (name in password_names and value == "")
         }
@@ -1827,8 +2198,10 @@ def _job_status(value: object) -> str:
 def _parameter_kind(value: str) -> str:
     class_name = value.casefold()
     simple_name = class_name.rsplit(".", 1)[-1]
-    if simple_name in {"cascadechoiceparameter", "dynamicreferenceparameter", "pt_radio"}:
-        return "unsupported"
+    if simple_name == "dynamicreferenceparameter":
+        return "reference"
+    if simple_name in {"cascadechoiceparameter", "pt_radio"}:
+        return "choice"
     if _is_form_dynamic_parameter(value) or "gitparameter" in class_name:
         return "choice"
     if simple_name.endswith("fileparameterdefinition"):
@@ -1863,6 +2236,7 @@ def _is_form_dynamic_parameter(value: str) -> bool:
         in {
             "pt_checkbox",
             "pt_multi_select",
+            "pt_radio",
             "pt_single_select",
         }
         or simple_name
@@ -1876,6 +2250,13 @@ def _is_filesystem_list_parameter(value: str) -> bool:
     return value.casefold().rsplit(".", 1)[-1] == "filesystemlistparameterdefinition"
 
 
+def _is_active_choice_parameter(value: str) -> bool:
+    return value.casefold().rsplit(".", 1)[-1] in {
+        "cascadechoiceparameter",
+        "dynamicreferenceparameter",
+    }
+
+
 def _is_dynamic_choice_parameter(value: str) -> bool:
     return _is_form_dynamic_parameter(value) or "gitparameter" in value.casefold()
 
@@ -1886,7 +2267,7 @@ def _parameter_is_multiple(value: str) -> bool:
 
 
 def _parameter_is_explicit_single(value: str) -> bool:
-    return value.casefold().rsplit(".", 1)[-1] == "pt_single_select"
+    return value.casefold().rsplit(".", 1)[-1] in {"pt_radio", "pt_single_select"}
 
 
 def _merge_build_form_parameters(
@@ -1901,7 +2282,7 @@ def _merge_build_form_parameters(
             if form_parameter is not None and form_parameter.has_hidden_value:
                 hidden_values[name] = form_parameter.hidden_value or ""
             continue
-        if parameter.get("_form_dynamic") is not True:
+        if parameter.get("_form_options") is not True or parameter.get("type") == "reference":
             continue
         choices = list(form_parameter.choices or ()) if form_parameter is not None else []
         if parameter.get("_filesystem_list") is True and len(choices) == 1:
@@ -1923,6 +2304,112 @@ def _merge_build_form_parameters(
                 else form_parameter.selected[0]
             )
     return hidden_values
+
+
+def _apply_active_choice_bindings(
+    parameters: list[dict[str, object]],
+    bindings: Mapping[str, _ActiveChoiceBinding],
+) -> None:
+    for parameter in parameters:
+        binding = bindings.get(str(parameter.get("name") or ""))
+        if binding is None:
+            continue
+        parameter["references"] = list(binding.references)
+
+
+def _active_choice_reference_values(
+    parameters: list[dict[str, object]],
+    form_parameters: Mapping[str, _BuildFormParameter],
+    submitted: Mapping[str, str | int | float | bool | list[str]],
+) -> dict[str, object]:
+    values: dict[str, object] = {}
+    for parameter in parameters:
+        name = str(parameter.get("name") or "")
+        if name in submitted:
+            values[name] = submitted[name]
+            continue
+        form_parameter = form_parameters.get(name)
+        if form_parameter is not None and form_parameter.selected:
+            values[name] = (
+                list(form_parameter.selected)
+                if parameter.get("multiple") is True
+                else form_parameter.selected[0]
+            )
+            continue
+        default = parameter.get("default")
+        if isinstance(default, str | int | float | bool | list):
+            values[name] = default
+    return values
+
+
+def _active_choice_reference_value(value: object) -> str:
+    if isinstance(value, list):
+        candidates = [item for item in value if isinstance(item, str)]
+        return ",".join(candidates)
+    if isinstance(value, bool):
+        return "true" if value else ""
+    if isinstance(value, str | int | float):
+        return _parameter_value(value)
+    return ""
+
+
+def _normalize_active_choice_response(
+    payload: object,
+    *,
+    reference_only: bool,
+) -> tuple[list[str], list[str]] | None:
+    if not isinstance(payload, list) or len(payload) < 2:
+        return None
+    raw_labels, raw_values = payload[0], payload[1]
+    if not isinstance(raw_labels, list) or not isinstance(raw_values, list):
+        return None
+    if len(raw_labels) > _MAX_BUILD_FORM_OPTIONS or len(raw_values) > _MAX_BUILD_FORM_OPTIONS:
+        return None
+    choices: list[str] = []
+    selected: list[str] = []
+    for index, raw_label in enumerate(raw_labels):
+        raw_value = raw_values[index] if index < len(raw_values) else raw_label
+        label, label_selected, label_disabled = _normalize_active_choice_entry(raw_label)
+        value, value_selected, value_disabled = _normalize_active_choice_entry(raw_value)
+        choice = label if reference_only else value
+        if (
+            label_disabled
+            or value_disabled
+            or not choice
+            or len(choice) > _MAX_PARAMETER_VALUE_LENGTH
+            or choice in choices
+        ):
+            continue
+        choices.append(choice)
+        if label_selected or value_selected:
+            selected.append(choice)
+    return choices, selected
+
+
+def _normalize_active_choice_entry(value: object) -> tuple[str, bool, bool]:
+    if isinstance(value, str):
+        normalized = value
+    elif isinstance(value, str | int | float | bool):
+        normalized = str(value)
+    else:
+        try:
+            normalized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return "", False, False
+    selected = False
+    disabled = False
+    suffix_found = True
+    while suffix_found:
+        suffix_found = False
+        if normalized.endswith(":selected"):
+            normalized = normalized[: -len(":selected")]
+            selected = True
+            suffix_found = True
+        if normalized.endswith(":disabled"):
+            normalized = normalized[: -len(":disabled")]
+            disabled = True
+            suffix_found = True
+    return normalized, selected, disabled
 
 
 def _public_job_detail(value: Mapping[str, object]) -> dict[str, object]:
@@ -1962,6 +2449,27 @@ def _parameter_choices(definition: Mapping[str, Any]) -> list[str] | None:
     seen: set[str] = set()
     for candidate in candidates:
         if not isinstance(candidate, str) or candidate in seen:
+            continue
+        seen.add(candidate)
+        choices.append(candidate)
+    return choices or None
+
+
+def _fill_value_item_choices(payload: Mapping[str, Any]) -> list[str] | None:
+    if payload.get("errors"):
+        return None
+    values = payload.get("values")
+    if not isinstance(values, list) or len(values) > _MAX_BUILD_FORM_OPTIONS:
+        return None
+    choices: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        candidate = item.get("value") if isinstance(item, dict) else None
+        if (
+            not isinstance(candidate, str)
+            or len(candidate) > _MAX_PARAMETER_VALUE_LENGTH
+            or candidate in seen
+        ):
             continue
         seen.add(candidate)
         choices.append(candidate)

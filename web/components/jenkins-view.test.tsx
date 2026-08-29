@@ -106,6 +106,7 @@ const mocks = {
   testJenkinsInstance: vi.fn(),
   listJenkinsJobs: vi.fn(),
   getJenkinsJob: vi.fn(),
+  resolveJenkinsJobParameters: vi.fn(),
   listJenkinsBuilds: vi.fn(),
   getJenkinsBuild: vi.fn(),
   triggerJenkinsBuild: vi.fn(),
@@ -174,6 +175,7 @@ describe("JenkinsView", () => {
     mocks.listJenkinsInstances.mockResolvedValue([instanceA, instanceB]);
     mocks.listJenkinsJobs.mockImplementation(async (id: string) => [jobFixture(id === "b" ? "Job B" : "Job A")]);
     mocks.getJenkinsJob.mockImplementation(async (_id: string, job: string) => jobFixture(job));
+    mocks.resolveJenkinsJobParameters.mockImplementation(async (_id: string, job: string) => jobFixture(job));
     mocks.listJenkinsBuilds.mockResolvedValue([buildFixture()]);
     mocks.getJenkinsBuild.mockResolvedValue(buildFixture());
     mocks.listJenkinsQueue.mockResolvedValue([]);
@@ -525,18 +527,63 @@ describe("JenkinsView", () => {
     expect(mocks.triggerJenkinsBuild).not.toHaveBeenCalled();
   });
 
-  it("blocks reactive Active Choices parameters until dependency refresh is supported", async () => {
-    const reactiveJob = jobFixture("Reactive Job", [
-      parameterFixture({ name: "AMI", type: "unsupported", rawType: "org.biouno.unochoice.CascadeChoiceParameter" }),
+  it("refreshes and submits reactive Active Choices parameters", async () => {
+    const metadataJob = jobFixture("Reactive Job", [
+      parameterFixture({ name: "ENV", type: "choice", choices: ["dev", "prod"], defaultValue: "dev" }),
+      parameterFixture({ name: "MACHINE", type: "choice", rawType: "org.biouno.unochoice.CascadeChoiceParameter" }),
     ]);
-    mocks.listJenkinsJobs.mockResolvedValue([reactiveJob]);
-    mocks.getJenkinsJob.mockResolvedValue(reactiveJob);
+    const preparedJob = jobFixture("Reactive Job", [
+      metadataJob.parameters[0]!,
+      parameterFixture({
+        name: "MACHINE",
+        type: "choice",
+        rawType: "org.biouno.unochoice.CascadeChoiceParameter",
+        choices: ["dev-a", "dev-b"],
+        defaultValue: "dev-a",
+        references: ["ENV"],
+      }),
+    ]);
+    mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
+    mocks.getJenkinsJob.mockImplementation(async (_id: string, _job: string, includeOptions?: boolean) => (
+      includeOptions ? preparedJob : metadataJob
+    ));
+    mocks.resolveJenkinsJobParameters.mockImplementation(async (_id: string, _job: string, parameters: Record<string, unknown>) => {
+      const environment = String(parameters.ENV ?? "dev");
+      return jobFixture("Reactive Job", [
+        metadataJob.parameters[0]!,
+        parameterFixture({
+          name: "MACHINE",
+          type: "choice",
+          rawType: "org.biouno.unochoice.CascadeChoiceParameter",
+          choices: [`${environment}-a`, `${environment}-b`],
+          defaultValue: `${environment}-a`,
+          references: ["ENV"],
+        }),
+      ]);
+    });
     renderView();
 
     const runButton = await screen.findByRole("button", { name: "运行" });
-    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(true));
-    expect(await screen.findByText(/级联或响应式参数 AMI 暂不支持/)).toBeTruthy();
-    expect(mocks.triggerJenkinsBuild).not.toHaveBeenCalled();
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
+    const user = userEvent.setup();
+    await user.click(runButton);
+    await user.click(await screen.findByRole("combobox", { name: "参数 ENV" }));
+    await user.click(await screen.findByRole("option", { name: "prod" }));
+    await waitFor(() => expect(mocks.resolveJenkinsJobParameters).toHaveBeenLastCalledWith(
+      "a",
+      "Reactive Job",
+      expect.objectContaining({ ENV: "prod" }),
+    ));
+    const machine = await screen.findByRole("combobox", { name: "参数 MACHINE" });
+    await user.click(machine);
+    await user.click(await screen.findByRole("option", { name: "prod-b" }));
+    await user.click(screen.getByRole("button", { name: "确认运行" }));
+
+    await waitFor(() => expect(mocks.triggerJenkinsBuild).toHaveBeenCalledWith(
+      "a",
+      "Reactive Job",
+      { ENV: "prod", MACHINE: "prod-b" },
+    ));
   });
 
   it("uses a generic unsupported message for non-reactive plugin controls", async () => {

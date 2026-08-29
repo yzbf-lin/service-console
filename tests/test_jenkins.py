@@ -184,9 +184,9 @@ def test_build_form_parser_rejects_incomplete_or_excessive_candidate_sets(mode: 
     [
         ("alex.jenkins.plugins.FileSystemListParameterDefinition", "choice"),
         ("org.biouno.unochoice.ChoiceParameter", "choice"),
-        ("org.biouno.unochoice.CascadeChoiceParameter", "unsupported"),
-        ("org.biouno.unochoice.DynamicReferenceParameter", "unsupported"),
-        ("PT_RADIO", "unsupported"),
+        ("org.biouno.unochoice.CascadeChoiceParameter", "choice"),
+        ("org.biouno.unochoice.DynamicReferenceParameter", "reference"),
+        ("PT_RADIO", "choice"),
         ("PT_SINGLE_SELECT", "choice"),
         ("PT_MULTI_SELECT", "choice"),
         ("PT_CHECKBOX", "choice"),
@@ -294,7 +294,7 @@ def test_raw_pt_choice_type_enables_form_options_when_exported_class_is_generic(
     assert parameters[0]["_dynamic_choice"] is True
 
 
-def test_active_choices_radio_is_unsupported_even_when_exported_class_is_generic() -> None:
+def test_active_choices_radio_is_a_single_form_choice_when_exported_class_is_generic() -> None:
     parameters = JenkinsGateway._normalize_parameters(
         [
             {
@@ -310,8 +310,9 @@ def test_active_choices_radio_is_unsupported_even_when_exported_class_is_generic
         ]
     )
 
-    assert parameters[0]["type"] == "unsupported"
-    assert parameters[0]["_form_dynamic"] is False
+    assert parameters[0]["type"] == "choice"
+    assert parameters[0]["_form_dynamic"] is True
+    assert parameters[0]["_explicit_single"] is True
 
 
 @pytest.mark.parametrize(
@@ -1207,6 +1208,14 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
         assert job_with_options["parameters"][2]["default"] == "master"
         assert job_with_options["parameters"][2]["choices"] == ["master", "feature/api"]
 
+        resolved_parameters = client.post(
+            f"/api/jenkins/instances/{instance_id}/job/parameters",
+            params={"job": "Team A/release#1"},
+            json={"parameters": {"ENV": "production"}},
+        )
+        assert resolved_parameters.status_code == 200
+        assert resolved_parameters.json()["job"]["parameters"][0]["default"] == "staging"
+
         builds = client.get(
             f"/api/jenkins/instances/{instance_id}/builds",
             params={"job": "Team A/release#1", "limit": 10},
@@ -1288,9 +1297,9 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
         and request.url.path == "/jenkins/job/Team A/job/release#1/api/json"
         and "parameterDefinitions" in request.url.params.get("tree", "")
     ]
-    assert len(job_detail_trees) == 3
-    assert sum("allValueItems" in tree for tree in job_detail_trees) == 2
-    assert sum("defaultParameterValue" in tree for tree in job_detail_trees) == 2
+    assert len(job_detail_trees) == 4
+    assert sum("allValueItems" in tree for tree in job_detail_trees) == 3
+    assert sum("defaultParameterValue" in tree for tree in job_detail_trees) == 3
 
 
 def test_build_trigger_failure_is_not_retried_and_error_is_redacted(tmp_path: Path) -> None:
@@ -1864,6 +1873,239 @@ async def test_active_choices_multi_select_is_validated_and_submitted_as_an_arra
 
 
 @pytest.mark.asyncio
+async def test_git_parameter_falls_back_to_build_form_choices(
+    tmp_path: Path,
+) -> None:
+    credentials = FakeCredentialStore()
+    form_calls = 0
+    fill_calls = 0
+    submitted: list[dict[str, list[str]]] = []
+
+    build_form = """
+    <form method="post" name="parameters" action="build">
+      <div name="parameter">
+        <input type="hidden" name="name" value="BRANCH">
+        <select name="value" class="gitParameterSelect"
+          fillUrl="/job/api/descriptorByName/net.uaznia.lukanus.hudson.plugins.gitparameter.GitParameterDefinition/fillValueItems?param=BRANCH">
+          <option value="">Retrieving Git references...</option>
+        </select>
+      </div>
+    </form>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal fill_calls, form_calls
+        if request.method == "GET" and request.url.path == "/job/api/api/json":
+            return httpx.Response(
+                200,
+                json={
+                    "name": "api",
+                    "fullName": "api",
+                    "actions": [
+                        {
+                            "parameterDefinitions": [
+                                {
+                                    "name": "BRANCH",
+                                    "type": "PT_BRANCH",
+                                    "_class": (
+                                        "net.uaznia.lukanus.hudson.plugins.gitparameter."
+                                        "GitParameterDefinition"
+                                    ),
+                                    "defaultParameterValue": {"value": "origin/develop"},
+                                    "allValueItems": {
+                                        "values": [{"name": "default", "value": "origin/develop"}],
+                                        "errors": ["remote list failed"],
+                                    },
+                                }
+                            ]
+                        }
+                    ],
+                },
+            )
+        if request.method == "GET" and request.url.path == "/job/api/build":
+            form_calls += 1
+            return httpx.Response(405, text=build_form)
+        if request.method == "GET" and request.url.path.endswith("/fillValueItems"):
+            fill_calls += 1
+            assert request.url.params["param"] == "BRANCH"
+            return httpx.Response(
+                200,
+                json={
+                    "values": [
+                        {"name": "develop", "value": "origin/develop"},
+                        {"name": "release", "value": "origin/release"},
+                    ],
+                    "errors": [],
+                },
+            )
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            return httpx.Response(404)
+        if request.method == "POST" and request.url.path == "/job/api/buildWithParameters":
+            submitted.append(parse_qs(request.content.decode()))
+            return httpx.Response(201, headers={"Location": "/queue/item/41/"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    service = JenkinsService(tmp_path, credential_store=credentials, gateway=gateway)
+    created = await service.create_instance(
+        name="Jenkins",
+        base_url="https://ci.example",
+        username="developer",
+        token="secret-token",
+        ca_bundle=None,
+        enabled=True,
+        request_timeout=15,
+    )
+    instance_id = str(created["id"])
+
+    prepared = await service.get_job(instance_id, job="api", include_parameter_options=True)
+    queued = await service.trigger_build(
+        instance_id,
+        job="api",
+        parameters={"BRANCH": "origin/release"},
+    )
+
+    assert prepared["parameters"][0]["choices"] == ["origin/develop", "origin/release"]
+    assert prepared["parameters"][0]["default"] == "origin/develop"
+    assert queued["id"] == 41
+    assert submitted == [{"BRANCH": ["origin/release"]}]
+    assert form_calls == 2
+    assert fill_calls == 2
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_choice_cascade_refreshes_from_dependencies_and_triggers_classic_build(
+    tmp_path: Path,
+) -> None:
+    credentials = FakeCredentialStore()
+    active_updates: list[str] = []
+    classic_payloads: list[dict[str, object]] = []
+
+    build_form = """
+    <form method="post" name="parameters" action="build">
+      <div name="parameter">
+        <input type="hidden" name="name" value="ENV">
+        <select name="value">
+          <option value="dev" selected>dev</option>
+          <option value="prod">prod</option>
+        </select>
+      </div>
+      <div name="parameter">
+        <input type="hidden" name="name" value="MACHINE">
+        <select name="value"></select>
+      </div>
+      <script>
+        var referencedParameters = Array();
+        referencedParameters.push("ENV");
+        var proxy = makeStaplerProxy('/$stapler/bound/machine-binding','binding-crumb',['getChoicesForUI','doUpdate']);
+        var cascade = new UnoChoice.CascadeParameter('MACHINE', document.body, 'choice-machine', proxy);
+      </script>
+    </form>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/job/api/api/json":
+            return httpx.Response(
+                200,
+                json={
+                    "name": "api",
+                    "fullName": "api",
+                    "actions": [
+                        {
+                            "parameterDefinitions": [
+                                {
+                                    "name": "ENV",
+                                    "type": "PT_SINGLE_SELECT",
+                                    "_class": (
+                                        "com.cwctravel.hudson.plugins.extended_choice_parameter."
+                                        "ExtendedChoiceParameterDefinition"
+                                    ),
+                                    "defaultParameterValue": {"value": "dev"},
+                                },
+                                {
+                                    "name": "MACHINE",
+                                    "type": "CascadeChoiceParameter",
+                                    "_class": "org.biouno.unochoice.CascadeChoiceParameter",
+                                    "defaultParameterValue": {"value": "ERROR"},
+                                },
+                            ]
+                        }
+                    ],
+                },
+            )
+        if request.method == "GET" and request.url.path == "/job/api/build":
+            return httpx.Response(405, text=build_form)
+        if request.method == "POST" and request.url.path.endswith("/doUpdate"):
+            assert request.headers["Crumb"] == "binding-crumb"
+            assert request.headers["Content-Type"].startswith(
+                "application/x-stapler-method-invocation"
+            )
+            values = json.loads(request.content.decode())
+            active_updates.append(values[0])
+            return httpx.Response(204)
+        if request.method == "POST" and request.url.path.endswith("/getChoicesForUI"):
+            environment = active_updates[-1].partition("=")[2]
+            values = [f"{environment}-a:selected", f"{environment}-b"]
+            return httpx.Response(200, json=[values, values])
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            return httpx.Response(
+                200,
+                json={"crumbRequestField": "Jenkins-Crumb", "crumb": "classic-crumb"},
+            )
+        if request.method == "POST" and request.url.path == "/job/api/build":
+            assert request.headers["Jenkins-Crumb"] == "classic-crumb"
+            classic_payloads.append(json.loads(parse_qs(request.content.decode())["json"][0]))
+            return httpx.Response(201, headers={"Location": "/queue/item/42/"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    service = JenkinsService(tmp_path, credential_store=credentials, gateway=gateway)
+    created = await service.create_instance(
+        name="Jenkins",
+        base_url="https://ci.example",
+        username="developer",
+        token="secret-token",
+        ca_bundle=None,
+        enabled=True,
+        request_timeout=15,
+    )
+    instance_id = str(created["id"])
+
+    prepared = await service.get_job(instance_id, job="api", include_parameter_options=True)
+    refreshed = await service.get_job(
+        instance_id,
+        job="api",
+        include_parameter_options=True,
+        parameter_values={"ENV": "prod"},
+    )
+    queued = await service.trigger_build(
+        instance_id,
+        job="api",
+        parameters={"ENV": "prod", "MACHINE": "prod-b"},
+    )
+
+    machine = prepared["parameters"][1]
+    refreshed_machine = refreshed["parameters"][1]
+    assert machine["choices"] == ["dev-a", "dev-b"]
+    assert machine["default"] == "dev-a"
+    assert machine["references"] == ["ENV"]
+    assert refreshed_machine["choices"] == ["prod-a", "prod-b"]
+    assert refreshed_machine["default"] == "prod-a"
+    assert active_updates == ["ENV=dev", "ENV=prod", "ENV=prod"]
+    assert queued["id"] == 42
+    assert classic_payloads == [
+        {
+            "parameter": [
+                {"name": "ENV", "value": "prod"},
+                {"name": "MACHINE", "value": "prod-b"},
+            ]
+        }
+    ]
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["redirect", "oversized"])
 async def test_dynamic_option_form_does_not_follow_redirects_or_read_oversized_html(
     tmp_path: Path,
@@ -2169,17 +2411,6 @@ async def test_property_parameter_definitions_are_normalized_deduplicated_and_tr
             ],
             {},
             "file parameters are not supported",
-        ),
-        (
-            [
-                {
-                    "name": "AMI",
-                    "type": "PT_SINGLE_SELECT",
-                    "_class": "org.biouno.unochoice.CascadeChoiceParameter",
-                }
-            ],
-            {},
-            "parameter type is not supported",
         ),
     ],
 )
