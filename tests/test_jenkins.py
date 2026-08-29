@@ -189,6 +189,7 @@ def test_build_form_parser_rejects_incomplete_or_excessive_candidate_sets(mode: 
         ("PT_RADIO", "unsupported"),
         ("PT_SINGLE_SELECT", "choice"),
         ("PT_MULTI_SELECT", "choice"),
+        ("PT_CHECKBOX", "choice"),
         ("com.wangyin.parameter.WHideParameterDefinition", "hidden"),
         ("jenkins.plugins.parameter_separator.ParameterSeparatorDefinition", "separator"),
         ("hudson.model.FileParameterDefinition", "file"),
@@ -388,6 +389,56 @@ def test_filesystem_singleton_requires_an_explicit_selected_default(
 
     assert parameters[0]["options_state"] == expected_state
     assert parameters[0]["choices"] == (["only-entry"] if expected_state == "ready" else None)
+
+
+@pytest.mark.parametrize(
+    ("choice_type", "expected_multiple", "expected_default"),
+    [
+        ("PT_SINGLE_SELECT", False, "one"),
+        ("PT_MULTI_SELECT", True, ["one", "two"]),
+        ("PT_CHECKBOX", True, ["one", "two"]),
+    ],
+)
+def test_active_choices_select_mode_overrides_build_form_multiple_attribute(
+    choice_type: str,
+    expected_multiple: bool,
+    expected_default: str | list[str],
+) -> None:
+    parameters = JenkinsGateway._normalize_parameters(
+        [
+            {
+                "parameterDefinitions": [
+                    {
+                        "name": "GROUP",
+                        "type": choice_type,
+                        "_class": "org.biouno.unochoice.ChoiceParameter",
+                        "choiceType": choice_type,
+                    }
+                ]
+            }
+        ],
+        options_requested=True,
+    )
+    parser = _JenkinsBuildFormParser({"GROUP"})
+    parser.feed(
+        """
+        <form method="post" name="parameters" action="build">
+          <div name="parameter">
+            <input type="hidden" name="name" value="GROUP">
+            <select name="value" multiple>
+              <option value="one" selected>one</option>
+              <option value="two" selected>two</option>
+            </select>
+          </div>
+        </form>
+        """
+    )
+    parser.close()
+
+    _merge_build_form_parameters(parameters, parser.parameters)
+
+    assert parameters[0]["multiple"] is expected_multiple
+    assert parameters[0]["default"] == expected_default
 
 
 @pytest.mark.asyncio
@@ -1647,10 +1698,9 @@ async def test_dynamic_form_options_hidden_defaults_and_classic_build_are_server
     ("select_attributes", "options", "submitted", "message"),
     [
         ("", '<option value="current" selected>current</option>', "stale", "not one of"),
-        ("multiple", '<option value="current">current</option>', "current", "multi-select"),
         ("", "", "current", "options are unavailable"),
     ],
-    ids=["stale", "multiple", "empty"],
+    ids=["stale", "empty"],
 )
 async def test_dynamic_form_trigger_fails_closed_before_post(
     tmp_path: Path,
@@ -1724,6 +1774,92 @@ async def test_dynamic_form_trigger_fails_closed_before_post(
     assert captured.value.status_code == 400
     assert crumb_calls == 0
     assert post_calls == 0
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_active_choices_multi_select_is_validated_and_submitted_as_an_array(
+    tmp_path: Path,
+) -> None:
+    credentials = FakeCredentialStore()
+    crumb_calls = 0
+    classic_payloads: list[dict[str, object]] = []
+    build_form = """
+    <form method="post" name="parameters" action="build">
+      <div name="parameter">
+        <input type="hidden" name="name" value="GROUP">
+        <select name="value" multiple>
+          <option value="server-a" selected>server-a</option>
+          <option value="server-b">server-b</option>
+        </select>
+      </div>
+    </form>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal crumb_calls
+        if request.method == "GET" and request.url.path == "/job/api/api/json":
+            return httpx.Response(
+                200,
+                json={
+                    "name": "api",
+                    "fullName": "api",
+                    "actions": [
+                        {
+                            "parameterDefinitions": [
+                                {
+                                    "name": "GROUP",
+                                    "type": "PT_MULTI_SELECT",
+                                    "_class": "org.biouno.unochoice.ChoiceParameter",
+                                    "choiceType": "PT_MULTI_SELECT",
+                                }
+                            ]
+                        }
+                    ],
+                },
+            )
+        if request.method == "GET" and request.url.path == "/job/api/build":
+            return httpx.Response(200, text=build_form)
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            crumb_calls += 1
+            return httpx.Response(200, json={"crumbRequestField": "Jenkins-Crumb", "crumb": "crumb"})
+        if request.method == "POST" and request.url.path == "/job/api/build":
+            form = parse_qs(request.content.decode())
+            classic_payloads.append(json.loads(form["json"][0]))
+            return httpx.Response(201, headers={"Location": "/queue/item/31/"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    service = JenkinsService(tmp_path, credential_store=credentials, gateway=gateway)
+    created = await service.create_instance(
+        name="Jenkins",
+        base_url="https://ci.example",
+        username="developer",
+        token="secret-token",
+        ca_bundle=None,
+        enabled=True,
+        request_timeout=15,
+    )
+    instance_id = str(created["id"])
+
+    prepared = await service.get_job(instance_id, job="api", include_parameter_options=True)
+    assert prepared["parameters"][0]["multiple"] is True
+    assert prepared["parameters"][0]["default"] == ["server-a"]
+
+    with pytest.raises(JenkinsApiError, match="not a current choice"):
+        await service.trigger_build(instance_id, job="api", parameters={"GROUP": ["removed"]})
+
+    queued = await service.trigger_build(
+        instance_id,
+        job="api",
+        parameters={"GROUP": ["server-a", "server-b", "server-a"]},
+    )
+
+    assert queued["id"] == 31
+    assert crumb_calls == 1
+    assert classic_payloads == [
+        {"parameter": [{"name": "GROUP", "value": ["server-a", "server-b"]}]}
+    ]
     await service.shutdown()
 
 

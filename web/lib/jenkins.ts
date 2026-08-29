@@ -185,9 +185,11 @@ function normalizeParameter(value: unknown): JenkinsJobParameter {
     type,
     rawType,
     description: text(source.description),
-    defaultValue: ["string", "number", "boolean"].includes(typeof defaultValue)
-      ? defaultValue as string | number | boolean
-      : null,
+    defaultValue: Array.isArray(defaultValue)
+      ? defaultValue.filter((item): item is string => typeof item === "string")
+      : ["string", "number", "boolean"].includes(typeof defaultValue)
+        ? defaultValue as string | number | boolean
+        : null,
     choices,
     optionsState,
     multiple: bool(source.multiple),

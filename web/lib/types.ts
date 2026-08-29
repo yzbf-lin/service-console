@@ -248,12 +248,14 @@ export interface JenkinsLastBuild {
   status: string;
 }
 
+export type JenkinsBuildParameterValue = string | number | boolean | string[];
+
 export interface JenkinsJobParameter {
   name: string;
   type: string;
   rawType?: string;
   description: string;
-  defaultValue: string | number | boolean | null;
+  defaultValue: JenkinsBuildParameterValue | null;
   choices: string[];
   optionsState: "ready" | "not_loaded" | "unavailable" | "not_applicable";
   multiple: boolean;

@@ -83,7 +83,7 @@ class JenkinsInstanceRequest(BaseModel):
     request_timeout: float = Field(default=15.0, ge=1, le=120, allow_inf_nan=False)
 
 
-JenkinsParameterValue = str | int | float | bool
+JenkinsParameterValue = str | int | float | bool | list[str]
 
 
 class JenkinsBuildRequest(BaseModel):
@@ -104,6 +104,11 @@ class JenkinsBuildRequest(BaseModel):
                 raise ValueError("Jenkins build parameter names must be printable and non-empty")
             if isinstance(value, str) and len(value) > 16_384:
                 raise ValueError("Jenkins build parameter values must not exceed 16384 characters")
+            if isinstance(value, list):
+                if len(value) > 5_000:
+                    raise ValueError("Jenkins multi-select parameters must not exceed 5000 values")
+                if any(len(item) > 16_384 for item in value):
+                    raise ValueError("Jenkins build parameter values must not exceed 16384 characters")
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError("Jenkins build parameter values must be finite")
         return parameters
