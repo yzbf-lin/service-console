@@ -45,11 +45,12 @@ def _matching_process_is_alive(pid: int, create_time: float) -> bool:
         return False
 
 
-def _start_managed_tree(
+def _start_posix_managed_tree(
     registration_id: str,
     *,
     child_marker: str | None = None,
 ) -> tuple[subprocess.Popen[str], int, float, int, float, int | None]:
+    assert os.name != "nt"
     child_marker_statement = ""
     if child_marker is not None:
         child_marker_statement = f"child_env[{MANAGED_PROCESS_ID_ENV!r}] = {child_marker!r};"
@@ -78,10 +79,7 @@ def _start_managed_tree(
         "stderr": subprocess.DEVNULL,
         "text": True,
     }
-    if os.name == "nt":
-        options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-    else:
-        options["start_new_session"] = True
+    options["start_new_session"] = True
     process = subprocess.Popen([sys.executable, "-c", root_code], **options)  # type: ignore[arg-type]
     assert process.stdout is not None
     raw_child_pid = process.stdout.readline().strip()
@@ -93,6 +91,62 @@ def _start_managed_tree(
     child_create_time = psutil.Process(child_pid).create_time()
     process_group_id = None if os.name == "nt" else os.getpgid(process.pid)
     return process, child_pid, root_create_time, child_pid, child_create_time, process_group_id
+
+
+def _start_suspended_windows_root(registration_id: str) -> tuple[subprocess.Popen[str], float]:
+    """Mirror production: create a suspended root so tracking precedes child creation."""
+
+    assert os.name == "nt"
+    child_code = "import time;time.sleep(60)"
+    root_code = (
+        "import os,subprocess,sys,time;"
+        "child_env=os.environ.copy();"
+        "child=subprocess.Popen([sys.executable,'-c',"
+        + repr(child_code)
+        + "],env=child_env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,"
+        + "stderr=subprocess.DEVNULL);"
+        + "print(child.pid,flush=True);time.sleep(60)"
+    )
+    environment = os.environ.copy()
+    environment[MANAGED_PROCESS_ID_ENV] = registration_id
+    process = subprocess.Popen(
+        [sys.executable, "-u", "-c", root_code],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        creationflags=(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+            | getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
+        ),
+    )
+    assert process.stdout is not None
+    root = psutil.Process(process.pid)
+    assert root.children(recursive=True) == []
+    return process, root.create_time()
+
+
+def _resume_suspended_windows_tree(process: subprocess.Popen[str]) -> tuple[int, float]:
+    assert os.name == "nt"
+    assert process.stdout is not None
+    psutil.Process(process.pid).resume()
+    raw_child_pid = process.stdout.readline().strip()
+    if not raw_child_pid:
+        raise AssertionError("resumed Windows root did not report its inherited child PID")
+    child_pid = int(raw_child_pid)
+    return child_pid, psutil.Process(child_pid).create_time()
+
+
+def _force_stop_identity(pid: int | None, create_time: float | None) -> None:
+    if pid is None or create_time is None or not _matching_process_is_alive(pid, create_time):
+        return
+    try:
+        process = psutil.Process(pid)
+        process.kill()
+        process.wait(timeout=5)
+    except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.ZombieProcess):
+        pass
 
 
 def _force_stop_tree(process: subprocess.Popen[str], process_group_id: int | None) -> None:
@@ -599,9 +653,10 @@ async def test_track_retries_the_create_subprocess_shell_exec_window(tmp_path: P
 
 
 @pytest.mark.parametrize("close_method", ["shutdown", "emergency_disconnect"])
-def test_parent_close_stops_tracked_process_tree(tmp_path: Path, close_method: str) -> None:
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses a suspended root tracked before child spawn")
+def test_posix_parent_close_stops_tracked_process_tree(tmp_path: Path, close_method: str) -> None:
     registration_id = uuid.uuid4().hex
-    process, _, root_created, child_pid, child_created, process_group_id = _start_managed_tree(
+    process, _, root_created, child_pid, child_created, process_group_id = _start_posix_managed_tree(
         registration_id
     )
     guardian = ProcessGuardian(tmp_path)
@@ -629,10 +684,45 @@ def test_parent_close_stops_tracked_process_tree(tmp_path: Path, close_method: s
         _force_stop_tree(process, process_group_id)
 
 
+@pytest.mark.parametrize("close_method", ["shutdown", "emergency_disconnect"])
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job inheritance is required")
+def test_windows_parent_close_stops_child_spawned_after_track(
+    tmp_path: Path,
+    close_method: str,
+) -> None:
+    registration_id = uuid.uuid4().hex
+    process, root_created = _start_suspended_windows_root(registration_id)
+    child_pid: int | None = None
+    child_created: float | None = None
+    guardian = ProcessGuardian(tmp_path)
+    try:
+        assert guardian.track(
+            registration_id,
+            "windows-inherited-tree",
+            process.pid,
+            root_created,
+            None,
+            0.1,
+        ), guardian.last_error
+        child_pid, child_created = _resume_suspended_windows_tree(process)
+        assert _matching_process_is_alive(process.pid, root_created)
+        assert _matching_process_is_alive(child_pid, child_created)
+
+        getattr(guardian, close_method)()
+
+        process.wait(timeout=8)
+        _wait_until(lambda: not _matching_process_is_alive(child_pid, child_created))
+        _wait_until(lambda: not (tmp_path / process_guardian.STATE_FILENAME).exists())
+    finally:
+        guardian.emergency_disconnect()
+        _force_stop_tree(process, None)
+        _force_stop_identity(child_pid, child_created)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows Popen.terminate does not run Python handlers")
 def test_worker_sigterm_stops_tracked_process_tree(tmp_path: Path) -> None:
     registration_id = uuid.uuid4().hex
-    process, _, root_created, child_pid, child_created, process_group_id = _start_managed_tree(
+    process, _, root_created, child_pid, child_created, process_group_id = _start_posix_managed_tree(
         registration_id
     )
     guardian = ProcessGuardian(tmp_path)
@@ -660,9 +750,10 @@ def test_worker_sigterm_stops_tracked_process_tree(tmp_path: Path) -> None:
         _force_stop_tree(process, process_group_id)
 
 
-def test_release_removes_lease_after_service_has_stopped(tmp_path: Path) -> None:
+@pytest.mark.skipif(os.name == "nt", reason="Windows uses a suspended root tracked before child spawn")
+def test_posix_release_removes_lease_after_service_has_stopped(tmp_path: Path) -> None:
     registration_id = uuid.uuid4().hex
-    process, _, root_created, child_pid, child_created, process_group_id = _start_managed_tree(
+    process, _, root_created, child_pid, child_created, process_group_id = _start_posix_managed_tree(
         registration_id
     )
     guardian = ProcessGuardian(tmp_path)
@@ -689,9 +780,44 @@ def test_release_removes_lease_after_service_has_stopped(tmp_path: Path) -> None
         _force_stop_tree(process, process_group_id)
 
 
-def test_release_timeout_covers_term_and_kill_phases(tmp_path: Path) -> None:
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job inheritance is required")
+def test_windows_release_stops_child_spawned_after_track(tmp_path: Path) -> None:
     registration_id = uuid.uuid4().hex
-    process, _, root_created, child_pid, child_created, process_group_id = _start_managed_tree(
+    process, root_created = _start_suspended_windows_root(registration_id)
+    child_pid: int | None = None
+    child_created: float | None = None
+    guardian = ProcessGuardian(tmp_path)
+    try:
+        assert guardian.track(
+            registration_id,
+            "windows-release",
+            process.pid,
+            root_created,
+            None,
+            0.1,
+        ), guardian.last_error
+        child_pid, child_created = _resume_suspended_windows_tree(process)
+        assert _matching_process_is_alive(child_pid, child_created)
+
+        process.kill()
+        process.wait(timeout=5)
+        assert _matching_process_is_alive(child_pid, child_created)
+
+        assert guardian.release(registration_id)
+
+        _wait_until(lambda: not _matching_process_is_alive(child_pid, child_created))
+        payload = json.loads((tmp_path / process_guardian.STATE_FILENAME).read_text(encoding="utf-8"))
+        assert payload["leases"] == []
+    finally:
+        guardian.shutdown()
+        _force_stop_tree(process, None)
+        _force_stop_identity(child_pid, child_created)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="TERM-to-KILL escalation is POSIX-specific")
+def test_posix_release_timeout_covers_term_and_kill_phases(tmp_path: Path) -> None:
+    registration_id = uuid.uuid4().hex
+    process, _, root_created, child_pid, child_created, process_group_id = _start_posix_managed_tree(
         registration_id
     )
     guardian = ProcessGuardian(tmp_path, request_timeout=0.1)
@@ -902,7 +1028,7 @@ def test_live_posix_track_uses_private_pipe_identity_when_marker_is_temporarily_
 ) -> None:
     expected_registration = uuid.uuid4().hex
     actual_registration = uuid.uuid4().hex
-    process, _, root_created, _, _, process_group_id = _start_managed_tree(actual_registration)
+    process, _, root_created, _, _, process_group_id = _start_posix_managed_tree(actual_registration)
     guardian = ProcessGuardian(tmp_path)
     try:
         assert guardian.track(
@@ -923,7 +1049,11 @@ def test_live_posix_track_uses_private_pipe_identity_when_marker_is_temporarily_
 
 def test_live_track_rejects_reused_or_mismatched_pid_identity(tmp_path: Path) -> None:
     registration_id = uuid.uuid4().hex
-    process, _, root_created, _, _, process_group_id = _start_managed_tree(registration_id)
+    if os.name == "nt":
+        process, root_created = _start_suspended_windows_root(registration_id)
+        process_group_id = None
+    else:
+        process, _, root_created, _, _, process_group_id = _start_posix_managed_tree(registration_id)
     guardian = ProcessGuardian(tmp_path)
     try:
         assert not guardian.track(
@@ -945,7 +1075,7 @@ def test_stale_posix_marker_mismatch_prevents_group_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registration_id = uuid.uuid4().hex
-    process, _, root_created, child_pid, _, process_group_id = _start_managed_tree(
+    process, _, root_created, child_pid, _, process_group_id = _start_posix_managed_tree(
         registration_id,
         child_marker="different-registration",
     )

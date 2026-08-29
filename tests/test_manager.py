@@ -526,6 +526,142 @@ def test_controller_crash_reaps_managed_process_tree(tmp_path: Path) -> None:
                 pass
 
 
+@pytest.mark.asyncio
+async def test_windows_start_tracks_suspended_root_before_resume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    subprocess_options: dict[str, object] = {}
+
+    class RecordingGuardian:
+        def ensure_started(self) -> bool:
+            events.append("ensure")
+            return True
+
+        def track(self, **_kwargs: object) -> bool:
+            assert "resume" not in events
+            events.append("track")
+            return True
+
+    class FakeNativeProcess:
+        def create_time(self) -> float:
+            return 123.0
+
+        def resume(self) -> None:
+            events.append("resume")
+
+    class FakeAsyncProcess:
+        pid = 12_345
+        returncode = None
+        stdout = None
+        stderr = None
+
+    async def create_subprocess_shell(
+        _command: str,
+        **options: object,
+    ) -> FakeAsyncProcess:
+        subprocess_options.update(options)
+        events.append("create")
+        return FakeAsyncProcess()
+
+    def discard_task(coroutine: object) -> object:
+        coroutine.close()  # type: ignore[union-attr]
+        return object()
+
+    monkeypatch.setattr(manager_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(manager_module.asyncio, "create_subprocess_shell", create_subprocess_shell)
+    monkeypatch.setattr(manager_module.psutil, "Process", lambda _pid: FakeNativeProcess())
+    guardian = RecordingGuardian()
+    manager = ServiceManager(tmp_path, process_guardian=guardian)  # type: ignore[arg-type]
+    manager._create_task = discard_task  # type: ignore[method-assign]
+    manager._prime_resource_counters = lambda _service: None  # type: ignore[method-assign]
+    await manager.add_service(ServiceDefinition(name="suspended", command="fixture", cwd=str(tmp_path)))
+
+    snapshot = await manager.start("suspended")
+
+    assert snapshot["state"] == "RUNNING"
+    assert events == ["ensure", "create", "track", "resume"]
+    assert subprocess_options["creationflags"] == (
+        manager_module._CREATE_NEW_PROCESS_GROUP | manager_module._CREATE_SUSPENDED
+    )
+
+
+@pytest.mark.asyncio
+async def test_windows_resume_failure_releases_lease_and_kills_suspended_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    class RecordingGuardian:
+        def ensure_started(self) -> bool:
+            return True
+
+        def track(self, **_kwargs: object) -> bool:
+            events.append("track")
+            return True
+
+        def release(self, _registration_id: str) -> bool:
+            events.append("release")
+            return True
+
+    class FakeNativeProcess:
+        pid = 23_456
+        alive = True
+
+        def create_time(self) -> float:
+            return 456.0
+
+        def resume(self) -> None:
+            events.append("resume")
+            raise psutil.AccessDenied(pid=FakeAsyncProcess.pid)
+
+        def children(self, *, recursive: bool) -> list[FakeNativeProcess]:
+            assert recursive is True
+            return []
+
+        def kill(self) -> None:
+            events.append("kill")
+            self.alive = False
+
+        def is_running(self) -> bool:
+            return self.alive
+
+    class FakeAsyncProcess:
+        pid = 23_456
+        returncode: int | None = None
+        stdout = None
+        stderr = None
+
+        async def wait(self) -> int:
+            self.returncode = -1
+            return self.returncode
+
+    native_process = FakeNativeProcess()
+
+    async def create_subprocess_shell(
+        _command: str,
+        **_options: object,
+    ) -> FakeAsyncProcess:
+        return FakeAsyncProcess()
+
+    monkeypatch.setattr(manager_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(manager_module.asyncio, "create_subprocess_shell", create_subprocess_shell)
+    monkeypatch.setattr(manager_module.psutil, "Process", lambda _pid: native_process)
+    guardian = RecordingGuardian()
+    manager = ServiceManager(tmp_path, process_guardian=guardian)  # type: ignore[arg-type]
+    await manager.add_service(ServiceDefinition(name="resume-failure", command="fixture", cwd=str(tmp_path)))
+
+    with pytest.raises(RuntimeError, match="failed to resume suspended process"):
+        await manager.start("resume-failure")
+
+    assert events == ["track", "resume", "release", "kill"]
+    snapshot = await manager.get_service("resume-failure")
+    assert snapshot["state"] == "FAILED"
+    assert "failed to resume suspended process" in str(snapshot["last_error"])
+
+
 def test_windows_uses_new_process_group_and_signals_the_complete_process_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -557,7 +693,7 @@ def test_windows_uses_new_process_group_and_signals_the_complete_process_tree(
     monkeypatch.setattr(manager_module.psutil, "Process", lambda pid: root if pid == 101 else None)
 
     assert manager_module._subprocess_group_options() == {
-        "creationflags": manager_module._CREATE_NEW_PROCESS_GROUP
+        "creationflags": (manager_module._CREATE_NEW_PROCESS_GROUP | manager_module._CREATE_SUSPENDED)
     }
     tree = ServiceManager._signal_process_group(shell_process, manager_module.signal.SIGTERM)
     assert [process.pid for process in tree] == [103, 102, 101]

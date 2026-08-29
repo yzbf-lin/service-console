@@ -22,12 +22,13 @@ from .store import DefinitionStore
 
 _IS_WINDOWS = os.name == "nt"
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+_CREATE_SUSPENDED = getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 _SIGKILL = getattr(signal, "SIGKILL", 9)
 
 
 def _subprocess_group_options() -> dict[str, object]:
     if _IS_WINDOWS:
-        return {"creationflags": _CREATE_NEW_PROCESS_GROUP}
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED}
     return {"start_new_session": True}
 
 
@@ -300,6 +301,7 @@ class ServiceManager:
         environment.update(definition.env)
         environment[MANAGED_PROCESS_ID_ENV] = registration_id
         process = None
+        tracked = False
         try:
             guardian_ready = await asyncio.to_thread(self._process_guardian.ensure_started)
             if not guardian_ready:
@@ -313,8 +315,10 @@ class ServiceManager:
                 limit=1024 * 1024,
                 **_subprocess_group_options(),
             )
+            root_process: psutil.Process | None = None
             try:
-                create_time = psutil.Process(process.pid).create_time()
+                root_process = psutil.Process(process.pid)
+                create_time = root_process.create_time()
             except (psutil.Error, OSError):
                 create_time = time.time()
             tracked = await asyncio.to_thread(
@@ -327,8 +331,30 @@ class ServiceManager:
                 stop_timeout=definition.stop_timeout,
             )
             if not tracked:
-                raise RuntimeError("process guardian did not contain the launched process")
+                detail = getattr(self._process_guardian, "last_error", None)
+                suffix = f": {detail}" if isinstance(detail, str) and detail else ""
+                raise RuntimeError(f"process guardian did not contain the launched process{suffix}")
+            if _IS_WINDOWS:
+                if root_process is None:
+                    raise RuntimeError("suspended process identity was unavailable for resume")
+                try:
+                    root_process.resume()
+                except (psutil.Error, OSError) as exc:
+                    raise RuntimeError(f"failed to resume suspended process {process.pid}: {exc}") from exc
         except Exception as exc:
+            guardian_cleanup_error: str | None = None
+            if tracked:
+                try:
+                    released = await asyncio.to_thread(
+                        self._process_guardian.release,
+                        registration_id,
+                    )
+                    if released:
+                        tracked = False
+                    else:
+                        guardian_cleanup_error = "process guardian did not release the failed start"
+                except Exception as cleanup_exc:  # noqa: BLE001 - best-effort failure cleanup
+                    guardian_cleanup_error = f"process guardian release failed: {cleanup_exc}"
             if process is not None:
                 process_tree = self._signal_process_group(process, _SIGKILL)
                 await self._wait_for_process_group(
@@ -338,12 +364,15 @@ class ServiceManager:
                 )
                 if process.returncode is None:
                     await asyncio.shield(process.wait())
+            error_message = str(exc)
+            if guardian_cleanup_error is not None:
+                error_message = f"{error_message}; {guardian_cleanup_error}"
             service.runtime.state = ServiceState.FAILED
-            service.runtime.last_error = str(exc)
+            service.runtime.last_error = error_message
             service.runtime.stopped_at = utc_now()
             self._emit_status(service)
-            self._record_log(service, "stderr", f"failed to start: {exc}")
-            raise RuntimeError(f"failed to start service {definition.name}: {exc}") from exc
+            self._record_log(service, "stderr", f"failed to start: {error_message}")
+            raise RuntimeError(f"failed to start service {definition.name}: {error_message}") from exc
 
         service.process = process
         service.guardian_registration_id = registration_id if tracked else None
