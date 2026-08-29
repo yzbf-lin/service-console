@@ -428,8 +428,10 @@ class JenkinsGateway:
             params={
                 "tree": (
                     "name,fullName,url,color,_class,buildable,inQueue,description,"
-                    "actions[parameterDefinitions["
-                    "name,type,description,defaultParameterValue[value],choices]],"
+                    "actions[_class,parameterDefinitions["
+                    "name,type,_class,description,defaultParameterValue[value],choices]],"
+                    "property[_class,parameterDefinitions["
+                    "name,type,_class,description,defaultParameterValue[value],choices]],"
                     "lastBuild[number,url,displayName,fullDisplayName,building,result,timestamp,duration,"
                     "estimatedDuration,queueId,description]"
                 )
@@ -437,7 +439,9 @@ class JenkinsGateway:
         )
         payload = self._json_object(response)
         detail = self._normalize_job(payload, folder=_parent_job(job))
-        detail["parameters"] = self._normalize_parameters(payload.get("actions"))
+        parameter_sources = (payload.get("property"), payload.get("actions"))
+        detail["parameters"] = self._normalize_parameters(*parameter_sources)
+        detail["parameterized"] = self._has_parameter_definitions(*parameter_sources)
         detail["description"] = _optional_string(payload.get("description"))
         return detail
 
@@ -873,36 +877,59 @@ class JenkinsGateway:
         }
 
     @staticmethod
-    def _normalize_parameters(actions: object) -> list[dict[str, object]]:
-        if not isinstance(actions, list):
-            return []
+    def _has_parameter_definitions(*sources: object) -> bool:
+        return any(
+            isinstance(source, list)
+            and any(
+                isinstance(item, dict) and isinstance(item.get("parameterDefinitions"), list)
+                for item in source
+            )
+            for source in sources
+        )
+
+    @staticmethod
+    def _normalize_parameters(*sources: object) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []
-        for action in actions:
-            definitions = action.get("parameterDefinitions") if isinstance(action, dict) else None
-            if not isinstance(definitions, list):
+        seen_names: set[str] = set()
+        for source in sources:
+            if not isinstance(source, list):
                 continue
-            for definition in definitions:
-                if not isinstance(definition, dict):
+            for item in source:
+                definitions = item.get("parameterDefinitions") if isinstance(item, dict) else None
+                if not isinstance(definitions, list):
                     continue
-                default_value = definition.get("defaultParameterValue")
-                raw_type = str(definition.get("type") or "StringParameterDefinition")
-                parameter_type = _parameter_kind(raw_type)
-                result.append(
-                    {
-                        "name": str(definition.get("name") or ""),
-                        "type": parameter_type,
-                        "raw_type": raw_type,
-                        "description": _optional_string(definition.get("description")),
-                        "default": (
-                            default_value.get("value")
-                            if isinstance(default_value, dict) and parameter_type != "password"
-                            else None
-                        ),
-                        "choices": (
-                            definition.get("choices") if isinstance(definition.get("choices"), list) else None
-                        ),
-                    }
-                )
+                for definition in definitions:
+                    if not isinstance(definition, dict):
+                        continue
+                    name = str(definition.get("name") or "").strip()
+                    if not name or name in seen_names:
+                        continue
+                    seen_names.add(name)
+                    default_value = definition.get("defaultParameterValue")
+                    raw_type = str(
+                        definition.get("type")
+                        or definition.get("_class")
+                        or "StringParameterDefinition"
+                    )
+                    parameter_type = _parameter_kind(raw_type)
+                    result.append(
+                        {
+                            "name": name,
+                            "type": parameter_type,
+                            "raw_type": raw_type,
+                            "description": _optional_string(definition.get("description")),
+                            "default": (
+                                default_value.get("value")
+                                if isinstance(default_value, dict) and parameter_type != "password"
+                                else None
+                            ),
+                            "choices": (
+                                definition.get("choices")
+                                if isinstance(definition.get("choices"), list)
+                                else None
+                            ),
+                        }
+                    )
         return result
 
     @staticmethod
@@ -1094,11 +1121,13 @@ class JenkinsService:
         job_detail = await self.gateway.get_job(instance, token, job=job)
         definitions_value = job_detail.get("parameters")
         definitions = definitions_value if isinstance(definitions_value, list) else []
+        parameterized_value = job_detail.get("parameterized")
+        parameterized = parameterized_value if isinstance(parameterized_value, bool) else bool(definitions)
         if any(
             isinstance(definition, dict) and definition.get("type") == "file" for definition in definitions
         ):
             raise JenkinsApiError(400, "Jenkins file parameters are not supported")
-        if not definitions and parameters:
+        if not parameterized and parameters:
             raise JenkinsApiError(400, "Jenkins job is not parameterized")
 
         password_names = {
@@ -1114,7 +1143,7 @@ class JenkinsService:
             token,
             job=job,
             parameters=submitted_parameters,
-            parameterized=bool(definitions),
+            parameterized=parameterized,
         )
 
     async def stop_build(self, instance_id: str, *, job: str, number: int) -> None:

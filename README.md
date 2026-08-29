@@ -103,6 +103,8 @@ Parameterized builds preserve Jenkins defaults: leave a password parameter blank
 request and let Jenkins apply its configured default. Jenkins file parameters are detected but are
 not uploaded by this release; jobs containing one are marked unsupported and cannot be triggered
 from Service Console. Use Jenkins directly when a build requires a file upload.
+Parameter discovery supports both the Jenkins core `property` export and the compatible `actions`
+export, so Pipeline and Freestyle jobs use `buildWithParameters` whenever Jenkins marks them parameterized.
 
 ### Persist appearance preferences
 
