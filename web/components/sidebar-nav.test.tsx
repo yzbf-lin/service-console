@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { SidebarNav } from "@/components/sidebar-nav";
@@ -6,7 +7,7 @@ import { SidebarNav } from "@/components/sidebar-nav";
 describe("SidebarNav information architecture", () => {
   it("keeps only workspace destinations in the menu and Settings in the lower section", () => {
     const { container } = render(
-      <SidebarNav activeView="services" collapsed={false} onViewChange={vi.fn()} onCollapsedChange={vi.fn()} />,
+      <SidebarNav activeView="services" onViewChange={vi.fn()} />,
     );
     const navigation = screen.getByRole("navigation", { name: "功能导航" });
     const primary = container.querySelector<HTMLElement>('[data-nav-section="primary"]');
@@ -34,7 +35,7 @@ describe("SidebarNav information architecture", () => {
 
   it("dispatches the selected lower-section view", () => {
     const onViewChange = vi.fn();
-    render(<SidebarNav activeView="services" collapsed={false} onViewChange={onViewChange} onCollapsedChange={vi.fn()} />);
+    render(<SidebarNav activeView="services" onViewChange={onViewChange} />);
 
     fireEvent.click(screen.getByRole("button", { name: /^设置/ }));
     expect(onViewChange).toHaveBeenCalledOnce();
@@ -43,25 +44,22 @@ describe("SidebarNav information architecture", () => {
 
   it("marks Settings when an application update is available", () => {
     const { container } = render(
-      <SidebarNav activeView="services" collapsed={false} updateAvailable onViewChange={vi.fn()} onCollapsedChange={vi.fn()} />,
+      <SidebarNav activeView="services" updateAvailable onViewChange={vi.fn()} />,
     );
 
     expect(container.querySelector("[data-update-indicator]")).not.toBeNull();
     expect(screen.getByRole("button", { name: /设置.*有可用更新/ })).toBeTruthy();
   });
 
-  it("switches between expanded labels and the icon-only collapsed mode", () => {
-    const onCollapsedChange = vi.fn();
-    const { container, rerender } = render(
-      <SidebarNav activeView="services" collapsed={false} onViewChange={vi.fn()} onCollapsedChange={onCollapsedChange} />,
-    );
+  it("keeps a fixed icon-only rail and reveals the destination name on hover", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<SidebarNav activeView="services" onViewChange={vi.fn()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "收起菜单栏" }));
-    expect(onCollapsedChange).toHaveBeenCalledWith(true);
+    expect(container.querySelector("aside")?.getAttribute("data-rail")).toBe("icon-only");
+    expect(screen.queryByRole("button", { name: "收起菜单栏" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "展开菜单栏" })).toBeNull();
 
-    rerender(<SidebarNav activeView="services" collapsed onViewChange={vi.fn()} onCollapsedChange={onCollapsedChange} />);
-    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("true");
-    expect(screen.getByRole("button", { name: "服务控制" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "展开菜单栏" })).toBeTruthy();
+    await user.hover(screen.getByRole("button", { name: "端口进程" }));
+    expect((await screen.findByRole("tooltip")).textContent).toContain("端口进程");
   });
 });

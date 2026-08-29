@@ -1,151 +1,119 @@
 "use client";
 
-import { Network, PanelLeftClose, PanelLeftOpen, ServerCog, Settings, Workflow } from "lucide-react";
+import { Network, ServerCog, Settings, Workflow } from "lucide-react";
 
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
 import type { ViewId } from "@/lib/types";
 
 interface SidebarNavProps {
   activeView: ViewId;
-  collapsed: boolean;
   updateAvailable?: boolean;
   onViewChange: (view: ViewId) => void;
-  onCollapsedChange: (collapsed: boolean) => void;
 }
 
 interface NavigationItem {
   id: ViewId;
   label: string;
-  description: string;
   icon: typeof ServerCog;
 }
 
 const primaryItems: NavigationItem[] = [
-  { id: "services", label: "服务控制", description: "进程与实时日志", icon: ServerCog },
-  { id: "ports", label: "端口进程", description: "监听端口与占用", icon: Network },
-  { id: "jenkins", label: "Jenkins", description: "任务、构建与日志", icon: Workflow },
+  { id: "services", label: "服务控制", icon: ServerCog },
+  { id: "ports", label: "端口进程", icon: Network },
+  { id: "jenkins", label: "Jenkins", icon: Workflow },
 ];
 
 const secondaryItems: NavigationItem[] = [
-  { id: "settings", label: "设置", description: "外观、更新与连接偏好", icon: Settings },
+  { id: "settings", label: "设置", icon: Settings },
 ];
 
 function NavigationButton({
   activeView,
   id,
   label,
-  description,
   icon: Icon,
-  collapsed,
   showUpdateIndicator = false,
   onViewChange,
-}: Omit<SidebarNavProps, "updateAvailable" | "onCollapsedChange"> & NavigationItem & {
+}: SidebarNavProps & NavigationItem & {
   showUpdateIndicator?: boolean;
 }) {
   const active = activeView === id;
+  const accessibleLabel = `${label}${showUpdateIndicator ? "，有可用更新" : ""}`;
+
   return (
-    <button
-      className={cn(
-        "group relative flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] font-medium text-muted-foreground outline-none transition-colors",
-        "hover:bg-accent/70 hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/80",
-        "max-[767px]:h-full max-[767px]:min-h-0 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:basis-0 max-[767px]:flex-col max-[767px]:justify-center max-[767px]:gap-1 max-[767px]:px-1 max-[767px]:py-1.5 max-[767px]:text-center max-[767px]:text-[10px]",
-        collapsed && "min-[768px]:justify-center min-[768px]:px-2",
-        active && "bg-accent text-accent-foreground",
-      )}
-      type="button"
-      data-view={id}
-      aria-controls={`${id}View`}
-      aria-current={active ? "page" : undefined}
-      aria-label={collapsed ? `${label}${showUpdateIndicator ? "，有可用更新" : ""}` : undefined}
-      title={label}
-      onClick={() => onViewChange(id)}
-    >
-      <span
-        className={cn(
-          "absolute inset-y-2 left-0 w-0.5 rounded-r-full bg-transparent",
-          "max-[767px]:inset-x-3 max-[767px]:top-auto max-[767px]:bottom-0 max-[767px]:h-0.5 max-[767px]:w-auto max-[767px]:rounded-t-full max-[767px]:rounded-r-none",
-          active && "bg-primary",
-        )}
-        aria-hidden="true"
-      />
-      <Icon className={cn("size-4 shrink-0", active && "text-primary")} strokeWidth={1.8} aria-hidden="true" />
-      <span className={cn("min-w-0 flex-1 max-[767px]:flex-none", collapsed && "min-[768px]:hidden")}>
-        <span className="block truncate leading-none">{label}</span>
-        <span className="mt-1 block truncate text-[9px] font-normal text-muted-foreground max-[767px]:hidden">{description}</span>
-      </span>
-      {showUpdateIndicator ? (
-        <>
-          <span
-            className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-primary shadow-[0_0_0_2px_var(--sidebar)] max-[767px]:shadow-[0_0_0_2px_var(--card)]"
-            data-update-indicator
-            aria-hidden="true"
-          />
-          <span className="sr-only">有可用更新</span>
-        </>
-      ) : null}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          className={cn(
+            "group relative flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors",
+            "hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/80",
+            "max-[767px]:h-full max-[767px]:w-auto max-[767px]:min-h-0 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:basis-0 max-[767px]:flex-col max-[767px]:gap-1 max-[767px]:rounded-lg max-[767px]:px-1 max-[767px]:py-1.5 max-[767px]:text-[10px]",
+            active && "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 hover:text-primary-foreground",
+          )}
+          type="button"
+          data-view={id}
+          aria-controls={`${id}View`}
+          aria-current={active ? "page" : undefined}
+          aria-label={accessibleLabel}
+          onClick={() => onViewChange(id)}
+        >
+          <Icon className="size-[18px] shrink-0" strokeWidth={1.8} aria-hidden="true" />
+          <span className="hidden leading-none max-[767px]:block">{label}</span>
+          {showUpdateIndicator ? (
+            <span
+              className="absolute top-1 right-1 size-1.5 rounded-full bg-destructive shadow-[0_0_0_2px_var(--sidebar)] max-[767px]:shadow-[0_0_0_2px_var(--card)]"
+              data-update-indicator
+              aria-hidden="true"
+            />
+          ) : null}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8} className="hidden min-[768px]:block">
+        {label}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
-export function SidebarNav({
-  activeView,
-  collapsed,
-  updateAvailable = false,
-  onViewChange,
-  onCollapsedChange,
-}: SidebarNavProps) {
+export function SidebarNav({ activeView, updateAvailable = false, onViewChange }: SidebarNavProps) {
   return (
-    <aside
-      className={cn(
-        "flex min-h-0 flex-col border-r bg-[var(--sidebar)]",
-        "max-[767px]:fixed max-[767px]:inset-x-2 max-[767px]:bottom-[max(8px,env(safe-area-inset-bottom))] max-[767px]:z-50",
-        "max-[767px]:h-[58px] max-[767px]:flex-row max-[767px]:rounded-xl max-[767px]:border max-[767px]:bg-card/95 max-[767px]:p-1 max-[767px]:shadow-[var(--shadow-menu)] max-[767px]:backdrop-blur-xl",
-      )}
-      aria-label="主功能"
-      data-collapsed={collapsed}
-    >
-      <nav className="flex min-h-0 flex-1 flex-col max-[767px]:flex-row" aria-label="功能导航">
-        <div className="shrink-0 space-y-1 p-2 max-[767px]:flex max-[767px]:min-w-0 max-[767px]:flex-[2] max-[767px]:space-y-0 max-[767px]:p-0" data-nav-section="primary">
-          <p className={cn("mb-1 px-2 text-[10px] font-medium text-muted-foreground max-[767px]:hidden", collapsed && "min-[768px]:sr-only")}>工作区</p>
-          {primaryItems.map((item) => (
-            <NavigationButton key={item.id} {...item} activeView={activeView} collapsed={collapsed} onViewChange={onViewChange} />
-          ))}
-        </div>
+    <TooltipProvider delayDuration={250} skipDelayDuration={100}>
+      <aside
+        className={cn(
+          "flex min-h-0 flex-col border-r bg-[var(--sidebar)]",
+          "max-[767px]:fixed max-[767px]:inset-x-2 max-[767px]:bottom-[max(8px,env(safe-area-inset-bottom))] max-[767px]:z-50",
+          "max-[767px]:h-[58px] max-[767px]:flex-row max-[767px]:rounded-xl max-[767px]:border max-[767px]:bg-card/95 max-[767px]:p-1 max-[767px]:shadow-[var(--shadow-menu)] max-[767px]:backdrop-blur-xl",
+        )}
+        aria-label="主功能"
+        data-rail="icon-only"
+      >
+        <nav className="flex min-h-0 flex-1 flex-col max-[767px]:flex-row" aria-label="功能导航">
+          <div
+            className="flex shrink-0 flex-col items-center gap-1 p-1.5 max-[767px]:min-w-0 max-[767px]:flex-[3] max-[767px]:flex-row max-[767px]:gap-0 max-[767px]:p-0"
+            data-nav-section="primary"
+          >
+            {primaryItems.map((item) => (
+              <NavigationButton key={item.id} {...item} activeView={activeView} onViewChange={onViewChange} />
+            ))}
+          </div>
 
-        <div
-          className="mt-auto shrink-0 border-t p-2 max-[767px]:mt-0 max-[767px]:flex max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:border-t-0 max-[767px]:p-0"
-          data-nav-section="secondary"
-        >
-          {secondaryItems.map((item) => (
-            <NavigationButton
-              key={item.id}
-              {...item}
-              activeView={activeView}
-              collapsed={collapsed}
-              showUpdateIndicator={item.id === "settings" && updateAvailable}
-              onViewChange={onViewChange}
-            />
-          ))}
-        </div>
-      </nav>
-
-      <div className="shrink-0 border-t p-2 max-[767px]:hidden">
-        <button
-          className={cn(
-            "flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-medium text-muted-foreground outline-none transition-colors",
-            "hover:bg-accent/70 hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/80",
-            collapsed && "justify-center px-2",
-          )}
-          type="button"
-          aria-label={collapsed ? "展开菜单栏" : "收起菜单栏"}
-          aria-expanded={!collapsed}
-          title={collapsed ? "展开菜单栏" : "收起菜单栏"}
-          onClick={() => onCollapsedChange(!collapsed)}
-        >
-          {collapsed ? <PanelLeftOpen className="size-4 shrink-0" /> : <PanelLeftClose className="size-4 shrink-0" />}
-          {collapsed ? null : <span>收起菜单栏</span>}
-        </button>
-      </div>
-    </aside>
+          <div
+            className="mt-auto flex shrink-0 flex-col items-center gap-1 border-t p-1.5 max-[767px]:mt-0 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:flex-row max-[767px]:gap-0 max-[767px]:border-t-0 max-[767px]:p-0"
+            data-nav-section="secondary"
+          >
+            {secondaryItems.map((item) => (
+              <NavigationButton
+                key={item.id}
+                {...item}
+                activeView={activeView}
+                showUpdateIndicator={item.id === "settings" && updateAvailable}
+                onViewChange={onViewChange}
+              />
+            ))}
+          </div>
+        </nav>
+      </aside>
+    </TooltipProvider>
   );
 }
