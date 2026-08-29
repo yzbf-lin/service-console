@@ -352,6 +352,12 @@ manifest directory:
 }
 ```
 
+Windows working directories may contain spaces. Enter `D:\Programs\Clash for Windows` directly in
+the application without wrapping quotes, or use `D:/Programs/Clash for Windows`. In hand-written
+JSON, escape backslashes as `"D:\\Programs\\Clash for Windows"`; forward slashes need no escaping.
+When a command starts with an absolute `.exe`, `.com`, `.bat`, or `.cmd` path containing spaces,
+Service Console protects the executable path automatically when launching it on Windows.
+
 `project_apply_config` creates, updates, or skips unchanged definitions without deleting other
 services. An AI agent can then use `service_restart`, `service_status`, and `service_logs` to validate
 a code change. The bridge also exposes service lifecycle/configuration tools, port inspection, running

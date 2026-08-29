@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -24,12 +25,30 @@ _IS_WINDOWS = os.name == "nt"
 _CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
 _CREATE_SUSPENDED = getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 _SIGKILL = getattr(signal, "SIGKILL", 9)
+_WINDOWS_ABSOLUTE_EXECUTABLE = re.compile(
+    r"^(?P<executable>(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]*?\.(?:exe|com|bat|cmd))(?P<arguments>\s.*|)$",
+    re.IGNORECASE,
+)
 
 
 def _subprocess_group_options() -> dict[str, object]:
     if _IS_WINDOWS:
         return {"creationflags": _CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED}
     return {"start_new_session": True}
+
+
+def _prepare_shell_command(command: str) -> str:
+    """Quote an unquoted absolute Windows executable without rewriting its arguments."""
+
+    if not _IS_WINDOWS or command.startswith(('"', "'")):
+        return command
+    matched = _WINDOWS_ABSOLUTE_EXECUTABLE.fullmatch(command)
+    if matched is None:
+        return command
+    executable = matched.group("executable")
+    if not any(character.isspace() for character in executable):
+        return command
+    return f"{subprocess.list2cmdline([executable])}{matched.group('arguments')}"
 
 
 @dataclass(slots=True)
@@ -307,7 +326,7 @@ class ServiceManager:
             if not guardian_ready:
                 raise RuntimeError("process guardian did not become ready")
             process = await asyncio.create_subprocess_shell(
-                definition.command,
+                _prepare_shell_command(definition.command),
                 cwd=definition.cwd,
                 env=environment,
                 stdout=asyncio.subprocess.PIPE,

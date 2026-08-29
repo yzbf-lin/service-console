@@ -94,6 +94,28 @@ function renderDialog({
 }
 
 describe("ServiceFormDialog process import", () => {
+  it("accepts a Windows working directory containing spaces", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = renderDialog();
+
+    await user.type(screen.getByLabelText(/服务名称/), "clash");
+    await user.type(
+      screen.getByLabelText(/启动命令/),
+      "D:\\Programs\\Clash for Windows\\Clash for Windows.exe",
+    );
+    await user.type(
+      screen.getByLabelText(/工作目录/),
+      "D:\\Programs\\Clash for Windows",
+    );
+    await user.click(screen.getByRole("button", { name: "添加服务" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      name: "clash",
+      command: "D:\\Programs\\Clash for Windows\\Clash for Windows.exe",
+      cwd: "D:\\Programs\\Clash for Windows",
+    })));
+  });
+
   it("keeps long process commands from pushing import actions outside the dialog", async () => {
     const user = userEvent.setup();
     renderDialog({

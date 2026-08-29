@@ -414,7 +414,8 @@ export function ServiceFormDialog({
 
                 <label className="col-span-2 space-y-1.5 text-xs font-semibold max-[600px]:col-span-1">
                   <span>工作目录 <em className="not-italic text-destructive">*</em></span>
-                  <Input value={form.cwd} required placeholder="/absolute/path/to/project" className="font-mono text-xs" onChange={(event) => update("cwd", event.target.value)} />
+                  <Input value={form.cwd} required placeholder="/absolute/path/to/project 或 D:/Projects/My App" className="font-mono text-xs" onChange={(event) => update("cwd", event.target.value)} />
+                  <small className="block text-[10px] font-normal text-muted-foreground">支持带空格目录，无需添加外层引号；Windows 推荐使用正斜杠，反斜杠同样支持。</small>
                 </label>
 
                 <label className="col-span-2 space-y-1.5 text-xs font-semibold max-[600px]:col-span-1">
