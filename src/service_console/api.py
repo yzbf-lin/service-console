@@ -313,8 +313,15 @@ def create_app(
     async def get_jenkins_job(
         instance_id: str,
         job: Annotated[str, Query(min_length=1, max_length=1_000)],
+        include_parameter_options: bool = False,
     ) -> dict[str, dict[str, object]]:
-        return {"job": await jenkins_tool.get_job(instance_id, job=job)}
+        return {
+            "job": await jenkins_tool.get_job(
+                instance_id,
+                job=job,
+                include_parameter_options=include_parameter_options,
+            )
+        }
 
     @api.get("/jenkins/instances/{instance_id}/builds")
     async def list_jenkins_builds(

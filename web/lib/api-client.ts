@@ -99,7 +99,7 @@ export interface ServiceConsoleApiClient {
   deleteJenkinsInstance(id: string): Promise<void>;
   testJenkinsInstance(id: string): Promise<JenkinsConnectionResult>;
   listJenkinsJobs(id: string, folder?: string, query?: string): Promise<JenkinsJob[]>;
-  getJenkinsJob(id: string, job: string): Promise<JenkinsJob>;
+  getJenkinsJob(id: string, job: string, includeParameterOptions?: boolean): Promise<JenkinsJob>;
   listJenkinsBuilds(id: string, job: string, limit?: number): Promise<JenkinsBuild[]>;
   getJenkinsBuild(id: string, job: string, number: number): Promise<JenkinsBuild>;
   triggerJenkinsBuild(
@@ -129,7 +129,7 @@ function jenkinsPath(instanceId: string, suffix = ""): string {
   return `/api/jenkins/instances/${encodeURIComponent(instanceId)}${suffix}`;
 }
 
-function withQuery(path: string, values: Record<string, string | number | undefined>): string {
+function withQuery(path: string, values: Record<string, string | number | boolean | undefined>): string {
   const query = new URLSearchParams();
   Object.entries(values).forEach(([key, value]) => {
     if (value !== undefined && value !== "") query.set(key, String(value));
@@ -319,8 +319,11 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
     async listJenkinsJobs(id, folder = "", query = "") {
       return extractJenkinsJobs(await request<unknown>(withQuery(jenkinsPath(id, "/jobs"), { folder, query })));
     },
-    async getJenkinsJob(id, job) {
-      const payload = await request<unknown>(withQuery(jenkinsPath(id, "/job"), { job }));
+    async getJenkinsJob(id, job, includeParameterOptions = false) {
+      const payload = await request<unknown>(withQuery(jenkinsPath(id, "/job"), {
+        job,
+        include_parameter_options: includeParameterOptions || undefined,
+      }));
       return normalizeJenkinsJob(responseRecord(payload, "job"));
     },
     async listJenkinsBuilds(id, job, limit = 30) {

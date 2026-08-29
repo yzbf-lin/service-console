@@ -91,12 +91,14 @@ describe("Jenkins API client", () => {
         { name: "DRY_RUN", type: "BooleanParameterDefinition", description: "dry", default: true, choices: null },
         { name: "RETRIES", type: "IntegerParameterDefinition", description: "times", default: 2, choices: null },
         { name: "ENV", type: "ChoiceParameterDefinition", description: "env", default: "test", choices: ["test", "prod"] },
+        { name: "BRANCH", type: "choice", raw_type: "GitParameterDefinition", description: "branch", default: "master", choices: ["master", "feature/api"] },
       ],
       last_build: rawBuild,
     };
     const fetchMock = vi.fn<typeof fetch>();
     [
       { folder: "folder", jobs: [{ ...rawJob, last_build: { ...rawBuild, number: 0 } }] },
+      { job: rawJob },
       { job: rawJob },
       { job: "folder/job", builds: [{ ...rawBuild, number: 0 }, rawBuild] },
       { build: rawBuild },
@@ -114,7 +116,9 @@ describe("Jenkins API client", () => {
     const listedJobs = await client.listJenkinsJobs(rawInstance.id, "folder", "deploy");
     expect(listedJobs[0]?.lastBuild).toBeNull();
     const job = await client.getJenkinsJob(rawInstance.id, "folder/job");
-    expect(job.parameters.map((parameter) => parameter.type)).toEqual(["boolean", "number", "choice"]);
+    expect(job.parameters.map((parameter) => parameter.type)).toEqual(["boolean", "number", "choice", "choice"]);
+    const jobWithOptions = await client.getJenkinsJob(rawInstance.id, "folder/job", true);
+    expect(jobWithOptions.parameters.at(-1)?.choices).toEqual(["master", "feature/api"]);
     await expect(client.listJenkinsBuilds(rawInstance.id, "folder/job", 25)).resolves.toEqual([
       expect.objectContaining({ number: 42 }),
     ]);
@@ -134,6 +138,7 @@ describe("Jenkins API client", () => {
     expect(fetchMock.mock.calls.map(([path, init]) => [path, init?.method])).toEqual([
       ["/api/jenkins/instances/prod%2Fid/jobs?folder=folder&query=deploy", undefined],
       ["/api/jenkins/instances/prod%2Fid/job?job=folder%2Fjob", undefined],
+      ["/api/jenkins/instances/prod%2Fid/job?job=folder%2Fjob&include_parameter_options=true", undefined],
       ["/api/jenkins/instances/prod%2Fid/builds?job=folder%2Fjob&limit=25", undefined],
       ["/api/jenkins/instances/prod%2Fid/builds/42?job=folder%2Fjob", undefined],
       ["/api/jenkins/instances/prod%2Fid/builds?job=folder%2Fjob", "POST"],

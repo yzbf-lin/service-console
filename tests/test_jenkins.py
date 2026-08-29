@@ -673,6 +673,36 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
             return httpx.Response(200, json={"nodeName": "built-in"}, headers={"X-Jenkins": "2.479.1"})
         if request.method == "GET" and path == "/jenkins/job/Team A/job/release#1/api/json":
             if "parameterDefinitions" in tree:
+                environment_parameter: dict[str, object] = {
+                    "name": "ENV",
+                    "type": "ChoiceParameterDefinition",
+                    "description": "Target",
+                    "choices": ["staging", "production"],
+                }
+                password_parameter: dict[str, object] = {
+                    "name": "PASSWORD",
+                    "type": "PasswordParameterDefinition",
+                    "description": "Secret",
+                }
+                git_parameter: dict[str, object] = {
+                    "name": "BRANCH",
+                    "_class": "net.uaznia.lukanus.hudson.plugins.gitparameter.GitParameterDefinition",
+                    "description": "Branch",
+                }
+                if "defaultParameterValue" in tree:
+                    environment_parameter["defaultParameterValue"] = {"value": "staging"}
+                    password_parameter["defaultParameterValue"] = {"value": "must-not-leak"}
+                    git_parameter["defaultParameterValue"] = {"value": "master"}
+                if "allValueItems" in tree:
+                    git_parameter["allValueItems"] = {
+                        "values": [
+                            {"name": "master", "value": "master"},
+                            {"name": "feature/api", "value": "feature/api"},
+                            {"name": "duplicate", "value": "master"},
+                            {"name": "invalid", "value": None},
+                        ],
+                        "errors": [],
+                    }
                 return httpx.Response(
                     200,
                     json={
@@ -687,19 +717,9 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
                         "actions": [
                             {
                                 "parameterDefinitions": [
-                                    {
-                                        "name": "ENV",
-                                        "type": "ChoiceParameterDefinition",
-                                        "description": "Target",
-                                        "defaultParameterValue": {"value": "staging"},
-                                        "choices": ["staging", "production"],
-                                    },
-                                    {
-                                        "name": "PASSWORD",
-                                        "type": "PasswordParameterDefinition",
-                                        "description": "Secret",
-                                        "defaultParameterValue": {"value": "must-not-leak"},
-                                    },
+                                    environment_parameter,
+                                    password_parameter,
+                                    git_parameter,
                                 ]
                             }
                         ],
@@ -826,12 +846,28 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
             "type": "choice",
             "raw_type": "ChoiceParameterDefinition",
             "description": "Target",
-            "default": "staging",
+            "default": None,
             "choices": ["staging", "production"],
         }
         assert job["parameters"][1]["type"] == "password"
         assert job["parameters"][1]["default"] is None
+        assert job["parameters"][2] == {
+            "name": "BRANCH",
+            "type": "choice",
+            "raw_type": "net.uaznia.lukanus.hudson.plugins.gitparameter.GitParameterDefinition",
+            "description": "Branch",
+            "default": None,
+            "choices": None,
+        }
         assert "must-not-leak" not in json.dumps(job)
+
+        job_with_options = client.get(
+            f"/api/jenkins/instances/{instance_id}/job",
+            params={"job": "Team A/release#1", "include_parameter_options": True},
+        ).json()["job"]
+        assert job_with_options["parameters"][0]["default"] == "staging"
+        assert job_with_options["parameters"][2]["default"] == "master"
+        assert job_with_options["parameters"][2]["choices"] == ["master", "feature/api"]
 
         builds = client.get(
             f"/api/jenkins/instances/{instance_id}/builds",
@@ -907,6 +943,16 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
     assert created_clients and all(client.is_closed for client in created_clients)
     assert crumb_calls == 3
     assert all("super-secret-token" not in str(request.url) for request in observed)
+    job_detail_trees = [
+        request.url.params.get("tree", "")
+        for request in observed
+        if request.method == "GET"
+        and request.url.path == "/jenkins/job/Team A/job/release#1/api/json"
+        and "parameterDefinitions" in request.url.params.get("tree", "")
+    ]
+    assert len(job_detail_trees) == 3
+    assert sum("allValueItems" in tree for tree in job_detail_trees) == 1
+    assert sum("defaultParameterValue" in tree for tree in job_detail_trees) == 1
 
 
 def test_build_trigger_failure_is_not_retried_and_error_is_redacted(tmp_path: Path) -> None:

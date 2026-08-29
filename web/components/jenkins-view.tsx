@@ -52,6 +52,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { JenkinsInstanceDialog, type JenkinsInstanceDialogMode } from "@/components/jenkins-instance-dialog";
 import { XtermLogViewer } from "@/components/xterm-log-viewer";
@@ -158,6 +159,38 @@ function connectionCopy(state: ConnectionViewState | undefined): string {
   return state.detail || "连接异常";
 }
 
+function ParameterChoiceSelect({
+  choices,
+  name,
+  onValueChange,
+  value,
+}: {
+  choices: string[];
+  name: string;
+  onValueChange: (value: string) => void;
+  value: string;
+}) {
+  const selectedIndex = choices.indexOf(value);
+  return (
+    <Select
+      value={selectedIndex >= 0 ? String(selectedIndex) : undefined}
+      onValueChange={(token) => {
+        const selected = choices[Number(token)];
+        if (selected !== undefined) onValueChange(selected);
+      }}
+    >
+      <SelectTrigger className="h-8 text-xs" aria-label={`参数 ${name}`}>
+        <SelectValue placeholder="请选择" />
+      </SelectTrigger>
+      <SelectContent>
+        {choices.map((choice, index) => (
+          <SelectItem key={`${choice}-${index}`} value={String(index)}>{choice || "（空值）"}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 export function JenkinsView({ active, api, refreshSignal, theme, onError, onSuccess }: JenkinsViewProps) {
   const [instances, setInstances] = useState<JenkinsInstance[]>([]);
   const [instancesLoaded, setInstancesLoaded] = useState(false);
@@ -178,6 +211,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const [jobsLoading, setJobsLoading] = useState(false);
   const [selectedJobName, setSelectedJobName] = useState("");
   const [jobDetail, setJobDetail] = useState<JenkinsJob | null>(null);
+  const [triggerJob, setTriggerJob] = useState<JenkinsJob | null>(null);
   const [builds, setBuilds] = useState<JenkinsBuild[]>([]);
   const [buildsLoading, setBuildsLoading] = useState(false);
   const [selectedBuildNumber, setSelectedBuildNumber] = useState<number | null>(null);
@@ -187,6 +221,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const [activityTab, setActivityTab] = useState<ActivityTab>("builds");
   const [operationRevision, setOperationRevision] = useState(0);
   const [busyAction, setBusyAction] = useState("");
+  const [preparingBuild, setPreparingBuild] = useState(false);
 
   const [triggerOpen, setTriggerOpen] = useState(false);
   const [parameterValues, setParameterValues] = useState<Record<string, string | boolean>>({});
@@ -209,6 +244,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const jobRequestRef = useRef(0);
   const buildRequestRef = useRef(0);
   const queueRequestRef = useRef(0);
+  const prepareRequestRef = useRef(0);
   const pollingErrorsRef = useRef(new Set<string>());
 
   const activeInstance = useMemo(
@@ -218,6 +254,10 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const unsupportedFileParameters = useMemo(
     () => jobDetail?.parameters.filter((parameter) => parameter.type === "file") ?? [],
     [jobDetail],
+  );
+  const triggerUnsupportedFileParameters = useMemo(
+    () => triggerJob?.parameters.filter((parameter) => parameter.type === "file") ?? [],
+    [triggerJob],
   );
   const selectedBuildUrl = useMemo(
     () => activeInstance && selectedBuild
@@ -252,6 +292,10 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     setJobs([]);
     setSelectedJobName("");
     setJobDetail(null);
+    prepareRequestRef.current += 1;
+    setPreparingBuild(false);
+    setTriggerJob(null);
+    setTriggerOpen(false);
     setBuilds([]);
     setSelectedBuildNumber(null);
     setSelectedBuild(null);
@@ -309,6 +353,10 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     if (active) return;
     instancesRequestRef.current += 1;
     invalidateWorkspace();
+    prepareRequestRef.current += 1;
+    setPreparingBuild(false);
+    setTriggerJob(null);
+    setTriggerOpen(false);
   }, [active, invalidateWorkspace]);
 
   useEffect(() => {
@@ -377,6 +425,8 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     const jobName = selectedJobName;
     if (!active || !instanceId || !jobName) {
       setJobDetail(null);
+      setTriggerJob(null);
+      setTriggerOpen(false);
       setBuilds([]);
       setSelectedBuildNumber(null);
       return;
@@ -554,6 +604,10 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const selectJob = useCallback((job: JenkinsJob) => {
     if (isFolder(job)) {
       jobsRequestRef.current += 1;
+      prepareRequestRef.current += 1;
+      setPreparingBuild(false);
+      setTriggerJob(null);
+      setTriggerOpen(false);
       setFolder(job.fullName);
       setSelectedJobName("");
       selectedJobNameRef.current = "";
@@ -562,6 +616,10 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     if (job.fullName !== selectedJobNameRef.current) {
       jobRequestRef.current += 1;
       buildRequestRef.current += 1;
+      prepareRequestRef.current += 1;
+      setPreparingBuild(false);
+      setTriggerJob(null);
+      setTriggerOpen(false);
       setJobDetail(null);
       setBuilds([]);
       setSelectedBuildNumber(null);
@@ -574,21 +632,52 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     setMobilePane("activity");
   }, []);
 
-  const prepareBuild = useCallback(() => {
-    if (!jobDetail?.buildable || jobDetail.parameters.some((parameter) => parameter.type === "file")) return;
-    const initial: Record<string, string | boolean> = {};
-    jobDetail.parameters.forEach((parameter) => {
-      initial[parameter.name] = typeof parameter.defaultValue === "boolean"
-        ? parameter.defaultValue
-        : parameter.defaultValue === null ? "" : String(parameter.defaultValue);
-    });
-    setParameterValues(initial);
-    setTriggerOpen(true);
-  }, [jobDetail]);
+  const prepareBuild = useCallback(async () => {
+    const instanceId = activeInstance?.id;
+    const job = jobDetail;
+    if (!instanceId || !job?.buildable || job.parameters.some((parameter) => parameter.type === "file")) return;
+    const requestId = ++prepareRequestRef.current;
+    setPreparingBuild(true);
+    try {
+      const prepared = await api.getJenkinsJob(instanceId, job.fullName, true);
+      if (
+        requestId !== prepareRequestRef.current
+        || activeInstanceIdRef.current !== instanceId
+        || selectedJobNameRef.current !== job.fullName
+      ) return;
+      const fileParameter = prepared.parameters.find((parameter) => parameter.type === "file");
+      if (fileParameter) {
+        onError("暂不支持文件参数", `任务包含文件参数 ${fileParameter.name}，请在 Jenkins 页面运行`);
+        return;
+      }
+      const initial: Record<string, string | boolean> = {};
+      prepared.parameters.forEach((parameter) => {
+        if (typeof parameter.defaultValue === "boolean") {
+          initial[parameter.name] = parameter.defaultValue;
+          return;
+        }
+        const defaultValue = parameter.defaultValue === null ? "" : String(parameter.defaultValue);
+        initial[parameter.name] = parameter.choices.length
+          ? (parameter.choices.includes(defaultValue) ? defaultValue : parameter.choices[0] ?? "")
+          : defaultValue;
+      });
+      setTriggerJob(prepared);
+      setParameterValues(initial);
+      setTriggerOpen(true);
+    } catch (error) {
+      if (
+        requestId === prepareRequestRef.current
+        && activeInstanceIdRef.current === instanceId
+        && selectedJobNameRef.current === job.fullName
+      ) onError("读取 Jenkins 构建参数失败", errorText(error));
+    } finally {
+      if (requestId === prepareRequestRef.current) setPreparingBuild(false);
+    }
+  }, [activeInstance?.id, api, jobDetail, onError]);
 
   const confirmBuild = useCallback(async () => {
     const instanceId = activeInstance?.id;
-    const job = jobDetail;
+    const job = triggerJob;
     if (!instanceId || !job) return;
     const parameters: Record<string, string | number | boolean> = {};
     let invalidNumericParameter = "";
@@ -620,6 +709,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     try {
       const queued = await api.triggerJenkinsBuild(instanceId, job.fullName, parameters);
       setTriggerOpen(false);
+      setTriggerJob(null);
       setActivityTab("queue");
       setMobilePane("activity");
       onSuccess("Jenkins 构建已提交", queued.id === null ? job.fullName : `${job.fullName} · 队列 #${queued.id}`);
@@ -629,7 +719,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     } finally {
       setBusyAction("");
     }
-  }, [activeInstance?.id, api, jobDetail, onError, onSuccess, parameterValues]);
+  }, [activeInstance?.id, api, onError, onSuccess, parameterValues, triggerJob]);
 
   const confirmStop = useCallback(async () => {
     const instanceId = activeInstance?.id;
@@ -768,10 +858,10 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         <Button
           className="h-7 px-2 text-[10px]"
           size="sm"
-          disabled={!jobDetail?.buildable || Boolean(busyAction) || unsupportedFileParameters.length > 0}
+          disabled={!jobDetail?.buildable || preparingBuild || Boolean(busyAction) || unsupportedFileParameters.length > 0}
           title={unsupportedFileParameters.length ? "文件上传参数需要在 Jenkins 页面填写" : undefined}
-          onClick={prepareBuild}
-        ><Play className="size-3" />运行</Button>
+          onClick={() => void prepareBuild()}
+        >{preparingBuild ? <LoaderCircle className="size-3 animate-spin" /> : <Play className="size-3" />}运行</Button>
       </header>
       {unsupportedFileParameters.length ? (
         <div className="flex min-h-8 shrink-0 items-center gap-1.5 border-b border-warning/20 bg-warning/5 px-3 text-[9px] text-warning" role="note">
@@ -883,15 +973,27 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         </AlertDialogContent>
       </AlertDialog>
 
-      <Dialog open={triggerOpen} onOpenChange={(open) => !busyAction && setTriggerOpen(open)}>
+      <Dialog open={triggerOpen} onOpenChange={(open) => {
+        if (busyAction) return;
+        setTriggerOpen(open);
+        if (!open) setTriggerJob(null);
+      }}>
         <DialogContent className="max-w-md gap-3 p-5">
-          <DialogHeader><DialogTitle className="text-base">运行“{jobDetail?.fullName}”</DialogTitle><DialogDescription className="text-xs">提交后任务会进入当前 Jenkins 实例的构建队列。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle className="text-base">运行“{triggerJob?.fullName}”</DialogTitle><DialogDescription className="text-xs">提交后任务会进入当前 Jenkins 实例的构建队列。</DialogDescription></DialogHeader>
           <div className="grid max-h-[50vh] gap-3 overflow-auto">
-            {jobDetail?.parameters.map((parameter) => (
+            {triggerJob?.parameters.map((parameter) => (
               <label key={parameter.name} className="grid gap-1 text-[11px] font-medium">
                 <span>{parameter.name}<span className="ml-1 font-normal text-muted-foreground">{parameter.description}</span></span>
                 {parameter.choices.length ? (
-                  <select className="h-8 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/80" value={String(parameterValues[parameter.name] ?? "")} onChange={(event) => setParameterValues((current) => ({ ...current, [parameter.name]: event.target.value }))}>{parameter.choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}</select>
+                  <ParameterChoiceSelect
+                    choices={parameter.choices}
+                    name={parameter.name}
+                    value={String(parameterValues[parameter.name] ?? "")}
+                    onValueChange={(value) => setParameterValues((current) => ({
+                      ...current,
+                      [parameter.name]: value,
+                    }))}
+                  />
                 ) : parameter.type === "boolean" ? (
                   <span className="flex h-8 items-center gap-2 rounded-md border px-2"><Switch checked={Boolean(parameterValues[parameter.name])} onCheckedChange={(checked) => setParameterValues((current) => ({ ...current, [parameter.name]: checked }))} aria-label={`参数 ${parameter.name}`} /><span className="text-[10px] text-muted-foreground">{parameterValues[parameter.name] ? "true" : "false"}</span></span>
                 ) : parameter.type === "file" ? (
@@ -910,9 +1012,9 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
                 )}
               </label>
             ))}
-            {!jobDetail?.parameters.length ? <p className="rounded-lg border bg-muted/25 p-3 text-xs text-muted-foreground">该任务没有参数，将直接使用 Jenkins 中保存的配置运行。</p> : null}
+            {!triggerJob?.parameters.length ? <p className="rounded-lg border bg-muted/25 p-3 text-xs text-muted-foreground">该任务没有参数，将直接使用 Jenkins 中保存的配置运行。</p> : null}
           </div>
-          <DialogFooter><Button variant="outline" size="sm" disabled={Boolean(busyAction)} onClick={() => setTriggerOpen(false)}>取消</Button><Button size="sm" disabled={Boolean(busyAction) || unsupportedFileParameters.length > 0} onClick={() => void confirmBuild()}>{busyAction === "trigger" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}确认运行</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" size="sm" disabled={Boolean(busyAction)} onClick={() => { setTriggerOpen(false); setTriggerJob(null); }}>取消</Button><Button size="sm" disabled={Boolean(busyAction) || triggerUnsupportedFileParameters.length > 0} onClick={() => void confirmBuild()}>{busyAction === "trigger" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}确认运行</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

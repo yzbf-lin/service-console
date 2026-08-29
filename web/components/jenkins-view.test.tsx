@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JenkinsView } from "@/components/jenkins-view";
@@ -114,8 +115,12 @@ function api(): ServiceConsoleApiClient {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((nextResolve) => { resolve = nextResolve; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, reject, resolve };
 }
 
 function renderView(onError = vi.fn(), onSuccess = vi.fn()) {
@@ -242,7 +247,8 @@ describe("JenkinsView", () => {
     await waitFor(() => expect(mocks.cancelJenkinsQueueItem).toHaveBeenCalledWith("a", 10));
 
     fireEvent.click(screen.getByRole("button", { name: "运行" }));
-    expect(screen.getByPlaceholderText("留空使用 Jenkins 默认值")).toBeTruthy();
+    expect(await screen.findByPlaceholderText("留空使用 Jenkins 默认值")).toBeTruthy();
+    expect(mocks.getJenkinsJob).toHaveBeenCalledWith("a", "Job A", true);
     fireEvent.change(screen.getByLabelText(/RETRIES/), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: "确认运行" }));
     await waitFor(() => expect(mocks.triggerJenkinsBuild).toHaveBeenCalledWith("a", "Job A", {
@@ -250,6 +256,84 @@ describe("JenkinsView", () => {
       RETRIES: 3,
     }));
     expect(mocks.triggerJenkinsBuild.mock.calls[0]?.[2]).not.toHaveProperty("SECRET");
+  });
+
+  it("loads Git parameter options on demand and submits the selected branch", async () => {
+    const metadataJob = jobFixture("Job A", [
+      { name: "BRANCH", type: "choice", rawType: "GitParameterDefinition", description: "选择分支", defaultValue: "master", choices: [] },
+    ]);
+    const runnableJob = jobFixture("Job A", [
+      { ...metadataJob.parameters[0]!, choices: ["master", "feature/api", "release"] },
+    ]);
+    mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
+    mocks.getJenkinsJob.mockImplementation(async (_id: string, _job: string, includeOptions?: boolean) => (
+      includeOptions ? runnableJob : metadataJob
+    ));
+    renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(runButton);
+    const branchSelect = await screen.findByRole("combobox", { name: "参数 BRANCH" });
+    expect(branchSelect.textContent).toContain("master");
+
+    const user = userEvent.setup();
+    await user.click(branchSelect);
+    await user.click(await screen.findByRole("option", { name: "feature/api" }));
+    await user.click(screen.getByRole("button", { name: "确认运行" }));
+
+    await waitFor(() => expect(mocks.triggerJenkinsBuild).toHaveBeenCalledWith("a", "Job A", {
+      BRANCH: "feature/api",
+    }));
+    expect(mocks.getJenkinsJob).toHaveBeenCalledWith("a", "Job A", true);
+    expect(mocks.getJenkinsJob.mock.calls.some((call) => call.length === 2)).toBe(true);
+  });
+
+  it("falls back to the first Git option when Jenkins returns an unavailable default", async () => {
+    const metadataJob = jobFixture("Job A", [
+      { name: "BRANCH", type: "choice", rawType: "GitParameterDefinition", description: "选择分支", defaultValue: "deleted", choices: [] },
+    ]);
+    const runnableJob = jobFixture("Job A", [
+      { ...metadataJob.parameters[0]!, choices: ["", "main"] },
+    ]);
+    mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
+    mocks.getJenkinsJob.mockImplementation(async (_id: string, _job: string, includeOptions?: boolean) => (
+      includeOptions ? runnableJob : metadataJob
+    ));
+    renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(runButton);
+    expect((await screen.findByRole("combobox", { name: "参数 BRANCH" })).textContent).toContain("（空值）");
+    fireEvent.click(screen.getByRole("button", { name: "确认运行" }));
+
+    await waitFor(() => expect(mocks.triggerJenkinsBuild).toHaveBeenCalledWith("a", "Job A", {
+      BRANCH: "",
+    }));
+  });
+
+  it("ignores a stale parameter failure after switching Jenkins instances", async () => {
+    const pending = deferred<JenkinsJob>();
+    mocks.getJenkinsJob.mockImplementation(async (_id: string, job: string, includeOptions?: boolean) => (
+      includeOptions ? pending.promise : jobFixture(job)
+    ));
+    const { onError } = renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(runButton);
+    await waitFor(() => expect(mocks.getJenkinsJob).toHaveBeenCalledWith("a", "Job A", true));
+
+    fireEvent.click(screen.getByText("Jenkins B").closest("button") as HTMLButtonElement);
+    await waitFor(() => expect(screen.getAllByText("Job B").length).toBeGreaterThan(0));
+    await act(async () => {
+      pending.reject(new Error("stale parameter failure"));
+      await Promise.resolve();
+    });
+
+    expect(onError.mock.calls.some(([title]) => title === "读取 Jenkins 构建参数失败")).toBe(false);
+    expect(screen.queryByRole("dialog", { name: /运行/ })).toBeNull();
   });
 
   it("blocks local triggering when a Jenkins job requires a file parameter", async () => {

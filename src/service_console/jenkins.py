@@ -419,7 +419,11 @@ class JenkinsGateway:
         token: str,
         *,
         job: str,
+        include_parameter_options: bool = False,
     ) -> dict[str, object]:
+        parameter_fields = "name,type,_class,description,choices"
+        if include_parameter_options:
+            parameter_fields += ",defaultParameterValue[value],allValueItems[values[name,value],errors]"
         response = await self._request(
             instance,
             token,
@@ -428,10 +432,8 @@ class JenkinsGateway:
             params={
                 "tree": (
                     "name,fullName,url,color,_class,buildable,inQueue,description,"
-                    "actions[_class,parameterDefinitions["
-                    "name,type,_class,description,defaultParameterValue[value],choices]],"
-                    "property[_class,parameterDefinitions["
-                    "name,type,_class,description,defaultParameterValue[value],choices]],"
+                    f"actions[_class,parameterDefinitions[{parameter_fields}]],"
+                    f"property[_class,parameterDefinitions[{parameter_fields}]],"
                     "lastBuild[number,url,displayName,fullDisplayName,building,result,timestamp,duration,"
                     "estimatedDuration,queueId,description]"
                 )
@@ -912,6 +914,7 @@ class JenkinsGateway:
                         or "StringParameterDefinition"
                     )
                     parameter_type = _parameter_kind(raw_type)
+                    choices = _parameter_choices(definition)
                     result.append(
                         {
                             "name": name,
@@ -923,11 +926,7 @@ class JenkinsGateway:
                                 if isinstance(default_value, dict) and parameter_type != "password"
                                 else None
                             ),
-                            "choices": (
-                                definition.get("choices")
-                                if isinstance(definition.get("choices"), list)
-                                else None
-                            ),
+                            "choices": choices,
                         }
                     )
         return result
@@ -1098,9 +1097,20 @@ class JenkinsService:
         instance, token = await self._connection(instance_id)
         return await self.gateway.list_jobs(instance, token, folder=folder, query=query)
 
-    async def get_job(self, instance_id: str, *, job: str) -> dict[str, object]:
+    async def get_job(
+        self,
+        instance_id: str,
+        *,
+        job: str,
+        include_parameter_options: bool = False,
+    ) -> dict[str, object]:
         instance, token = await self._connection(instance_id)
-        return await self.gateway.get_job(instance, token, job=job)
+        return await self.gateway.get_job(
+            instance,
+            token,
+            job=job,
+            include_parameter_options=include_parameter_options,
+        )
 
     async def list_builds(self, instance_id: str, *, job: str, limit: int) -> list[dict[str, object]]:
         instance, token = await self._connection(instance_id)
@@ -1267,6 +1277,8 @@ def _job_status(value: object) -> str:
 
 def _parameter_kind(value: str) -> str:
     class_name = value.casefold()
+    if "gitparameter" in class_name:
+        return "choice"
     if "boolean" in class_name:
         return "boolean"
     if "choice" in class_name:
@@ -1284,6 +1296,29 @@ def _parameter_kind(value: str) -> str:
     if "run" in class_name:
         return "run"
     return "string"
+
+
+def _parameter_choices(definition: Mapping[str, Any]) -> list[str] | None:
+    raw_choices = definition.get("choices")
+    if isinstance(raw_choices, list):
+        candidates = raw_choices
+    else:
+        value_items = definition.get("allValueItems")
+        values = value_items.get("values") if isinstance(value_items, dict) else None
+        candidates = (
+            [item.get("value") for item in values if isinstance(item, dict)]
+            if isinstance(values, list)
+            else []
+        )
+
+    choices: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, str) or candidate in seen:
+            continue
+        seen.add(candidate)
+        choices.append(candidate)
+    return choices or None
 
 
 def _response_error(
