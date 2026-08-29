@@ -9,7 +9,7 @@ import secrets
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -21,12 +21,14 @@ import uvicorn
 
 from service_console import __version__
 from service_console.api import create_app
+from service_console.manager import ServiceManager
 from service_console.runtime import (
     RuntimeConnection,
     remove_runtime_connection,
     runtime_path,
     write_runtime_connection,
 )
+from service_console.shell_environment import resolve_desktop_service_environment
 from service_console.update import (
     UPDATE_READY_FILE_ENV,
     UPDATE_RESTART_ARGUMENTS_ENV,
@@ -51,6 +53,7 @@ class DesktopController:
         runtime_file: str | Path | None = None,
         update_ready_file: str | Path | None = None,
         update_ready_delay: float = 1.5,
+        service_environment: Mapping[str, str] | None = None,
     ) -> None:
         self.data_dir = Path(data_dir).expanduser()
         self.startup_timeout = startup_timeout
@@ -68,6 +71,11 @@ class DesktopController:
             Path(update_ready_file).expanduser() if update_ready_file is not None else None
         )
         self.update_ready_delay = max(0.0, update_ready_delay)
+        self.service_environment = (
+            resolve_desktop_service_environment()
+            if service_environment is None
+            else {str(key): str(value) for key, value in service_environment.items()}
+        )
         self.port: int | None = None
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
@@ -96,9 +104,14 @@ class DesktopController:
         if self._thread is not None:
             return
 
+        service_manager = ServiceManager(
+            self.data_dir,
+            base_environment=self.service_environment,
+        )
         application = create_app(
             data_dir=self.data_dir,
             token=self.token,
+            manager=service_manager,
             on_update_ready=self.schedule_application_exit,
             runtime_file=self.runtime_path,
         )

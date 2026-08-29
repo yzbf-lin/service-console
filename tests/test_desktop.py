@@ -61,6 +61,25 @@ def test_desktop_controller_honors_runtime_file_override(monkeypatch, tmp_path) 
     assert controller.runtime_path == runtime_file
 
 
+def test_desktop_controller_resolves_service_environment_once(monkeypatch, tmp_path) -> None:
+    calls = 0
+
+    def fake_environment() -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {"PATH": "/opt/homebrew/bin:/usr/bin", "UV_HOME": "/Users/me/.local/share/uv"}
+
+    monkeypatch.setattr(desktop_module, "resolve_desktop_service_environment", fake_environment)
+
+    controller = DesktopController(tmp_path)
+
+    assert controller.service_environment == {
+        "PATH": "/opt/homebrew/bin:/usr/bin",
+        "UV_HOME": "/Users/me/.local/share/uv",
+    }
+    assert calls == 1
+
+
 def test_desktop_stop_continues_when_runtime_cleanup_fails(monkeypatch, tmp_path) -> None:
     controller = DesktopController(tmp_path)
 
