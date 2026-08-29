@@ -1,10 +1,10 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JenkinsView } from "@/components/jenkins-view";
 import type { ServiceConsoleApiClient } from "@/lib/api-client";
-import type { JenkinsBuild, JenkinsInstance, JenkinsJob, JenkinsQueueItem } from "@/lib/types";
+import type { JenkinsBuild, JenkinsInstance, JenkinsJob, JenkinsJobParameter, JenkinsQueueItem } from "@/lib/types";
 
 vi.mock("@/components/xterm-log-viewer", () => ({
   XtermLogViewer: ({ appendRevision, appendText, text, resetKey }: { appendRevision?: number; appendText?: string; text: string; resetKey: string }) => (
@@ -45,7 +45,23 @@ function jobFixture(fullName = "Job A", parameters: JenkinsJob["parameters"] = [
     inQueue: false,
     description: "",
     parameters,
+    requiresExplicitPassword: false,
     lastBuild: { number: 42, url: "build/42", building: false, result: "SUCCESS", status: "SUCCESS" },
+  };
+}
+
+function parameterFixture(
+  input: Pick<JenkinsJobParameter, "name" | "type"> & Partial<Omit<JenkinsJobParameter, "name" | "type">>,
+): JenkinsJobParameter {
+  const choices = input.choices ?? [];
+  return {
+    description: "",
+    defaultValue: null,
+    optionsState: input.type === "choice" ? (choices.length ? "ready" : "not_loaded") : "not_applicable",
+    multiple: false,
+    header: "",
+    ...input,
+    choices,
   };
 }
 
@@ -225,9 +241,9 @@ describe("JenkinsView", () => {
 
   it("triggers parameterized builds, stops running builds, and cancels queue items with confirmation", async () => {
     const parameterizedJob = jobFixture("Job A", [
-      { name: "DRY_RUN", type: "boolean", description: "", defaultValue: true, choices: [] },
-      { name: "RETRIES", type: "number", description: "", defaultValue: 2, choices: [] },
-      { name: "SECRET", type: "password", description: "", defaultValue: null, choices: [] },
+      parameterFixture({ name: "DRY_RUN", type: "boolean", defaultValue: true }),
+      parameterFixture({ name: "RETRIES", type: "number", defaultValue: 2 }),
+      parameterFixture({ name: "SECRET", type: "password" }),
     ]);
     mocks.listJenkinsJobs.mockResolvedValue([parameterizedJob]);
     mocks.getJenkinsJob.mockResolvedValue(parameterizedJob);
@@ -260,10 +276,10 @@ describe("JenkinsView", () => {
 
   it("loads Git parameter options on demand and submits the selected branch", async () => {
     const metadataJob = jobFixture("Job A", [
-      { name: "BRANCH", type: "choice", rawType: "GitParameterDefinition", description: "选择分支", defaultValue: "master", choices: [] },
+      parameterFixture({ name: "BRANCH", type: "choice", rawType: "GitParameterDefinition", description: "选择分支", defaultValue: "master" }),
     ]);
     const runnableJob = jobFixture("Job A", [
-      { ...metadataJob.parameters[0]!, choices: ["master", "feature/api", "release"] },
+      { ...metadataJob.parameters[0]!, choices: ["master", "feature/api", "release"], optionsState: "ready" },
     ]);
     mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
     mocks.getJenkinsJob.mockImplementation(async (_id: string, _job: string, includeOptions?: boolean) => (
@@ -289,12 +305,161 @@ describe("JenkinsView", () => {
     expect(mocks.getJenkinsJob.mock.calls.some((call) => call.length === 2)).toBe(true);
   });
 
-  it("falls back to the first Git option when Jenkins returns an unavailable default", async () => {
+  it("renders a FileSystem List single-select and submits only a returned option", async () => {
     const metadataJob = jobFixture("Job A", [
-      { name: "BRANCH", type: "choice", rawType: "GitParameterDefinition", description: "选择分支", defaultValue: "deleted", choices: [] },
+      parameterFixture({
+        name: "ARTIFACT",
+        type: "choice",
+        rawType: "alex.jenkins.plugins.FileSystemListParameterDefinition",
+      }),
     ]);
     const runnableJob = jobFixture("Job A", [
-      { ...metadataJob.parameters[0]!, choices: ["", "main"] },
+      {
+        ...metadataJob.parameters[0]!,
+        defaultValue: "artifact-a.zip",
+        choices: ["artifact-a.zip", "artifact-b.zip"],
+        optionsState: "ready",
+      },
+    ]);
+    mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
+    mocks.getJenkinsJob.mockImplementation(async (_id: string, _job: string, includeOptions?: boolean) => (
+      includeOptions ? runnableJob : metadataJob
+    ));
+    renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(runButton);
+    const artifactSelect = await screen.findByRole("combobox", { name: "参数 ARTIFACT" });
+    const user = userEvent.setup();
+    await user.click(artifactSelect);
+    await user.click(await screen.findByRole("option", { name: "artifact-b.zip" }));
+    await user.click(screen.getByRole("button", { name: "确认运行" }));
+
+    await waitFor(() => expect(mocks.triggerJenkinsBuild).toHaveBeenCalledWith("a", "Job A", {
+      ARTIFACT: "artifact-b.zip",
+    }));
+  });
+
+  it("does not fall back to text input when a choice has no available options", async () => {
+    const metadataJob = jobFixture("Job A", [
+      parameterFixture({ name: "ARTIFACT", type: "choice" }),
+    ]);
+    const runnableJob = jobFixture("Job A", [
+      { ...metadataJob.parameters[0]!, optionsState: "unavailable" },
+    ]);
+    mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
+    mocks.getJenkinsJob.mockImplementation(async (_id: string, _job: string, includeOptions?: boolean) => (
+      includeOptions ? runnableJob : metadataJob
+    ));
+    renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(runButton);
+    const dialog = await screen.findByRole("dialog", { name: /运行/ });
+    expect(within(dialog).getByRole("alert").textContent).toContain("未能读取候选项");
+    expect(within(dialog).queryByRole("textbox")).toBeNull();
+    expect((within(dialog).getByRole("button", { name: "确认运行" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mocks.triggerJenkinsBuild).not.toHaveBeenCalled();
+  });
+
+  it("requires an explicit password when Jenkins dynamic form parameters use classic submission", async () => {
+    const metadataJob = jobFixture("Job A", [
+      parameterFixture({ name: "ARTIFACT", type: "choice" }),
+      parameterFixture({ name: "DEPLOY_PASSWORD", type: "password" }),
+    ]);
+    const runnableJob = jobFixture("Job A", [
+      parameterFixture({
+        name: "ARTIFACT",
+        type: "choice",
+        choices: ["artifact-a.zip"],
+        defaultValue: "artifact-a.zip",
+        optionsState: "ready",
+      }),
+      parameterFixture({ name: "DEPLOY_PASSWORD", type: "password" }),
+    ]);
+    runnableJob.requiresExplicitPassword = true;
+    mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
+    mocks.getJenkinsJob.mockImplementation(async (_id: string, _job: string, includeOptions?: boolean) => (
+      includeOptions ? runnableJob : metadataJob
+    ));
+    renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(runButton);
+    const dialog = await screen.findByRole("dialog", { name: /运行/ });
+    const password = within(dialog).getByPlaceholderText("此动态参数任务必须填写") as HTMLInputElement;
+    expect(password.required).toBe(true);
+    expect(password.placeholder).toBe("此动态参数任务必须填写");
+    const confirm = within(dialog).getByRole("button", { name: "确认运行" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+
+    await userEvent.type(password, "runtime-secret");
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(mocks.triggerJenkinsBuild).toHaveBeenCalledWith("a", "Job A", {
+      ARTIFACT: "artifact-a.zip",
+      DEPLOY_PASSWORD: "runtime-secret",
+    }));
+  });
+
+  it("shows separators but omits hidden and separator parameters from the payload", async () => {
+    const parameterizedJob = jobFixture("Job A", [
+      parameterFixture({ name: "GROUP", type: "separator", header: "发布选项" }),
+      parameterFixture({ name: "INTERNAL_TOKEN", type: "hidden", defaultValue: "server-owned" }),
+      parameterFixture({ name: "DRY_RUN", type: "boolean", defaultValue: true }),
+    ]);
+    mocks.listJenkinsJobs.mockResolvedValue([parameterizedJob]);
+    mocks.getJenkinsJob.mockResolvedValue(parameterizedJob);
+    renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(runButton);
+    const dialog = await screen.findByRole("dialog", { name: /运行/ });
+    expect(within(dialog).getByRole("group", { name: "发布选项" })).toBeTruthy();
+    expect(within(dialog).queryByText("INTERNAL_TOKEN")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认运行" }));
+
+    await waitFor(() => expect(mocks.triggerJenkinsBuild).toHaveBeenCalledWith("a", "Job A", {
+      DRY_RUN: true,
+    }));
+  });
+
+  it("explains dynamically discovered multiple parameters and disables confirmation", async () => {
+    const metadataJob = jobFixture("Job A", [
+      parameterFixture({ name: "ARTIFACTS", type: "choice" }),
+    ]);
+    const runnableJob = jobFixture("Job A", [
+      {
+        ...metadataJob.parameters[0]!,
+        choices: ["a.zip", "b.zip"],
+        optionsState: "ready",
+        multiple: true,
+      },
+    ]);
+    mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
+    mocks.getJenkinsJob.mockImplementation(async (_id: string, _job: string, includeOptions?: boolean) => (
+      includeOptions ? runnableJob : metadataJob
+    ));
+    renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(runButton);
+    const dialog = await screen.findByRole("dialog", { name: /运行/ });
+    expect(within(dialog).getByText(/多选参数暂不支持/)).toBeTruthy();
+    expect((within(dialog).getByRole("button", { name: "确认运行" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("falls back to the first Git option when Jenkins returns an unavailable default", async () => {
+    const metadataJob = jobFixture("Job A", [
+      parameterFixture({ name: "BRANCH", type: "choice", rawType: "GitParameterDefinition", description: "选择分支", defaultValue: "deleted" }),
+    ]);
+    const runnableJob = jobFixture("Job A", [
+      { ...metadataJob.parameters[0]!, choices: ["", "main"], optionsState: "ready" },
     ]);
     mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
     mocks.getJenkinsJob.mockImplementation(async (_id: string, _job: string, includeOptions?: boolean) => (
@@ -338,7 +503,7 @@ describe("JenkinsView", () => {
 
   it("blocks local triggering when a Jenkins job requires a file parameter", async () => {
     const fileJob = jobFixture("Upload Job", [
-      { name: "PACKAGE", type: "file", description: "artifact", defaultValue: null, choices: [] },
+      parameterFixture({ name: "PACKAGE", type: "file", description: "artifact" }),
     ]);
     mocks.listJenkinsJobs.mockResolvedValue([fileJob]);
     mocks.getJenkinsJob.mockResolvedValue(fileJob);
@@ -346,8 +511,36 @@ describe("JenkinsView", () => {
 
     const runButton = await screen.findByRole("button", { name: "运行" });
     await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(true));
-    expect(await screen.findByText(/文件参数 PACKAGE 暂不支持/)).toBeTruthy();
+    expect(await screen.findByText(/文件上传参数 PACKAGE 暂不支持/)).toBeTruthy();
     fireEvent.click(runButton);
+    expect(mocks.triggerJenkinsBuild).not.toHaveBeenCalled();
+  });
+
+  it("blocks reactive Active Choices parameters until dependency refresh is supported", async () => {
+    const reactiveJob = jobFixture("Reactive Job", [
+      parameterFixture({ name: "AMI", type: "unsupported", rawType: "org.biouno.unochoice.CascadeChoiceParameter" }),
+    ]);
+    mocks.listJenkinsJobs.mockResolvedValue([reactiveJob]);
+    mocks.getJenkinsJob.mockResolvedValue(reactiveJob);
+    renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(true));
+    expect(await screen.findByText(/级联或响应式参数 AMI 暂不支持/)).toBeTruthy();
+    expect(mocks.triggerJenkinsBuild).not.toHaveBeenCalled();
+  });
+
+  it("uses a generic unsupported message for non-reactive plugin controls", async () => {
+    const radioJob = jobFixture("Radio Job", [
+      parameterFixture({ name: "MODE", type: "unsupported", rawType: "PT_RADIO" }),
+    ]);
+    mocks.listJenkinsJobs.mockResolvedValue([radioJob]);
+    mocks.getJenkinsJob.mockResolvedValue(radioJob);
+    renderView();
+
+    const runButton = await screen.findByRole("button", { name: "运行" });
+    await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(true));
+    expect(await screen.findByText(/参数 MODE 的类型暂不支持/)).toBeTruthy();
     expect(mocks.triggerJenkinsBuild).not.toHaveBeenCalled();
   });
 
