@@ -162,25 +162,36 @@ function normalizeLastBuild(value: unknown): JenkinsLastBuild | null {
 function normalizeParameter(value: unknown): JenkinsJobParameter {
   const source = record(value);
   const defaultValue = source.default ?? source.default_value ?? source.defaultValue;
-  const rawType = text(source.type, "string").toLowerCase();
-  const type = rawType.includes("boolean")
-    ? "boolean"
-    : rawType.includes("choice")
-      ? "choice"
-      : rawType.includes("password")
-        ? "password"
-        : ["int", "integer", "number", "float", "double"].some((candidate) => rawType.includes(candidate))
-          ? "number"
-          : ["file", "credentials", "run", "text", "string"].find((candidate) => rawType === candidate || rawType.includes(`${candidate}parameter`)) ?? "string";
+  const rawType = text(source.raw_type ?? source.rawType ?? source.type, "string");
+  const className = rawType.toLowerCase();
+  const reportedType = text(source.type, "string").toLowerCase();
+  let type = "string";
+  if (reportedType === "unsupported" || className.includes("cascadechoiceparameter") || className.includes("dynamicreferenceparameter")) type = "unsupported";
+  else if (reportedType === "separator" || className.includes("parameterseparator")) type = "separator";
+  else if (reportedType === "hidden" || className.includes("hiddenparameter") || className.includes("hideparameter")) type = "hidden";
+  else if (className.includes("filesystemlistparameter") || reportedType.includes("choice")) type = "choice";
+  else if (reportedType.includes("boolean")) type = "boolean";
+  else if (reportedType.includes("password")) type = "password";
+  else if (["int", "integer", "number", "float", "double"].some((candidate) => reportedType.includes(candidate))) type = "number";
+  else type = ["file", "credentials", "run", "text", "string"]
+    .find((candidate) => reportedType === candidate || reportedType.includes(`${candidate}parameter`)) ?? "string";
+  const choices = Array.isArray(source.choices) ? source.choices.map((choice) => text(choice)) : [];
+  const rawOptionsState = text(source.options_state ?? source.optionsState).toLowerCase();
+  const optionsState = (["ready", "not_loaded", "unavailable", "not_applicable"] as const)
+    .find((state) => state === rawOptionsState)
+    ?? (type === "choice" ? (choices.length ? "ready" : "not_loaded") : "not_applicable");
   return {
     name: text(source.name),
     type,
-    rawType: text(source.raw_type ?? source.rawType ?? source.type),
+    rawType,
     description: text(source.description),
     defaultValue: ["string", "number", "boolean"].includes(typeof defaultValue)
       ? defaultValue as string | number | boolean
       : null,
-    choices: Array.isArray(source.choices) ? source.choices.map((choice) => text(choice)) : [],
+    choices,
+    optionsState,
+    multiple: bool(source.multiple),
+    header: text(source.header ?? source.section_header ?? source.sectionHeader),
   };
 }
 
@@ -197,6 +208,7 @@ export function normalizeJenkinsJob(value: unknown): JenkinsJob {
     inQueue: bool(source.in_queue ?? source.inQueue),
     description: text(source.description),
     parameters: records(source.parameters).map(normalizeParameter).filter((parameter) => parameter.name),
+    requiresExplicitPassword: bool(source.requires_explicit_password ?? source.requiresExplicitPassword),
     lastBuild: normalizeLastBuild(source.last_build ?? source.lastBuild),
   };
 }

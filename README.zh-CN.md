@@ -79,15 +79,25 @@ Jenkins 工作区支持 Job 搜索、Folder 导航、普通或参数化构建、
 Cmd/Ctrl+F 搜索及上一项/下一项导航，可使用原生选择复制、复制选中按钮和一键复制全部纯文本；日志持续
 追加时会保留当前搜索与选择状态。
 
-参数化构建会保留 Jenkins 默认值：密码参数留空时不会随请求提交，而是交由 Jenkins 使用已配置的默认值。
-当前版本会识别 Jenkins 文件参数，但不负责上传文件；包含文件参数的 Job 会标记为暂不支持，并禁止从
-Service Console 触发。需要上传文件时请直接在 Jenkins 中运行。
-参数发现同时兼容 Jenkins 核心的 `property` 导出和兼容的 `actions` 导出，因此 Pipeline 与 Freestyle
-任务被 Jenkins 标记为参数化后，会正确使用 `buildWithParameters` 触发。
-Git Parameter 插件提供的分支、Tag 等选项不是静态 `choices`。Service Console 会在点击“运行”时按需
-读取插件的 `allValueItems`，并使用 Radix Select 显示候选项；常规 4 秒状态轮询不会重复扫描远端 Git。
-该能力要求 Git Parameter 0.9.15+，且 Jenkins 账号具备目标 Job 的 Item/Build 权限；插件应保持为
-Jenkins Update Center 提供的最新安全修复版。
+普通参数化构建中，密码参数留空时不会随 `buildWithParameters` 提交，而是交由 Jenkins 使用已配置的
+默认值。真正的 Jenkins 文件上传参数仍暂不支持，并会禁用本地触发。File System List 插件并不是上传
+文件，而是选择 Jenkins 服务器上的构建产物，因此其单选模式现已支持。该插件会把部分文件系统错误渲染
+成没有机器可读错误标识的本地化单个选项；因此，只有一个选项且 Jenkins 未显式选中/配置默认值时会被
+视为歧义状态并禁用本地触发，可在 Jenkins 设置有效默认值或直接在 Jenkins 页面运行。
+
+参数发现同时兼容 Jenkins 核心的 `property` 导出和兼容的 `actions` 导出。静态选项与 Git Parameter
+的 `allValueItems` 直接来自 Remote API。Active Choices 与 File System List 的选项没有一致的 JSON
+导出，因此本地控制器只在打开“运行”时读取受大小限制的 Jenkins 构建表单，提取服务端渲染的下拉项，
+并在真正排队前再次刷新和校验。Hidden 参数不会返回给 UI，而是强制使用同一次 Jenkins 表单提供的值；
+Separator 只用于展示。包含这类表单插件的 Job 会使用 Jenkins classic structured `/build` 兼容旧插件，
+普通 Job 仍使用 `buildWithParameters`。
+
+Radio 控件、多选、级联/响应式 Active Choices 与真正的上传参数会明确提示并禁用；在支持依赖感知的
+动态刷新前，响应式选项仍需在 Jenkins 页面运行。若表单插件 Job 同时包含密码参数，则必须输入密码，因为 classic
+表单不能安全恢复一个不可读取的秘密默认值。动态选项发现读取的是当前账号可访问的 Job 构建表单；真正
+发送排队 POST 时 Jenkins 才校验 `Job/Build`，所以“能看到候选项”不代表“具有构建权限”。Jenkins、Git
+Parameter、Active Choices 与 File System List 插件都应保持安全修复版本。候选数据畸形、截断、过期或
+页面结构不兼容时，Service Console 会阻止提交，而不会退化成允许任意文本输入。
 
 ### 保存外观偏好
 
@@ -306,9 +316,11 @@ Jenkins。
 非幂等操作，Bridge 在传输失败后不会自动重试；停止构建和取消队列标记为 destructive，其余浏览、状态
 与日志工具标记为只读。Jenkins Token 不是 MCP 参数，也不会返回给 AI；本地控制器会根据选中的实例从
 系统 keyring 解析凭据。
-需要让 AI 查看 Git Parameter 的动态分支或 Tag 时，调用 `jenkins_job_status` 并设置
-`include_parameter_options=true`；该选项可能访问 Job 配置的 SCM，因此默认关闭。读取返回的 `choices`
-后，再把选中的值传给 `jenkins_build_trigger`。
+需要让 AI 查看 Git Parameter、Active Choices 或 File System List 的动态值时，调用
+`jenkins_job_status` 并设置 `include_parameter_options=true`，再把返回的某个 `choices` 值传给
+`jenkins_build_trigger`。动态发现可能查询 SCM 或 Jenkins 控制器配置的文件系统，因此默认不读取；触发
+前还会重新获取并校验，过期、空、File System List 单项歧义、多选、响应式或不可用的候选集都会在发送
+POST 前被拒绝。
 
 ## 浏览器控制器
 

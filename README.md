@@ -102,17 +102,32 @@ reports an internal host or default port. The console viewer supports Cmd/Ctrl+F
 previous/next navigation, native selection copy, a copy-selection button, and one-click copy-all as
 plain text. Progressive updates preserve the active search and selection.
 
-Parameterized builds preserve Jenkins defaults: leave a password parameter blank to omit it from the
-request and let Jenkins apply its configured default. Jenkins file parameters are detected but are
-not uploaded by this release; jobs containing one are marked unsupported and cannot be triggered
-from Service Console. Use Jenkins directly when a build requires a file upload.
+For ordinary parameterized builds, leaving a password blank omits it from `buildWithParameters` so
+Jenkins can apply its configured default. A true Jenkins file-upload parameter remains unsupported
+and disables local triggering. The File System List plugin is different: its value is a server-side
+artifact choice, not an upload, so Service Console supports its single-select mode. The plugin renders
+some filesystem errors as an ordinary, localized single option with no machine-readable error flag.
+Service Console therefore treats a one-item list without an explicitly selected/configured default as
+ambiguous and keeps local triggering disabled; set a valid default in Jenkins or run that case there.
+
 Parameter discovery supports both the Jenkins core `property` export and the compatible `actions`
-export, so Pipeline and Freestyle jobs use `buildWithParameters` whenever Jenkins marks them parameterized.
-Branches, tags, and other Git Parameter plugin values are dynamic rather than static `choices`.
-Service Console resolves the plugin's `allValueItems` only when **Run** is opened and renders the
-result with Radix Select; the regular four-second status poll does not rescan the remote Git repository.
-This requires Git Parameter 0.9.15+, Item/Build permission on the target job, and an up-to-date
-security-fixed plugin release from the Jenkins Update Center.
+export. Static choices and Git Parameter `allValueItems` come from the Remote API. Active Choices and
+File System List options are not exported consistently, so the controller reads a bounded copy of the
+job's Jenkins build form only when **Run** is opened, extracts its server-rendered selects, and refreshes
+and validates them again immediately before queuing. Hidden parameters are never returned to the UI
+and use the value supplied by the same Jenkins form; separators are display-only. Form-backed plugin
+jobs use Jenkins' classic structured `/build` request for compatibility with older plugins, while
+ordinary jobs continue to use `buildWithParameters`.
+
+Radio controls, multi-select, reactive/cascade Active Choices, and true upload parameters remain
+disabled with an explicit explanation. Reactive choices stay in Jenkins until dependency-aware refresh is available.
+A form-backed job that also has a password parameter requires the password to be entered, because
+the classic form cannot safely recover an unread secret default. Dynamic option discovery uses the
+authenticated job's read-only build-form page; Jenkins enforces `Job/Build` when the subsequent POST
+queues the build, so discovering choices is not itself a build-permission test. Keep Jenkins and the
+Git Parameter, Active Choices, and File System List plugins on security-fixed versions. Malformed,
+truncated, stale, or structurally incompatible option data is rejected instead of falling back to an
+arbitrary text value.
 
 ### Persist appearance preferences
 
@@ -355,9 +370,12 @@ than opening an endless stream. Build triggering is non-idempotent and the bridg
 automatically after a transport failure. Stop and queue-cancel tools are marked destructive, while
 the browse/status/log tools are read-only. Jenkins tokens are not MCP inputs and are never returned
 to the AI—the local controller resolves the selected instance's credential from the system keyring.
-To inspect dynamic Git Parameter branches or tags, call `jenkins_job_status` with
-`include_parameter_options=true`, then pass one of the returned `choices` to `jenkins_build_trigger`.
-The option may query the job's configured SCM and is therefore disabled by default.
+To inspect Git Parameter, Active Choices, or File System List values, call `jenkins_job_status` with
+`include_parameter_options=true`, then pass one of the returned `choices` to
+`jenkins_build_trigger`. Dynamic discovery can query SCM or the Jenkins controller's configured
+filesystem and is therefore disabled by default. The trigger path re-reads and validates these
+choices; stale, empty, ambiguous one-item File System List, multi-select, reactive, and unavailable
+option sets are rejected before any POST.
 
 ## Browser controller
 

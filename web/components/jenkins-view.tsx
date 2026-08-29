@@ -53,6 +53,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { JenkinsInstanceDialog, type JenkinsInstanceDialogMode } from "@/components/jenkins-instance-dialog";
 import { XtermLogViewer } from "@/components/xterm-log-viewer";
@@ -64,6 +65,7 @@ import type {
   JenkinsInstance,
   JenkinsInstanceInput,
   JenkinsJob,
+  JenkinsJobParameter,
   JenkinsQueueItem,
   ResolvedTheme,
 } from "@/lib/types";
@@ -159,6 +161,39 @@ function connectionCopy(state: ConnectionViewState | undefined): string {
   return state.detail || "连接异常";
 }
 
+function parameterOptionsState(parameter: JenkinsJobParameter): JenkinsJobParameter["optionsState"] {
+  return parameter.optionsState ?? (parameter.choices.length ? "ready" : "not_loaded");
+}
+
+function isEditableParameter(parameter: JenkinsJobParameter): boolean {
+  return parameter.type !== "hidden" && parameter.type !== "separator";
+}
+
+function isReactiveParameter(parameter: JenkinsJobParameter): boolean {
+  const rawType = (parameter.rawType ?? "").toLowerCase();
+  return rawType.includes("cascadechoiceparameter") || rawType.includes("dynamicreferenceparameter");
+}
+
+function unsupportedParameterMessage(parameters: JenkinsJobParameter[]): string {
+  const files = parameters.filter((parameter) => parameter.type === "file").map((parameter) => parameter.name);
+  const multiple = parameters.filter((parameter) => parameter.multiple).map((parameter) => parameter.name);
+  const unsupported = parameters.filter((parameter) => parameter.type === "unsupported");
+  const reactive = unsupported.filter(isReactiveParameter).map((parameter) => parameter.name);
+  const other = unsupported.filter((parameter) => !isReactiveParameter(parameter)).map((parameter) => parameter.name);
+  return [
+    files.length ? `文件上传参数 ${files.join("、")} 暂不支持` : "",
+    multiple.length ? `多选参数 ${multiple.join("、")} 暂不支持` : "",
+    reactive.length ? `级联或响应式参数 ${reactive.join("、")} 暂不支持` : "",
+    other.length ? `参数 ${other.join("、")} 的类型暂不支持` : "",
+  ].filter(Boolean).join("；");
+}
+
+function choiceUnavailableMessage(parameter: JenkinsJobParameter): string {
+  if (parameterOptionsState(parameter) === "not_loaded") return "候选项尚未加载，请关闭后重试。";
+  if (parameterOptionsState(parameter) === "unavailable") return "未能读取候选项，请在 Jenkins 页面运行。";
+  return "没有可用候选项，请在 Jenkins 页面运行。";
+}
+
 function ParameterChoiceSelect({
   choices,
   name,
@@ -251,13 +286,37 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     () => instances.find((instance) => instance.id === activeInstanceId) ?? null,
     [activeInstanceId, instances],
   );
-  const unsupportedFileParameters = useMemo(
-    () => jobDetail?.parameters.filter((parameter) => parameter.type === "file") ?? [],
+  const editableJobParameters = useMemo(
+    () => jobDetail?.parameters.filter(isEditableParameter) ?? [],
     [jobDetail],
   );
-  const triggerUnsupportedFileParameters = useMemo(
-    () => triggerJob?.parameters.filter((parameter) => parameter.type === "file") ?? [],
+  const unsupportedJobMessage = useMemo(
+    () => unsupportedParameterMessage(jobDetail?.parameters ?? []),
+    [jobDetail],
+  );
+  const editableTriggerParameters = useMemo(
+    () => triggerJob?.parameters.filter(isEditableParameter) ?? [],
     [triggerJob],
+  );
+  const triggerUnsupportedMessage = useMemo(
+    () => unsupportedParameterMessage(triggerJob?.parameters ?? []),
+    [triggerJob],
+  );
+  const triggerInvalidChoiceParameters = useMemo(
+    () => triggerJob?.parameters.filter((parameter) => (
+      parameter.type === "choice"
+      && !parameter.multiple
+      && (parameterOptionsState(parameter) !== "ready" || parameter.choices.length === 0)
+    )) ?? [],
+    [triggerJob],
+  );
+  const triggerMissingPasswordParameters = useMemo(
+    () => triggerJob?.requiresExplicitPassword
+      ? triggerJob.parameters.filter((parameter) => (
+        parameter.type === "password" && String(parameterValues[parameter.name] ?? "") === ""
+      ))
+      : [],
+    [parameterValues, triggerJob],
   );
   const selectedBuildUrl = useMemo(
     () => activeInstance && selectedBuild
@@ -635,7 +694,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const prepareBuild = useCallback(async () => {
     const instanceId = activeInstance?.id;
     const job = jobDetail;
-    if (!instanceId || !job?.buildable || job.parameters.some((parameter) => parameter.type === "file")) return;
+    if (!instanceId || !job?.buildable || unsupportedParameterMessage(job.parameters)) return;
     const requestId = ++prepareRequestRef.current;
     setPreparingBuild(true);
     try {
@@ -652,6 +711,11 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       }
       const initial: Record<string, string | boolean> = {};
       prepared.parameters.forEach((parameter) => {
+        if (!isEditableParameter(parameter) || parameter.type === "file" || parameter.multiple) return;
+        if (
+          parameter.type === "choice"
+          && (parameterOptionsState(parameter) !== "ready" || parameter.choices.length === 0)
+        ) return;
         if (typeof parameter.defaultValue === "boolean") {
           initial[parameter.name] = parameter.defaultValue;
           return;
@@ -681,13 +745,32 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     if (!instanceId || !job) return;
     const parameters: Record<string, string | number | boolean> = {};
     let invalidNumericParameter = "";
+    let invalidChoiceParameter = "";
+    let missingPasswordParameter = "";
     let unsupportedFileParameter = "";
+    let unsupportedMultipleParameter = "";
+    let unsupportedParameter = "";
     job.parameters.forEach((parameter) => {
       const value = parameterValues[parameter.name] ?? "";
-      if (parameter.type === "file") {
+      if (!isEditableParameter(parameter)) {
+        return;
+      } else if (parameter.type === "file") {
         unsupportedFileParameter = parameter.name;
+      } else if (parameter.type === "unsupported") {
+        unsupportedParameter = parameter.name;
+      } else if (parameter.multiple) {
+        unsupportedMultipleParameter = parameter.name;
+      } else if (parameter.type === "choice") {
+        const selected = String(value);
+        if (
+          parameterOptionsState(parameter) !== "ready"
+          || !parameter.choices.length
+          || !parameter.choices.includes(selected)
+        ) invalidChoiceParameter = parameter.name;
+        else parameters[parameter.name] = selected;
       } else if (parameter.type === "password" && String(value) === "") {
-        // 不发送空密码，让 Jenkins 使用任务中保存的默认秘密。
+        if (job.requiresExplicitPassword) missingPasswordParameter = parameter.name;
+        // 普通参数任务不发送空密码，让 Jenkins 使用任务中保存的默认秘密。
       } else if (parameter.type === "number") {
         const raw = String(value).trim();
         const parsed = Number(raw);
@@ -699,6 +782,22 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     });
     if (unsupportedFileParameter) {
       onError("暂不支持文件参数", `任务包含文件参数 ${unsupportedFileParameter}，请在 Jenkins 页面运行`);
+      return;
+    }
+    if (unsupportedMultipleParameter) {
+      onError("暂不支持多选参数", `任务包含多选参数 ${unsupportedMultipleParameter}，请在 Jenkins 页面运行`);
+      return;
+    }
+    if (unsupportedParameter) {
+      onError("暂不支持该参数类型", `任务包含当前不支持的参数 ${unsupportedParameter}，请在 Jenkins 页面运行`);
+      return;
+    }
+    if (invalidChoiceParameter) {
+      onError("构建参数不可用", `参数 ${invalidChoiceParameter} 没有可提交的候选项`);
+      return;
+    }
+    if (missingPasswordParameter) {
+      onError("构建参数不完整", `动态参数任务需要填写密码参数 ${missingPasswordParameter}`);
       return;
     }
     if (invalidNumericParameter) {
@@ -853,20 +952,20 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       <header className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b px-3 py-1.5">
         <div className="min-w-0">
           <h2 className="truncate text-[12px] font-semibold">{jobDetail?.fullName || selectedJobName || "选择一个任务"}</h2>
-          <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{jobDetail ? `${jobDetail.status} · ${jobDetail.parameters.length ? `${jobDetail.parameters.length} 个参数` : "无参数"}` : "查看构建历史和队列"}</p>
+          <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{jobDetail ? `${jobDetail.status} · ${editableJobParameters.length ? `${editableJobParameters.length} 个参数` : "无可填写参数"}` : "查看构建历史和队列"}</p>
         </div>
         <Button
           className="h-7 px-2 text-[10px]"
           size="sm"
-          disabled={!jobDetail?.buildable || preparingBuild || Boolean(busyAction) || unsupportedFileParameters.length > 0}
-          title={unsupportedFileParameters.length ? "文件上传参数需要在 Jenkins 页面填写" : undefined}
+          disabled={!jobDetail?.buildable || preparingBuild || Boolean(busyAction) || Boolean(unsupportedJobMessage)}
+          title={unsupportedJobMessage || undefined}
           onClick={() => void prepareBuild()}
         >{preparingBuild ? <LoaderCircle className="size-3 animate-spin" /> : <Play className="size-3" />}运行</Button>
       </header>
-      {unsupportedFileParameters.length ? (
+      {unsupportedJobMessage ? (
         <div className="flex min-h-8 shrink-0 items-center gap-1.5 border-b border-warning/20 bg-warning/5 px-3 text-[9px] text-warning" role="note">
           <CircleAlert className="size-3 shrink-0" />
-          文件参数 {unsupportedFileParameters.map((parameter) => parameter.name).join("、")} 暂不支持，请在 Jenkins 页面运行该任务。
+          {unsupportedJobMessage}，请在 Jenkins 页面运行该任务。
         </div>
       ) : null}
       <div className="flex h-9 shrink-0 items-end gap-1 border-b px-2" role="tablist" aria-label="Jenkins 活动">
@@ -981,40 +1080,57 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         <DialogContent className="max-w-md gap-3 p-5">
           <DialogHeader><DialogTitle className="text-base">运行“{triggerJob?.fullName}”</DialogTitle><DialogDescription className="text-xs">提交后任务会进入当前 Jenkins 实例的构建队列。</DialogDescription></DialogHeader>
           <div className="grid max-h-[50vh] gap-3 overflow-auto">
-            {triggerJob?.parameters.map((parameter) => (
-              <label key={parameter.name} className="grid gap-1 text-[11px] font-medium">
-                <span>{parameter.name}<span className="ml-1 font-normal text-muted-foreground">{parameter.description}</span></span>
-                {parameter.choices.length ? (
-                  <ParameterChoiceSelect
-                    choices={parameter.choices}
-                    name={parameter.name}
-                    value={String(parameterValues[parameter.name] ?? "")}
-                    onValueChange={(value) => setParameterValues((current) => ({
-                      ...current,
-                      [parameter.name]: value,
-                    }))}
-                  />
-                ) : parameter.type === "boolean" ? (
-                  <span className="flex h-8 items-center gap-2 rounded-md border px-2"><Switch checked={Boolean(parameterValues[parameter.name])} onCheckedChange={(checked) => setParameterValues((current) => ({ ...current, [parameter.name]: checked }))} aria-label={`参数 ${parameter.name}`} /><span className="text-[10px] text-muted-foreground">{parameterValues[parameter.name] ? "true" : "false"}</span></span>
-                ) : parameter.type === "file" ? (
-                  <span className="rounded-md border border-warning/25 bg-warning/5 px-2 py-2 text-[10px] font-normal text-warning">文件上传参数暂不支持，请在 Jenkins 页面运行。</span>
-                ) : (
-                  <>
-                    <Input
-                      className="h-8 text-xs"
-                      type={parameter.type === "number" ? "number" : parameter.type === "password" ? "password" : "text"}
+            {triggerJob?.parameters.map((parameter) => {
+              if (parameter.type === "hidden") return null;
+              if (parameter.type === "separator") return (
+                <div key={parameter.name} className="grid gap-1 pt-1" role="group" aria-label={parameter.header || parameter.description || "参数分隔"}>
+                  {parameter.header || parameter.description ? <span className="text-[10px] font-semibold text-muted-foreground">{parameter.header || parameter.description}</span> : null}
+                  <Separator />
+                </div>
+              );
+              const passwordRequired = parameter.type === "password" && Boolean(triggerJob?.requiresExplicitPassword);
+              return (
+                <label key={parameter.name} className="grid gap-1 text-[11px] font-medium">
+                  <span>{parameter.name}<span className="ml-1 font-normal text-muted-foreground">{parameter.description}</span></span>
+                  {parameter.multiple ? (
+                    <span className="rounded-md border border-warning/25 bg-warning/5 px-2 py-2 text-[10px] font-normal text-warning" role="note">多选参数暂不支持，请在 Jenkins 页面运行。</span>
+                  ) : parameter.type === "choice" && parameterOptionsState(parameter) === "ready" && parameter.choices.length ? (
+                    <ParameterChoiceSelect
+                      choices={parameter.choices}
+                      name={parameter.name}
                       value={String(parameterValues[parameter.name] ?? "")}
-                      placeholder={parameter.type === "password" ? "留空使用 Jenkins 默认值" : undefined}
-                      onChange={(event) => setParameterValues((current) => ({ ...current, [parameter.name]: event.target.value }))}
+                      onValueChange={(value) => setParameterValues((current) => ({
+                        ...current,
+                        [parameter.name]: value,
+                      }))}
                     />
-                    {parameter.type === "password" ? <span className="text-[9px] font-normal text-muted-foreground">留空使用 Jenkins 默认值，不会读取或回显已有秘密。</span> : null}
-                  </>
-                )}
-              </label>
-            ))}
-            {!triggerJob?.parameters.length ? <p className="rounded-lg border bg-muted/25 p-3 text-xs text-muted-foreground">该任务没有参数，将直接使用 Jenkins 中保存的配置运行。</p> : null}
+                  ) : parameter.type === "choice" ? (
+                    <span className="rounded-md border border-warning/25 bg-warning/5 px-2 py-2 text-[10px] font-normal text-warning" role="alert">{choiceUnavailableMessage(parameter)}</span>
+                  ) : parameter.type === "boolean" ? (
+                    <span className="flex h-8 items-center gap-2 rounded-md border px-2"><Switch checked={Boolean(parameterValues[parameter.name])} onCheckedChange={(checked) => setParameterValues((current) => ({ ...current, [parameter.name]: checked }))} aria-label={`参数 ${parameter.name}`} /><span className="text-[10px] text-muted-foreground">{parameterValues[parameter.name] ? "true" : "false"}</span></span>
+                  ) : parameter.type === "file" ? (
+                    <span className="rounded-md border border-warning/25 bg-warning/5 px-2 py-2 text-[10px] font-normal text-warning">文件上传参数暂不支持，请在 Jenkins 页面运行。</span>
+                  ) : parameter.type === "unsupported" ? (
+                    <span className="rounded-md border border-warning/25 bg-warning/5 px-2 py-2 text-[10px] font-normal text-warning">{isReactiveParameter(parameter) ? "级联或响应式参数暂不支持，请在 Jenkins 页面运行。" : "当前参数类型暂不支持，请在 Jenkins 页面运行。"}</span>
+                  ) : (
+                    <>
+                      <Input
+                        className="h-8 text-xs"
+                        type={parameter.type === "number" ? "number" : parameter.type === "password" ? "password" : "text"}
+                        value={String(parameterValues[parameter.name] ?? "")}
+                        required={passwordRequired}
+                        placeholder={parameter.type === "password" ? (passwordRequired ? "此动态参数任务必须填写" : "留空使用 Jenkins 默认值") : undefined}
+                        onChange={(event) => setParameterValues((current) => ({ ...current, [parameter.name]: event.target.value }))}
+                      />
+                      {parameter.type === "password" ? <span className="text-[9px] font-normal text-muted-foreground">{passwordRequired ? "Jenkins 动态构建表单要求显式输入；已有秘密不会被读取或回显。" : "留空使用 Jenkins 默认值，不会读取或回显已有秘密。"}</span> : null}
+                    </>
+                  )}
+                </label>
+              );
+            })}
+            {!editableTriggerParameters.length ? <p className="rounded-lg border bg-muted/25 p-3 text-xs text-muted-foreground">该任务没有需要填写的参数，将使用 Jenkins 中保存的配置运行。</p> : null}
           </div>
-          <DialogFooter><Button variant="outline" size="sm" disabled={Boolean(busyAction)} onClick={() => { setTriggerOpen(false); setTriggerJob(null); }}>取消</Button><Button size="sm" disabled={Boolean(busyAction) || triggerUnsupportedFileParameters.length > 0} onClick={() => void confirmBuild()}>{busyAction === "trigger" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}确认运行</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" size="sm" disabled={Boolean(busyAction)} onClick={() => { setTriggerOpen(false); setTriggerJob(null); }}>取消</Button><Button size="sm" disabled={Boolean(busyAction) || Boolean(triggerUnsupportedMessage) || triggerInvalidChoiceParameters.length > 0 || triggerMissingPasswordParameters.length > 0} onClick={() => void confirmBuild()}>{busyAction === "trigger" ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}确认运行</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

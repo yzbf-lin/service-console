@@ -255,6 +255,9 @@ export interface JenkinsJobParameter {
   description: string;
   defaultValue: string | number | boolean | null;
   choices: string[];
+  optionsState: "ready" | "not_loaded" | "unavailable" | "not_applicable";
+  multiple: boolean;
+  header: string;
 }
 
 export interface JenkinsJob {
@@ -268,6 +271,7 @@ export interface JenkinsJob {
   inQueue: boolean;
   description: string;
   parameters: JenkinsJobParameter[];
+  requiresExplicitPassword: boolean;
   lastBuild: JenkinsLastBuild | null;
 }
 
