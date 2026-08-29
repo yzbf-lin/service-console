@@ -882,8 +882,19 @@ class _GuardianWorker:
             if _IS_WINDOWS:
                 processes = _windows_process_tree(lease, require_marker=False)
                 if processes == ():
+                    # An existing PID with a different creation time is a reused
+                    # identity, not a completed root whose marked children may be
+                    # recovered. Never register that PID or scan past it.
+                    if psutil.pid_exists(lease.pid):
+                        self.last_track_error = "process identity could not be verified"
+                        return False
                     processes = _windows_marker_processes(lease)
-                valid = processes is not None
+                    # With suspended creation the root cannot legitimately vanish
+                    # before tracking. The only safe absent-root recovery is a
+                    # non-empty, marker-authenticated orphan tree.
+                    valid = bool(processes)
+                else:
+                    valid = processes is not None
             else:
                 processes = ()
                 valid = _validate_posix_lease(lease)

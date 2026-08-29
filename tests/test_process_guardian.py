@@ -360,6 +360,121 @@ def test_windows_track_fails_if_process_tree_never_stabilizes(
     assert all(process.killed for process in processes)
 
 
+def test_windows_track_rejects_a_live_pid_with_mismatched_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def unexpected_marker_scan(_lease: object) -> tuple[()]:
+        raise AssertionError("a reused live PID must not fall back to marker discovery")
+
+    monkeypatch.setattr(process_guardian, "_IS_WINDOWS", True)
+    monkeypatch.setattr(process_guardian, "_TRACK_VALIDATION_TIMEOUT", 0.0)
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_process_tree",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(process_guardian, "_windows_marker_processes", unexpected_marker_scan)
+    monkeypatch.setattr(process_guardian.psutil, "pid_exists", lambda _pid: True)
+    worker = process_guardian._GuardianWorker(
+        tmp_path,
+        process_guardian._Owner(os.getpid(), psutil.Process().create_time()),
+    )
+    lease = process_guardian._Lease(
+        registration_id=uuid.uuid4().hex,
+        service="reused-pid",
+        pid=10_500,
+        create_time=time.time() - 10_000,
+        pgid=None,
+        stop_timeout=0.1,
+    )
+
+    assert worker.track(lease) is False
+    assert worker.last_track_error == "process identity could not be verified"
+    assert lease.registration_id not in worker.leases
+
+
+def test_windows_track_rejects_an_absent_root_without_marked_children(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(process_guardian, "_IS_WINDOWS", True)
+    monkeypatch.setattr(process_guardian, "_TRACK_VALIDATION_TIMEOUT", 0.0)
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_process_tree",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(process_guardian, "_windows_marker_processes", lambda _lease: ())
+    monkeypatch.setattr(process_guardian.psutil, "pid_exists", lambda _pid: False)
+    worker = process_guardian._GuardianWorker(
+        tmp_path,
+        process_guardian._Owner(os.getpid(), psutil.Process().create_time()),
+    )
+    lease = process_guardian._Lease(
+        registration_id=uuid.uuid4().hex,
+        service="missing-root",
+        pid=10_600,
+        create_time=time.time(),
+        pgid=None,
+        stop_timeout=0.1,
+    )
+
+    assert worker.track(lease) is False
+    assert worker.last_track_error == "process identity could not be verified"
+    assert lease.registration_id not in worker.leases
+
+
+def test_windows_track_recovers_a_nonempty_marked_orphan_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeProcess:
+        pid = 10_701
+
+        def kill(self) -> None:
+            raise AssertionError("a recovered marked child must remain managed")
+
+    class FakeJob:
+        def __init__(self) -> None:
+            self.assignments: list[tuple[int, ...]] = []
+
+        def assign(self, processes: object) -> None:
+            self.assignments.append(tuple(process.pid for process in processes))  # type: ignore[union-attr]
+
+        def close(self) -> None:
+            raise AssertionError("a successful orphan-tree Job must remain open")
+
+    child = FakeProcess()
+    job = FakeJob()
+    monkeypatch.setattr(process_guardian, "_IS_WINDOWS", True)
+    monkeypatch.setattr(
+        process_guardian,
+        "_windows_process_tree",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(process_guardian, "_windows_marker_processes", lambda _lease: (child,))
+    monkeypatch.setattr(process_guardian.psutil, "pid_exists", lambda _pid: False)
+    monkeypatch.setattr(process_guardian, "_WindowsJob", lambda: job)
+    worker = process_guardian._GuardianWorker(
+        tmp_path,
+        process_guardian._Owner(os.getpid(), psutil.Process().create_time()),
+    )
+    lease = process_guardian._Lease(
+        registration_id=uuid.uuid4().hex,
+        service="orphan-child",
+        pid=10_700,
+        create_time=time.time(),
+        pgid=None,
+        stop_timeout=0.1,
+    )
+
+    assert worker.track(lease) is True
+    assert job.assignments
+    assert all(assignment == (child.pid,) for assignment in job.assignments)
+    assert worker.jobs[lease.registration_id] is job
+
+
 def test_windows_nested_job_assignment_remains_the_primary_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
