@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { Moon, Plus, RefreshCw, Sun } from "lucide-react";
+import { Moon, RefreshCw, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
@@ -18,7 +18,6 @@ interface TopbarProps {
   serviceCount: number;
   selectedServiceName: string | null;
   onRefresh: () => void;
-  onAddService: () => void;
   onToggleTheme: () => void;
 }
 
@@ -67,7 +66,6 @@ export function Topbar({
   serviceCount,
   selectedServiceName,
   onRefresh,
-  onAddService,
   onToggleTheme,
 }: TopbarProps) {
   const context = viewCopy[activeView];
@@ -77,11 +75,11 @@ export function Topbar({
 
   return (
     <header className="service-topbar z-40 grid h-12 min-h-12 items-center border-b bg-[var(--toolbar)]">
-      <div className="flex h-full min-w-0 items-center gap-2 border-r px-3" aria-label="Service Console">
+      <div className="service-brand flex h-full min-w-0 items-center gap-2 border-r px-3" aria-label="Service Console">
         <span className="grid size-7 shrink-0 place-items-center rounded-lg border border-black/10 bg-[#f7f8fa] shadow-sm">
           <Image className="size-5 object-contain" src={productLogo} alt="" aria-hidden="true" />
         </span>
-        <div className="min-w-0">
+        <div className="service-brand-copy min-w-0">
           <h1 className="truncate text-[13px] font-semibold tracking-tight">Service Console</h1>
           <p className="truncate text-[9px] text-muted-foreground max-[767px]:hidden">本地进程工作台</p>
         </div>
@@ -122,13 +120,6 @@ export function Topbar({
             onClick={onRefresh}
           >
             <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
-          </Button>
-        ) : null}
-
-        {activeView === "services" ? (
-          <Button className="h-8 rounded-lg px-2.5 text-[11px] shadow-none" size="sm" type="button" onClick={onAddService}>
-            <Plus className="size-3.5" />
-            <span className="max-[520px]:sr-only">添加服务</span>
           </Button>
         ) : null}
       </div>

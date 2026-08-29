@@ -32,7 +32,14 @@ vi.mock("@/components/ports-view", () => ({
     </button>
   ),
 }));
-vi.mock("@/components/service-control-view", () => ({ ServiceControlView: () => <div>服务视图</div> }));
+vi.mock("@/components/service-control-view", () => ({
+  ServiceControlView: ({ onAddService }: { onAddService: () => void }) => (
+    <div>
+      服务视图
+      <button type="button" onClick={onAddService}>内容区添加服务</button>
+    </div>
+  ),
+}));
 vi.mock("@/components/service-form-dialog", () => ({
   ServiceFormDialog: ({ sourceProcess }: { sourceProcess: NormalizedProcessCandidate | null }) => (
     <>
@@ -49,7 +56,6 @@ vi.mock("@/components/service-form-dialog", () => ({
     </>
   ),
 }));
-vi.mock("@/components/service-list-panel", () => ({ ServiceListPanel: () => null }));
 vi.mock("@/components/settings-view", () => ({
   SettingsView: ({
     mcpStatus,
@@ -71,25 +77,25 @@ vi.mock("@/components/settings-view", () => ({
 }));
 vi.mock("@/components/sidebar-nav", () => ({
   SidebarNav: ({
-    children,
+    collapsed,
     updateAvailable,
     onViewChange,
+    onCollapsedChange,
   }: {
-    children?: ReactNode;
+    collapsed: boolean;
     updateAvailable?: boolean;
     onViewChange: (view: ViewId) => void;
+    onCollapsedChange: (collapsed: boolean) => void;
   }) => (
-    <aside data-testid="sidebar" data-update-available={String(Boolean(updateAvailable))}>
-      {children}
+    <aside data-testid="sidebar" data-collapsed={String(collapsed)} data-update-available={String(Boolean(updateAvailable))}>
       <button type="button" onClick={() => onViewChange("services")}>切换服务页</button>
       <button type="button" onClick={() => onViewChange("settings")}>切换设置页</button>
+      <button type="button" onClick={() => onCollapsedChange(!collapsed)}>{collapsed ? "展开菜单栏" : "收起菜单栏"}</button>
     </aside>
   ),
 }));
 vi.mock("@/components/topbar", () => ({
-  Topbar: ({ onAddService }: { onAddService: () => void }) => (
-    <button type="button" onClick={onAddService}>手动添加服务</button>
-  ),
+  Topbar: () => <div>公共顶部栏</div>,
 }));
 vi.mock("@/components/toast-provider", () => ({
   ToastProvider: ({ children }: { children: ReactNode }) => children,
@@ -236,7 +242,8 @@ describe("ServiceConsole process shortcut coordination", () => {
     render(<ServiceConsole />);
 
     fireEvent.click(screen.getByRole("button", { name: "导入端口进程" }));
-    fireEvent.click(screen.getByRole("button", { name: "手动添加服务" }));
+    fireEvent.click(screen.getByRole("button", { name: "切换服务页" }));
+    fireEvent.click(screen.getByRole("button", { name: "内容区添加服务" }));
     expect(screen.getByTestId("service-form").textContent).toBe("手动配置");
 
     await act(async () => pending.resolve(processFixture()));

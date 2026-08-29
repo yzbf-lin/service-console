@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, ListFilter } from "lucide-react";
+import { ChevronRight, ListFilter, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ interface ServiceControlViewProps {
   active: boolean;
   onSelect: (name: string) => void;
   onAction: (name: string, action: ServiceAction) => void;
+  onAddService: () => void;
   onClearLogs: () => void;
 }
 
@@ -41,6 +42,7 @@ export function ServiceControlView({
   active,
   onSelect,
   onAction,
+  onAddService,
   onClearLogs,
 }: ServiceControlViewProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -61,45 +63,69 @@ export function ServiceControlView({
   };
 
   return (
-    <main id="servicesView" className="service-view-grid" aria-label="服务控制">
-      <Button
-        variant="outline"
-        className="hidden h-11 w-full shrink-0 items-center justify-between px-3 max-[767px]:flex"
-        type="button"
-        aria-expanded={drawerOpen}
-        aria-controls="mobileServiceDrawer"
-        onClick={() => setDrawerOpen(true)}
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          <span className={cn("size-2.5 rounded-full bg-muted-foreground", selectedService?.status === "RUNNING" && "bg-success", selectedService?.status === "FAILED" && "bg-destructive")} aria-hidden="true" />
-          <span className="min-w-0 text-left">
-            <small className="block text-[9px] text-muted-foreground">当前服务</small>
-            <strong className="block truncate text-xs">{selectedService?.name ?? "选择服务"}</strong>
-          </span>
-        </span>
-        <span className="flex items-center gap-1 text-[10px] text-muted-foreground"><ListFilter className="size-3.5" />服务列表<ChevronRight className="size-3.5" /></span>
-      </Button>
-
-      <TerminalConsole
-        service={selectedService}
-        logs={logs}
-        logRevision={logRevision}
-        theme={theme}
-        active={active}
-        onClear={onClearLogs}
-        busy={selectedBusy}
-        onAction={(action) => {
-          if (selectedService) onAction(selectedService.name, action);
-        }}
+    <main id="servicesView" className="service-management-grid" aria-label="服务控制">
+      <ServiceListPanel
+        className="border-r max-[767px]:hidden"
+        services={services}
+        selectedName={selectedName}
+        busyServices={busyServices}
+        onSelect={onSelect}
+        onAction={onAction}
+        onAddService={onAddService}
       />
 
-      <ServiceInspector
-        service={selectedService}
-        busy={selectedBusy}
-        onAction={(action) => {
-          if (selectedService) onAction(selectedService.name, action);
-        }}
-      />
+      <section className="service-view-grid" aria-label="服务详情">
+        <div className="hidden shrink-0 items-center gap-2 p-2 max-[767px]:flex">
+          <Button
+            variant="outline"
+            className="h-11 min-w-0 flex-1 items-center justify-between px-3"
+            type="button"
+            aria-expanded={drawerOpen}
+            aria-controls="mobileServiceDrawer"
+            onClick={() => setDrawerOpen(true)}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <span className={cn("size-2.5 rounded-full bg-muted-foreground", selectedService?.status === "RUNNING" && "bg-success", selectedService?.status === "FAILED" && "bg-destructive")} aria-hidden="true" />
+              <span className="min-w-0 text-left">
+                <small className="block text-[9px] text-muted-foreground">当前服务</small>
+                <strong className="block truncate text-xs">{selectedService?.name ?? "选择服务"}</strong>
+              </span>
+            </span>
+            <span className="flex items-center gap-1 text-[10px] text-muted-foreground"><ListFilter className="size-3.5" />服务列表<ChevronRight className="size-3.5" /></span>
+          </Button>
+          <Button
+            className="size-11 shrink-0"
+            size="icon"
+            type="button"
+            aria-label="添加服务"
+            title="添加服务"
+            onClick={onAddService}
+          >
+            <Plus className="size-4" />
+          </Button>
+        </div>
+
+        <TerminalConsole
+          service={selectedService}
+          logs={logs}
+          logRevision={logRevision}
+          theme={theme}
+          active={active}
+          onClear={onClearLogs}
+          busy={selectedBusy}
+          onAction={(action) => {
+            if (selectedService) onAction(selectedService.name, action);
+          }}
+        />
+
+        <ServiceInspector
+          service={selectedService}
+          busy={selectedBusy}
+          onAction={(action) => {
+            if (selectedService) onAction(selectedService.name, action);
+          }}
+        />
+      </section>
 
       <Dialog open={drawerOpen} onOpenChange={setDrawerOpen}>
         <DialogContent
