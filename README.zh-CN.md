@@ -127,6 +127,12 @@ uv run service-console-desktop
 桌面应用会在随机本机端口启动 FastAPI 控制器，并在原生 pywebview 窗口中打开界面。服务定义和日志
 默认保存在 `~/.service-console`。
 
+正式打包的 macOS 应用从 Finder 打开时，Service Console 会在桌面端启动阶段捕获一次用户的交互式
+登录 Shell 环境，使受管服务能使用与终端一致的导出 `PATH`，直接解析 Homebrew、`uv`、pnpm、pyenv
+等用户工具。环境覆盖顺序为“桌面进程 < 登录 Shell < 服务配置中的 `env`”。源码和 CLI 启动方式继续
+沿用当前进程环境，不会额外启动 Shell。若 Shell 初始化失败或超过 8 秒，会安全降级到桌面进程环境；
+特殊 profile 的排障场景仍可在服务配置中显式填写 `PATH`。
+
 注册并控制一个原生服务：
 
 ```bash

@@ -8,6 +8,7 @@ import signal
 import subprocess
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ class ServiceManager:
         log_buffer_size: int = 1_000,
         event_queue_size: int = 1_024,
         monitor_interval: float = 1.0,
+        base_environment: Mapping[str, str] | None = None,
     ) -> None:
         if log_buffer_size <= 0:
             raise ValueError("log_buffer_size must be greater than zero")
@@ -64,6 +66,11 @@ class ServiceManager:
         self.log_buffer_size = log_buffer_size
         self.event_queue_size = event_queue_size
         self.monitor_interval = monitor_interval
+        self._base_environment = (
+            os.environ.copy()
+            if base_environment is None
+            else {str(key): str(value) for key, value in base_environment.items()}
+        )
         self._services: dict[str, _ManagedService] = {}
         self._definitions_lock = asyncio.Lock()
         self._initialize_lock = asyncio.Lock()
@@ -245,7 +252,7 @@ class ServiceManager:
         self._emit_status(service)
 
         definition = service.definition
-        environment = os.environ.copy()
+        environment = dict(self._base_environment)
         environment.update(definition.env)
         try:
             process = await asyncio.create_subprocess_shell(

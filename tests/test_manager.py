@@ -179,6 +179,74 @@ async def test_running_service_update_applies_on_restart_and_persists(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_service_environment_overrides_login_shell_baseline(tmp_path: Path) -> None:
+    base_environment = os.environ.copy()
+    base_environment.update(
+        {
+            "LOGIN_ONLY": "available",
+            "OVERRIDE_VALUE": "from-login-shell",
+        }
+    )
+    manager = ServiceManager(
+        tmp_path,
+        monitor_interval=0.05,
+        base_environment=base_environment,
+    )
+    await manager.add_service(
+        ServiceDefinition(
+            name="environment",
+            command=python_command(
+                "import os; "
+                "print(os.environ['LOGIN_ONLY'], flush=True); "
+                "print(os.environ['OVERRIDE_VALUE'], flush=True)"
+            ),
+            cwd=str(tmp_path),
+            env={"OVERRIDE_VALUE": "from-service"},
+        )
+    )
+
+    await manager.start("environment")
+    await wait_for_state(manager, "environment", {"EXITED"})
+
+    messages = [entry["message"] for entry in await manager.get_logs("environment", 10)]
+    assert messages == ["available", "from-service"]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="fixture executable uses a POSIX shell script")
+async def test_login_shell_path_resolves_managed_command(tmp_path: Path) -> None:
+    tool_directory = tmp_path / "login-bin"
+    tool_directory.mkdir()
+    tool = tool_directory / "service-console-path-fixture"
+    tool.write_text("#!/bin/sh\nprintf 'resolved-from-login-path\\n'\n", encoding="utf-8")
+    tool.chmod(0o700)
+    base_environment = os.environ.copy()
+    base_environment["PATH"] = f"{tool_directory}{os.pathsep}{base_environment.get('PATH', '')}"
+    manager = ServiceManager(
+        tmp_path / "data",
+        monitor_interval=0.05,
+        base_environment=base_environment,
+    )
+    await manager.add_service(
+        ServiceDefinition(
+            name="path",
+            command="service-console-path-fixture",
+            cwd=str(tmp_path),
+        )
+    )
+
+    await manager.start("path")
+    exited = await wait_for_state(manager, "path", {"EXITED"})
+
+    assert exited["exit_code"] == 0
+    assert [entry["message"] for entry in await manager.get_logs("path", 10)] == [
+        "resolved-from-login-path"
+    ]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(os.name == "nt", reason="SIGTERM handling is POSIX-specific")
 async def test_stop_escalates_to_sigkill_for_term_ignoring_process(tmp_path: Path) -> None:
     manager = ServiceManager(tmp_path, monitor_interval=0.05)

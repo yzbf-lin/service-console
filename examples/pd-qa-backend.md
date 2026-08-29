@@ -9,6 +9,10 @@ container runtime.
    open "dist/Service Console.app"
    ```
 
+   A packaged macOS app opened from Finder restores the exported interactive login-shell environment
+   once at startup, so commands such as `uv run backend/run.py` do not require an absolute `uv` path.
+   A service-level `env.PATH` remains the final override for project-specific toolchains.
+
    The CLI automatically discovers the desktop controller's random loopback endpoint. For isolated
    acceptance tests, `uv run service-console serve --data-dir /tmp/service-console-pd-qa` remains an
    alternative, but it must not use the desktop application's data directory.
