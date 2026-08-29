@@ -1147,6 +1147,106 @@ async def test_parameterized_build_uses_parameter_endpoint_and_omits_blank_passw
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate_in_actions", [False, True], ids=["property-only", "actions-property"])
+async def test_property_parameter_definitions_are_normalized_deduplicated_and_triggered_once(
+    tmp_path: Path,
+    duplicate_in_actions: bool,
+) -> None:
+    credentials = FakeCredentialStore()
+    job_get_calls = 0
+    crumb_calls = 0
+    post_paths: list[str] = []
+    submitted_forms: list[dict[str, list[str]]] = []
+    definitions = [
+        {
+            "name": "ENV",
+            "_class": "hudson.model.ChoiceParameterDefinition",
+            "description": "Target environment",
+            "defaultParameterValue": {"value": "staging"},
+            "choices": ["staging", "production"],
+        },
+        {
+            "name": "DRY_RUN",
+            "_class": "hudson.model.BooleanParameterDefinition",
+            "description": "Validate without deploying",
+            "defaultParameterValue": {"value": False},
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal crumb_calls, job_get_calls
+        if request.method == "GET" and request.url.path == "/job/api/api/json":
+            job_get_calls += 1
+            assert "property[_class,parameterDefinitions[" in request.url.params["tree"]
+            return httpx.Response(
+                200,
+                json={
+                    "name": "api",
+                    "fullName": "api",
+                    "actions": [{"parameterDefinitions": definitions}] if duplicate_in_actions else [],
+                    "property": [{"parameterDefinitions": definitions}],
+                },
+            )
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            crumb_calls += 1
+            return httpx.Response(
+                200,
+                json={"crumbRequestField": "Jenkins-Crumb", "crumb": "property-crumb"},
+            )
+        if request.method == "POST":
+            post_paths.append(request.url.path)
+            assert request.headers["Jenkins-Crumb"] == "property-crumb"
+            submitted_forms.append(parse_qs(request.content.decode()))
+            return httpx.Response(201, headers={"Location": "/queue/item/8/"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    service = JenkinsService(tmp_path, credential_store=credentials, gateway=gateway)
+    created = await service.create_instance(
+        name="Jenkins",
+        base_url="https://ci.example",
+        username="developer",
+        token="secret-token",
+        ca_bundle=None,
+        enabled=True,
+        request_timeout=15,
+    )
+
+    job = await service.get_job(str(created["id"]), job="api")
+    queue = await service.trigger_build(
+        str(created["id"]),
+        job="api",
+        parameters={"ENV": "production", "DRY_RUN": True},
+    )
+
+    assert job["parameters"] == [
+        {
+            "name": "ENV",
+            "type": "choice",
+            "raw_type": "hudson.model.ChoiceParameterDefinition",
+            "description": "Target environment",
+            "default": "staging",
+            "choices": ["staging", "production"],
+        },
+        {
+            "name": "DRY_RUN",
+            "type": "boolean",
+            "raw_type": "hudson.model.BooleanParameterDefinition",
+            "description": "Validate without deploying",
+            "default": False,
+            "choices": None,
+        },
+    ]
+    assert job["parameterized"] is True
+    assert queue["id"] == 8
+    assert job_get_calls == 2
+    assert crumb_calls == 1
+    assert post_paths == ["/job/api/buildWithParameters"]
+    assert submitted_forms == [{"ENV": ["production"], "DRY_RUN": ["true"]}]
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("definitions", "parameters", "message"),
     [
