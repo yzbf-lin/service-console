@@ -20,6 +20,9 @@ from service_console.jenkins import (
     JenkinsInstance,
     JenkinsService,
     KeyringCredentialStore,
+    _JenkinsBuildFormParser,
+    _merge_build_form_parameters,
+    _parameter_kind,
 )
 from service_console.manager import ServiceManager
 
@@ -94,6 +97,297 @@ def instance(**overrides: object) -> JenkinsInstance:
     }
     values.update(overrides)
     return JenkinsInstance(**values)  # type: ignore[arg-type]
+
+
+def test_build_form_parser_extracts_only_expected_structured_controls() -> None:
+    html = """
+    <html><body>
+      <div name="parameter">
+        <input type="hidden" name="name" value="IGNORED">
+        <select name="value"><option value="leak">leak</option></select>
+      </div>
+      <form method="post" name="parameters" action="build">
+        <div name="parameter">
+          <input type="hidden" name="name" value="ARTIFACT">
+          <select name="value" multiple>
+            <option value="a.zip" selected>A</option>
+            <option value="a.zip">duplicate</option>
+            <option disabled value="disabled.zip">disabled</option>
+            <option>b.zip</option>
+          </select>
+        </div>
+        <div name="parameter">
+          <input type="hidden" name="name" value="INTERNAL_TOKEN">
+          <input type="hidden" name="value" value="server-only">
+        </div>
+        <div name="parameter">
+          <input type="hidden" name="name" value="UNEXPECTED">
+          <select name="value"><option value="ignored">ignored</option></select>
+        </div>
+      </form>
+    </body></html>
+    """
+    parser = _JenkinsBuildFormParser({"ARTIFACT", "INTERNAL_TOKEN", "IGNORED"})
+    parser.feed(html)
+    parser.close()
+
+    assert set(parser.parameters) == {"ARTIFACT", "INTERNAL_TOKEN"}
+    artifact = parser.parameters["ARTIFACT"]
+    assert artifact.choices == ("a.zip", "b.zip")
+    assert artifact.selected == ("a.zip",)
+    assert artifact.multiple is True
+    hidden = parser.parameters["INTERNAL_TOKEN"]
+    assert hidden.has_hidden_value is True
+    assert hidden.hidden_value == "server-only"
+    assert hidden.choices is None
+
+
+@pytest.mark.parametrize("mode", ["unclosed", "too-many-options", "too-long-option-text"])
+def test_build_form_parser_rejects_incomplete_or_excessive_candidate_sets(mode: str) -> None:
+    if mode == "unclosed":
+        html = """
+        <form method="post" name="parameters" action="build">
+          <div name="parameter">
+            <input type="hidden" name="name" value="ARTIFACT">
+            <select name="value"><option value="partial.zip">partial.zip
+        """
+    elif mode == "too-many-options":
+        options = "".join(f'<option value="artifact-{index}.zip">item</option>' for index in range(5_001))
+        html = f"""
+        <form method="post" name="parameters" action="build">
+          <div name="parameter">
+            <input type="hidden" name="name" value="ARTIFACT">
+            <select name="value">{options}</select>
+          </div>
+        </form>
+        """
+    else:
+        option_text = "x" * 16_385
+        html = f"""
+        <form method="post" name="parameters" action="build">
+          <div name="parameter">
+            <input type="hidden" name="name" value="ARTIFACT">
+            <select name="value"><option>{option_text}</option></select>
+          </div>
+        </form>
+        """
+
+    parser = _JenkinsBuildFormParser({"ARTIFACT"})
+    parser.feed(html)
+    parser.close()
+
+    assert parser.has_valid_parameter_form is False
+
+
+@pytest.mark.parametrize(
+    ("raw_type", "expected"),
+    [
+        ("alex.jenkins.plugins.FileSystemListParameterDefinition", "choice"),
+        ("org.biouno.unochoice.ChoiceParameter", "choice"),
+        ("org.biouno.unochoice.CascadeChoiceParameter", "unsupported"),
+        ("org.biouno.unochoice.DynamicReferenceParameter", "unsupported"),
+        ("PT_RADIO", "unsupported"),
+        ("PT_SINGLE_SELECT", "choice"),
+        ("PT_MULTI_SELECT", "choice"),
+        ("com.wangyin.parameter.WHideParameterDefinition", "hidden"),
+        ("jenkins.plugins.parameter_separator.ParameterSeparatorDefinition", "separator"),
+        ("hudson.model.FileParameterDefinition", "file"),
+        ("io.jenkins.plugins.file_parameters.Base64FileParameterDefinition", "file"),
+        ("io.jenkins.plugins.file_parameters.StashedFileParameterDefinition", "file"),
+    ],
+)
+def test_parameter_kind_distinguishes_dynamic_visual_and_upload_parameters(
+    raw_type: str,
+    expected: str,
+) -> None:
+    assert _parameter_kind(raw_type) == expected
+
+
+def test_parameter_class_has_priority_for_normalization_without_changing_raw_type() -> None:
+    parameters = JenkinsGateway._normalize_parameters(
+        [
+            {
+                "parameterDefinitions": [
+                    {
+                        "name": "ARTIFACT",
+                        "type": "FileParameterDefinition",
+                        "_class": "alex.jenkins.plugins.FileSystemListParameterDefinition",
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert parameters[0]["type"] == "choice"
+    assert parameters[0]["raw_type"] == "FileParameterDefinition"
+    assert parameters[0]["options_state"] == "not_loaded"
+
+
+def test_file_parameter_raw_type_overrides_a_generic_exported_class() -> None:
+    parameters = JenkinsGateway._normalize_parameters(
+        [
+            {
+                "parameterDefinitions": [
+                    {
+                        "name": "ARCHIVE",
+                        "type": "Base64FileParameterDefinition",
+                        "_class": "example.plugins.GenericParameterDefinition",
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert parameters[0]["type"] == "file"
+
+
+@pytest.mark.parametrize(
+    ("raw_type", "expected_type"),
+    [
+        ("PasswordParameterDefinition", "password"),
+        ("WHideParameterDefinition", "hidden"),
+        ("ParameterSeparatorDefinition", "separator"),
+    ],
+)
+def test_sensitive_raw_parameter_types_override_a_generic_exported_class(
+    raw_type: str,
+    expected_type: str,
+) -> None:
+    parameters = JenkinsGateway._normalize_parameters(
+        [
+            {
+                "parameterDefinitions": [
+                    {
+                        "name": "SENSITIVE",
+                        "type": raw_type,
+                        "_class": "example.plugins.GenericParameterDefinition",
+                        "defaultParameterValue": {"value": "must-not-leak"},
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert parameters[0]["type"] == expected_type
+    assert parameters[0]["default"] is None
+
+
+def test_raw_pt_choice_type_enables_form_options_when_exported_class_is_generic() -> None:
+    parameters = JenkinsGateway._normalize_parameters(
+        [
+            {
+                "parameterDefinitions": [
+                    {
+                        "name": "GROUP",
+                        "type": "PT_SINGLE_SELECT",
+                        "_class": "example.plugins.GenericParameterDefinition",
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert parameters[0]["type"] == "choice"
+    assert parameters[0]["raw_type"] == "PT_SINGLE_SELECT"
+    assert parameters[0]["_form_dynamic"] is True
+    assert parameters[0]["_dynamic_choice"] is True
+
+
+def test_active_choices_radio_is_unsupported_even_when_exported_class_is_generic() -> None:
+    parameters = JenkinsGateway._normalize_parameters(
+        [
+            {
+                "parameterDefinitions": [
+                    {
+                        "name": "REGION",
+                        "type": "ChoiceParameter",
+                        "_class": "org.biouno.unochoice.ChoiceParameter",
+                        "choiceType": "PT_RADIO",
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert parameters[0]["type"] == "unsupported"
+    assert parameters[0]["_form_dynamic"] is False
+
+
+@pytest.mark.parametrize(
+    "errors",
+    [
+        ["The default value has been returned"],
+        "The default value has been returned",
+        {"message": "The default value has been returned"},
+    ],
+    ids=["list", "string", "object"],
+)
+def test_git_parameter_errors_make_fallback_values_unavailable(errors: object) -> None:
+    parameters = JenkinsGateway._normalize_parameters(
+        [
+            {
+                "parameterDefinitions": [
+                    {
+                        "name": "BRANCH",
+                        "_class": ("net.uaznia.lukanus.hudson.plugins.gitparameter.GitParameterDefinition"),
+                        "allValueItems": {
+                            "values": [{"name": "master", "value": "master"}],
+                            "errors": errors,
+                        },
+                    }
+                ]
+            }
+        ],
+        options_requested=True,
+    )
+
+    assert parameters[0]["choices"] is None
+    assert parameters[0]["options_state"] == "unavailable"
+
+
+@pytest.mark.parametrize(
+    ("selected_attribute", "expected_state"),
+    [("", "unavailable"), (" selected", "ready")],
+)
+def test_filesystem_singleton_requires_an_explicit_selected_default(
+    selected_attribute: str,
+    expected_state: str,
+) -> None:
+    parameters = JenkinsGateway._normalize_parameters(
+        [
+            {
+                "parameterDefinitions": [
+                    {
+                        "name": "ARTIFACT",
+                        "type": "FileSystemListParameterDefinition",
+                        "_class": "alex.jenkins.plugins.FileSystemListParameterDefinition",
+                        # Upstream may export its diagnostic fallback as the default as well.
+                        "defaultParameterValue": {"value": "only-entry"},
+                    }
+                ]
+            }
+        ],
+        options_requested=True,
+    )
+    parser = _JenkinsBuildFormParser({"ARTIFACT"})
+    parser.feed(
+        f"""
+        <form method="post" name="parameters" action="build">
+          <div name="parameter">
+            <input type="hidden" name="name" value="ARTIFACT">
+            <select name="value">
+              <option value="only-entry"{selected_attribute}>only-entry</option>
+            </select>
+          </div>
+        </form>
+        """
+    )
+    parser.close()
+
+    _merge_build_form_parameters(parameters, parser.parameters)
+
+    assert parameters[0]["options_state"] == expected_state
+    assert parameters[0]["choices"] == (["only-entry"] if expected_state == "ready" else None)
 
 
 @pytest.mark.asyncio
@@ -381,9 +675,7 @@ async def test_concurrent_writes_keep_each_crumb_paired_with_its_session() -> No
         if request.method == "GET" and request.url.path == "/jenkins/crumbIssuer/api/json":
             crumb_calls += 1
             index = crumb_calls
-            payload = json.dumps(
-                {"crumbRequestField": "Jenkins-Crumb", "crumb": f"crumb-{index}"}
-            ).encode()
+            payload = json.dumps({"crumbRequestField": "Jenkins-Crumb", "crumb": f"crumb-{index}"}).encode()
             headers = {
                 "Content-Type": "application/json",
                 "Set-Cookie": f"JSESSIONID=session-{index}; Path=/jenkins; HttpOnly",
@@ -410,13 +702,9 @@ async def test_concurrent_writes_keep_each_crumb_paired_with_its_session() -> No
 
     gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     selected = instance()
-    first = asyncio.create_task(
-        gateway.stop_build(selected, "secret-token", job="api", number=1)
-    )
+    first = asyncio.create_task(gateway.stop_build(selected, "secret-token", job="api", number=1))
     await asyncio.wait_for(first_crumb_started.wait(), timeout=1)
-    second = asyncio.create_task(
-        gateway.stop_build(selected, "secret-token", job="api", number=2)
-    )
+    second = asyncio.create_task(gateway.stop_build(selected, "secret-token", job="api", number=2))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     second_crumb_was_blocked = crumb_calls == 1
@@ -440,9 +728,7 @@ async def test_concurrent_get_cannot_replace_session_between_crumb_and_post() ->
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal get_calls, post_calls
         if request.method == "GET" and request.url.path == "/jenkins/crumbIssuer/api/json":
-            payload = json.dumps(
-                {"crumbRequestField": "Jenkins-Crumb", "crumb": "write-crumb"}
-            ).encode()
+            payload = json.dumps({"crumbRequestField": "Jenkins-Crumb", "crumb": "write-crumb"}).encode()
             return httpx.Response(
                 200,
                 headers={
@@ -467,9 +753,7 @@ async def test_concurrent_get_cannot_replace_session_between_crumb_and_post() ->
 
     gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     selected = instance()
-    write = asyncio.create_task(
-        gateway.stop_build(selected, "secret-token", job="api", number=1)
-    )
+    write = asyncio.create_task(gateway.stop_build(selected, "secret-token", job="api", number=1))
     await asyncio.wait_for(crumb_started.wait(), timeout=1)
     read = asyncio.create_task(gateway.test_connection(selected, "secret-token"))
     await asyncio.sleep(0)
@@ -493,9 +777,7 @@ async def test_different_pooled_clients_do_not_share_session_lock() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         host = request.url.host
         if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
-            payload = json.dumps(
-                {"crumbRequestField": "Jenkins-Crumb", "crumb": f"crumb-{host}"}
-            ).encode()
+            payload = json.dumps({"crumbRequestField": "Jenkins-Crumb", "crumb": f"crumb-{host}"}).encode()
             headers = {
                 "Content-Type": "application/json",
                 "Set-Cookie": f"JSESSIONID=session-{host}; Path=/; HttpOnly",
@@ -574,9 +856,7 @@ async def test_discard_waits_for_active_session_and_removes_its_lock() -> None:
         return client
 
     gateway = JenkinsGateway(client_factory)
-    write = asyncio.create_task(
-        gateway.stop_build(instance(), "secret-token", job="api", number=1)
-    )
+    write = asyncio.create_task(gateway.stop_build(instance(), "secret-token", job="api", number=1))
     await asyncio.wait_for(post_started.wait(), timeout=1)
     discard = asyncio.create_task(gateway.discard_instance("instance-1"))
     await asyncio.sleep(0)
@@ -660,11 +940,7 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
                     "crumbRequestField": "X-Service-Console-Crumb",
                     "crumb": f"fresh-crumb-{crumb_calls}",
                 },
-                headers={
-                    "Set-Cookie": (
-                        f"JSESSIONID=crumb-session-{crumb_calls}; Path=/jenkins; HttpOnly"
-                    )
-                },
+                headers={"Set-Cookie": (f"JSESSIONID=crumb-session-{crumb_calls}; Path=/jenkins; HttpOnly")},
             )
         if request.method == "POST":
             assert request.headers["X-Service-Console-Crumb"] == f"fresh-crumb-{crumb_calls}"
@@ -689,10 +965,16 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
                     "_class": "net.uaznia.lukanus.hudson.plugins.gitparameter.GitParameterDefinition",
                     "description": "Branch",
                 }
+                dry_run_parameter: dict[str, object] = {
+                    "name": "DRY_RUN",
+                    "type": "BooleanParameterDefinition",
+                    "description": "Validate only",
+                }
                 if "defaultParameterValue" in tree:
                     environment_parameter["defaultParameterValue"] = {"value": "staging"}
                     password_parameter["defaultParameterValue"] = {"value": "must-not-leak"}
                     git_parameter["defaultParameterValue"] = {"value": "master"}
+                    dry_run_parameter["defaultParameterValue"] = {"value": False}
                 if "allValueItems" in tree:
                     git_parameter["allValueItems"] = {
                         "values": [
@@ -720,6 +1002,7 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
                                     environment_parameter,
                                     password_parameter,
                                     git_parameter,
+                                    dry_run_parameter,
                                 ]
                             }
                         ],
@@ -848,6 +1131,8 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
             "description": "Target",
             "default": None,
             "choices": ["staging", "production"],
+            "options_state": "ready",
+            "multiple": False,
         }
         assert job["parameters"][1]["type"] == "password"
         assert job["parameters"][1]["default"] is None
@@ -858,6 +1143,8 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
             "description": "Branch",
             "default": None,
             "choices": None,
+            "options_state": "not_loaded",
+            "multiple": False,
         }
         assert "must-not-leak" not in json.dumps(job)
 
@@ -951,8 +1238,8 @@ def test_jenkins_api_contract_covers_jobs_builds_queue_actions_and_logs(tmp_path
         and "parameterDefinitions" in request.url.params.get("tree", "")
     ]
     assert len(job_detail_trees) == 3
-    assert sum("allValueItems" in tree for tree in job_detail_trees) == 1
-    assert sum("defaultParameterValue" in tree for tree in job_detail_trees) == 1
+    assert sum("allValueItems" in tree for tree in job_detail_trees) == 2
+    assert sum("defaultParameterValue" in tree for tree in job_detail_trees) == 2
 
 
 def test_build_trigger_failure_is_not_retried_and_error_is_redacted(tmp_path: Path) -> None:
@@ -1193,6 +1480,419 @@ async def test_parameterized_build_uses_parameter_endpoint_and_omits_blank_passw
 
 
 @pytest.mark.asyncio
+async def test_dynamic_form_options_hidden_defaults_and_classic_build_are_server_controlled(
+    tmp_path: Path,
+) -> None:
+    credentials = FakeCredentialStore()
+    job_get_calls = 0
+    form_get_calls = 0
+    crumb_calls = 0
+    classic_payloads: list[dict[str, object]] = []
+
+    def definitions(tree: str) -> list[dict[str, object]]:
+        values: list[dict[str, object]] = [
+            {
+                "name": "ARTIFACT",
+                "type": "FileSystemListParameterDefinition",
+                "_class": "alex.jenkins.plugins.FileSystemListParameterDefinition",
+                "description": "Server artifact",
+            },
+            {
+                "name": "DEPLOY_PASSWORD",
+                "type": "PasswordParameterDefinition",
+                "_class": "hudson.model.PasswordParameterDefinition",
+            },
+            {
+                "name": "INTERNAL_TOKEN",
+                "type": "WHideParameterDefinition",
+                "_class": "com.wangyin.parameter.WHideParameterDefinition",
+            },
+            {
+                "name": "SECTION",
+                "type": "ParameterSeparatorDefinition",
+                "_class": "jenkins.plugins.parameter_separator.ParameterSeparatorDefinition",
+                "sectionHeader": "Deployment",
+            },
+            {
+                "name": "DRY_RUN",
+                "type": "BooleanParameterDefinition",
+                "_class": "hudson.model.BooleanParameterDefinition",
+            },
+        ]
+        if "defaultParameterValue" in tree:
+            values[0]["defaultParameterValue"] = {"value": "/srv/artifacts/a.zip"}
+            values[1]["defaultParameterValue"] = {"value": "password-must-not-leak"}
+            values[2]["defaultParameterValue"] = {"value": "api-must-not-leak"}
+            values[4]["defaultParameterValue"] = {"value": False}
+        return values
+
+    build_form = """
+    <html><body><form method="post" name="parameters" action="build">
+      <div name="parameter">
+        <input type="hidden" name="name" value="ARTIFACT">
+        <select name="value">
+          <option value="a.zip" selected>a.zip</option>
+          <option value="b.zip">b.zip</option>
+        </select>
+      </div>
+      <div name="parameter">
+        <input type="hidden" name="name" value="INTERNAL_TOKEN">
+        <input type="hidden" name="value" value="server-only">
+      </div>
+      <div name="parameter">
+        <input type="hidden" name="name" value="SECTION">
+      </div>
+    </form></body></html>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal crumb_calls, form_get_calls, job_get_calls
+        if request.method == "GET" and request.url.path == "/job/api/api/json":
+            job_get_calls += 1
+            tree = request.url.params["tree"]
+            return httpx.Response(
+                200,
+                json={
+                    "name": "api",
+                    "fullName": "api",
+                    "buildable": True,
+                    "actions": [{"parameterDefinitions": definitions(tree)}],
+                },
+            )
+        if request.method == "GET" and request.url.path == "/job/api/build":
+            form_get_calls += 1
+            assert request.url.params["delay"] == "0sec"
+            assert request.headers["Accept"] == "text/html,application/xhtml+xml"
+            assert request.headers["Referer"] == "https://ci.example/job/api/"
+            assert request.headers["User-Agent"].startswith("Mozilla/5.0")
+            return httpx.Response(405, text=build_form, headers={"Content-Type": "text/html; charset=utf-8"})
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            crumb_calls += 1
+            return httpx.Response(
+                200,
+                json={"crumbRequestField": "Jenkins-Crumb", "crumb": "classic-crumb"},
+            )
+        if request.method == "POST" and request.url.path == "/job/api/build":
+            assert "delay" not in request.url.params
+            assert request.headers["Jenkins-Crumb"] == "classic-crumb"
+            form = parse_qs(request.content.decode())
+            classic_payloads.append(json.loads(form["json"][0]))
+            return httpx.Response(201, headers={"Location": "/queue/item/23/"})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    service = JenkinsService(tmp_path, credential_store=credentials, gateway=gateway)
+    created = await service.create_instance(
+        name="Jenkins",
+        base_url="https://ci.example",
+        username="developer",
+        token="secret-token",
+        ca_bundle=None,
+        enabled=True,
+        request_timeout=15,
+    )
+    instance_id = str(created["id"])
+
+    metadata = await service.get_job(instance_id, job="api")
+    prepared = await service.get_job(instance_id, job="api", include_parameter_options=True)
+    queued = await service.trigger_build(
+        instance_id,
+        job="api",
+        parameters={
+            "ARTIFACT": "b.zip",
+            "DEPLOY_PASSWORD": "runtime-secret",
+            "INTERNAL_TOKEN": "client-override",
+            "SECTION": "must-not-submit",
+        },
+    )
+
+    assert [parameter["name"] for parameter in metadata["parameters"]] == [
+        "ARTIFACT",
+        "DEPLOY_PASSWORD",
+        "SECTION",
+        "DRY_RUN",
+    ]
+    assert metadata["parameters"][0]["options_state"] == "not_loaded"
+    assert prepared["parameters"][0]["choices"] == ["a.zip", "b.zip"]
+    assert prepared["parameters"][0]["options_state"] == "ready"
+    assert prepared["parameters"][0]["default"] == "a.zip"
+    assert prepared["parameters"][1]["type"] == "password"
+    assert prepared["parameters"][1]["default"] is None
+    assert prepared["parameters"][2]["type"] == "separator"
+    assert prepared["parameters"][2]["header"] == "Deployment"
+    assert prepared["requires_explicit_password"] is True
+    assert "INTERNAL_TOKEN" not in json.dumps(prepared)
+    assert "api-must-not-leak" not in json.dumps(prepared)
+    assert "password-must-not-leak" not in json.dumps(prepared)
+    assert "server-only" not in json.dumps(prepared)
+    assert queued["id"] == 23
+    assert classic_payloads == [
+        {
+            "parameter": [
+                {"name": "ARTIFACT", "value": "b.zip"},
+                {"name": "DEPLOY_PASSWORD", "value": "runtime-secret"},
+                {"name": "DRY_RUN", "value": False},
+                {"name": "INTERNAL_TOKEN", "value": "server-only"},
+            ]
+        }
+    ]
+    assert job_get_calls == 3
+    assert form_get_calls == 2
+    assert crumb_calls == 1
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("select_attributes", "options", "submitted", "message"),
+    [
+        ("", '<option value="current" selected>current</option>', "stale", "not one of"),
+        ("multiple", '<option value="current">current</option>', "current", "multi-select"),
+        ("", "", "current", "options are unavailable"),
+    ],
+    ids=["stale", "multiple", "empty"],
+)
+async def test_dynamic_form_trigger_fails_closed_before_post(
+    tmp_path: Path,
+    select_attributes: str,
+    options: str,
+    submitted: str,
+    message: str,
+) -> None:
+    credentials = FakeCredentialStore()
+    crumb_calls = 0
+    post_calls = 0
+    build_form = f"""
+    <form method="post" name="parameters" action="build">
+      <div name="parameter">
+        <input type="hidden" name="name" value="ARTIFACT">
+        <select name="value" {select_attributes}>{options}</select>
+      </div>
+    </form>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal crumb_calls, post_calls
+        if request.method == "GET" and request.url.path == "/job/api/api/json":
+            return httpx.Response(
+                200,
+                json={
+                    "name": "api",
+                    "fullName": "api",
+                    "actions": [
+                        {
+                            "parameterDefinitions": [
+                                {
+                                    "name": "ARTIFACT",
+                                    "type": "FileSystemListParameterDefinition",
+                                    "_class": "alex.jenkins.plugins.FileSystemListParameterDefinition",
+                                }
+                            ]
+                        }
+                    ],
+                },
+            )
+        if request.method == "GET" and request.url.path == "/job/api/build":
+            return httpx.Response(200, text=build_form)
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            crumb_calls += 1
+            return httpx.Response(404)
+        if request.method == "POST":
+            post_calls += 1
+            return httpx.Response(201)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    service = JenkinsService(tmp_path, credential_store=credentials, gateway=gateway)
+    created = await service.create_instance(
+        name="Jenkins",
+        base_url="https://ci.example",
+        username="developer",
+        token="secret-token",
+        ca_bundle=None,
+        enabled=True,
+        request_timeout=15,
+    )
+
+    with pytest.raises(JenkinsApiError, match=message) as captured:
+        await service.trigger_build(
+            str(created["id"]),
+            job="api",
+            parameters={"ARTIFACT": submitted},
+        )
+
+    assert captured.value.status_code == 400
+    assert crumb_calls == 0
+    assert post_calls == 0
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["redirect", "oversized"])
+async def test_dynamic_option_form_does_not_follow_redirects_or_read_oversized_html(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    credentials = FakeCredentialStore()
+    requested_urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        if request.url.path == "/job/api/api/json":
+            return httpx.Response(
+                200,
+                json={
+                    "name": "api",
+                    "fullName": "api",
+                    "actions": [
+                        {
+                            "parameterDefinitions": [
+                                {
+                                    "name": "ARTIFACT",
+                                    "type": "FileSystemListParameterDefinition",
+                                    "_class": "alex.jenkins.plugins.FileSystemListParameterDefinition",
+                                }
+                            ]
+                        }
+                    ],
+                },
+            )
+        if request.url.path == "/job/api/build" and mode == "redirect":
+            return httpx.Response(302, headers={"Location": "https://other.example/secret-form"})
+        if request.url.path == "/job/api/build":
+            return httpx.Response(
+                200,
+                content=b"must-not-be-returned",
+                headers={"Content-Length": str((1024 * 1024) + 1)},
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    service = JenkinsService(tmp_path, credential_store=credentials, gateway=gateway)
+    created = await service.create_instance(
+        name="Jenkins",
+        base_url="https://ci.example",
+        username="developer",
+        token="secret-token",
+        ca_bundle=None,
+        enabled=True,
+        request_timeout=15,
+    )
+
+    job = await service.get_job(
+        str(created["id"]),
+        job="api",
+        include_parameter_options=True,
+    )
+
+    assert job["parameters"][0]["options_state"] == "unavailable"
+    assert job["parameters"][0]["choices"] is None
+    assert len(requested_urls) == 2
+    assert all("other.example" not in url for url in requested_urls)
+    assert "must-not-be-returned" not in json.dumps(job)
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured_timeout", "expected_timeout"),
+    [(5, 30), (45, 45), (120, 60)],
+)
+async def test_dynamic_build_form_uses_a_bounded_independent_timeout(
+    configured_timeout: int,
+    expected_timeout: int,
+) -> None:
+    observed_timeouts: list[dict[str, float]] = []
+    build_form = """
+    <form method="post" name="parameters" action="build">
+      <div name="parameter">
+        <input type="hidden" name="name" value="ARTIFACT">
+        <select name="value"><option value="artifact.zip" selected>artifact.zip</option></select>
+      </div>
+    </form>
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        timeout = request.extensions.get("timeout")
+        assert isinstance(timeout, dict)
+        observed_timeouts.append(timeout)
+        return httpx.Response(200, text=build_form)
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    parameters = await gateway._get_build_parameter_form(
+        instance(request_timeout=configured_timeout),
+        "secret-token",
+        job="api",
+        expected_names={"ARTIFACT"},
+    )
+
+    assert parameters["ARTIFACT"].choices == ("artifact.zip",)
+    assert len(observed_timeouts) == 1
+    assert set(observed_timeouts[0].values()) == {float(expected_timeout)}
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_build_parameter_is_rejected_before_crumb_or_post(tmp_path: Path) -> None:
+    credentials = FakeCredentialStore()
+    crumb_calls = 0
+    post_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal crumb_calls, post_calls
+        if request.method == "GET" and request.url.path == "/job/api/api/json":
+            return httpx.Response(
+                200,
+                json={
+                    "name": "api",
+                    "fullName": "api",
+                    "actions": [
+                        {
+                            "parameterDefinitions": [
+                                {
+                                    "name": "ENV",
+                                    "type": "StringParameterDefinition",
+                                    "_class": "hudson.model.StringParameterDefinition",
+                                }
+                            ]
+                        }
+                    ],
+                },
+            )
+        if request.method == "GET" and request.url.path == "/crumbIssuer/api/json":
+            crumb_calls += 1
+            return httpx.Response(404)
+        if request.method == "POST":
+            post_calls += 1
+            return httpx.Response(201)
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    gateway = JenkinsGateway(lambda _context: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    service = JenkinsService(tmp_path, credential_store=credentials, gateway=gateway)
+    created = await service.create_instance(
+        name="Jenkins",
+        base_url="https://ci.example",
+        username="developer",
+        token="secret-token",
+        ca_bundle=None,
+        enabled=True,
+        request_timeout=15,
+    )
+
+    with pytest.raises(JenkinsApiError, match="TYPO.*not defined") as captured:
+        await service.trigger_build(
+            str(created["id"]),
+            job="api",
+            parameters={"TYPO": "production"},
+        )
+
+    assert captured.value.status_code == 400
+    assert crumb_calls == 0
+    assert post_calls == 0
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("duplicate_in_actions", [False, True], ids=["property-only", "actions-property"])
 async def test_property_parameter_definitions_are_normalized_deduplicated_and_triggered_once(
     tmp_path: Path,
@@ -1273,6 +1973,8 @@ async def test_property_parameter_definitions_are_normalized_deduplicated_and_tr
             "description": "Target environment",
             "default": "staging",
             "choices": ["staging", "production"],
+            "options_state": "ready",
+            "multiple": False,
         },
         {
             "name": "DRY_RUN",
@@ -1281,6 +1983,8 @@ async def test_property_parameter_definitions_are_normalized_deduplicated_and_tr
             "description": "Validate without deploying",
             "default": False,
             "choices": None,
+            "options_state": "not_applicable",
+            "multiple": False,
         },
     ]
     assert job["parameterized"] is True
@@ -1298,9 +2002,48 @@ async def test_property_parameter_definitions_are_normalized_deduplicated_and_tr
     [
         ([], {"ENV": "production"}, "not parameterized"),
         (
-            [{"name": "ARCHIVE", "type": "FileParameterDefinition"}],
+            [
+                {
+                    "name": "ARCHIVE",
+                    "type": "FileParameterDefinition",
+                    "_class": "hudson.model.FileParameterDefinition",
+                }
+            ],
             {},
             "file parameters are not supported",
+        ),
+        (
+            [
+                {
+                    "name": "ARCHIVE",
+                    "type": "Base64FileParameterDefinition",
+                    "_class": "io.jenkins.plugins.file_parameters.Base64FileParameterDefinition",
+                }
+            ],
+            {},
+            "file parameters are not supported",
+        ),
+        (
+            [
+                {
+                    "name": "ARCHIVE",
+                    "type": "StashedFileParameterDefinition",
+                    "_class": "io.jenkins.plugins.file_parameters.StashedFileParameterDefinition",
+                }
+            ],
+            {},
+            "file parameters are not supported",
+        ),
+        (
+            [
+                {
+                    "name": "AMI",
+                    "type": "PT_SINGLE_SELECT",
+                    "_class": "org.biouno.unochoice.CascadeChoiceParameter",
+                }
+            ],
+            {},
+            "parameter type is not supported",
         ),
     ],
 )

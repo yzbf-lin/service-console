@@ -87,11 +87,24 @@ describe("Jenkins API client", () => {
       buildable: true,
       in_queue: false,
       description: "发布",
+      requires_explicit_password: true,
       parameters: [
         { name: "DRY_RUN", type: "BooleanParameterDefinition", description: "dry", default: true, choices: null },
         { name: "RETRIES", type: "IntegerParameterDefinition", description: "times", default: 2, choices: null },
         { name: "ENV", type: "ChoiceParameterDefinition", description: "env", default: "test", choices: ["test", "prod"] },
         { name: "BRANCH", type: "choice", raw_type: "GitParameterDefinition", description: "branch", default: "master", choices: ["master", "feature/api"] },
+        {
+          name: "ARTIFACT",
+          type: "file",
+          raw_type: "alex.jenkins.plugins.FileSystemListParameterDefinition",
+          description: "artifact",
+          default: null,
+          choices: null,
+          options_state: "unavailable",
+          multiple: false,
+        },
+        { name: "GROUP", type: "separator", description: "", default: null, choices: null, options_state: "not_applicable", multiple: false, header: "发布选项" },
+        { name: "INTERNAL", type: "string", raw_type: "com.wangyin.parameter.WHideParameterDefinition", description: "", default: "hidden", choices: null },
       ],
       last_build: rawBuild,
     };
@@ -116,9 +129,20 @@ describe("Jenkins API client", () => {
     const listedJobs = await client.listJenkinsJobs(rawInstance.id, "folder", "deploy");
     expect(listedJobs[0]?.lastBuild).toBeNull();
     const job = await client.getJenkinsJob(rawInstance.id, "folder/job");
-    expect(job.parameters.map((parameter) => parameter.type)).toEqual(["boolean", "number", "choice", "choice"]);
+    expect(job.parameters.map((parameter) => parameter.type)).toEqual([
+      "boolean",
+      "number",
+      "choice",
+      "choice",
+      "choice",
+      "separator",
+      "hidden",
+    ]);
+    expect(job.parameters[4]).toMatchObject({ optionsState: "unavailable", multiple: false });
+    expect(job.parameters[5]).toMatchObject({ header: "发布选项", optionsState: "not_applicable" });
+    expect(job.requiresExplicitPassword).toBe(true);
     const jobWithOptions = await client.getJenkinsJob(rawInstance.id, "folder/job", true);
-    expect(jobWithOptions.parameters.at(-1)?.choices).toEqual(["master", "feature/api"]);
+    expect(jobWithOptions.parameters.find((parameter) => parameter.name === "BRANCH")?.choices).toEqual(["master", "feature/api"]);
     await expect(client.listJenkinsBuilds(rawInstance.id, "folder/job", 25)).resolves.toEqual([
       expect.objectContaining({ number: 42 }),
     ]);
