@@ -37,7 +37,10 @@ requiring Docker or another container runtime.
 
 - Register commands with a working directory, environment variables, auto-start policy, and graceful
   stop timeout.
-- Start, stop, restart, edit, copy, remove, and inspect services from a compact three-pane workspace.
+- Use a collapsible icon/text navigation rail while service items and service-specific actions remain
+  inside the compact service workspace.
+- Start, stop, restart, edit, copy, remove, and inspect services from the service list, live console,
+  and runtime details panes.
 - Track PID, uptime, exit code, restart count, CPU, and memory.
 - Capture stdout and stderr in independent persistent logs and bounded live buffers.
 - Render ANSI output with xterm.js search, selection, links, wrapping, and scrollback.
@@ -130,6 +133,11 @@ visit follows the operating-system color scheme; an explicit choice is saved in 
 directory as `ui-preferences.json`, so it survives desktop restarts and random loopback ports. The
 selected palette also updates the xterm.js log console and browser theme-color metadata.
 
+On desktop, the left rail is navigation only: use its bottom control to switch between the expanded
+icon-and-label mode and the compact icon-only mode. Service cards, filters, and **Add** stay in the
+**Services** content area, matching the content-owned layout used by the Jenkins workspace. On mobile,
+the rail becomes the bottom navigation and the service selector keeps the Add action in its own toolbar.
+
 Supabase is an optional cloud adapter. To make a Supabase client available to future authentication
 or state-sync integrations, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` at
 build time. Local start, stop, restart, logging, and port operations always remain on the FastAPI
@@ -182,10 +190,10 @@ When `--url` is omitted, the CLI automatically discovers the running desktop con
 
 ### Add a service from a running process
 
-Open **Add service** and select the **Running processes** tab to search by name, command, or PID. For a
-listening process, the plus button in **Ports and processes** opens the same form with its definition
-prefilled. Review and edit the inferred name, command, working directory, and allow-listed environment
-variables before saving.
+Open **Services**, use **Add** in the upper-right corner of the service list, and select the **Running
+processes** tab to search by name, command, or PID. For a listening process, the plus button in **Ports
+and processes** opens the same form with its definition prefilled. Review and edit the inferred name,
+command, working directory, and allow-listed environment variables before saving.
 
 This creates configuration from the process; it does not reconnect to that process's existing stdout
 or stderr pipes. Stop the original process before starting the saved service in Service Console to

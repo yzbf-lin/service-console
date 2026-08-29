@@ -1,16 +1,16 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { Network, ServerCog, Settings, Workflow } from "lucide-react";
+import { Network, PanelLeftClose, PanelLeftOpen, ServerCog, Settings, Workflow } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 import type { ViewId } from "@/lib/types";
 
 interface SidebarNavProps {
   activeView: ViewId;
-  children?: ReactNode;
+  collapsed: boolean;
   updateAvailable?: boolean;
   onViewChange: (view: ViewId) => void;
+  onCollapsedChange: (collapsed: boolean) => void;
 }
 
 interface NavigationItem {
@@ -36,9 +36,10 @@ function NavigationButton({
   label,
   description,
   icon: Icon,
+  collapsed,
   showUpdateIndicator = false,
   onViewChange,
-}: Omit<SidebarNavProps, "children" | "updateAvailable"> & NavigationItem & {
+}: Omit<SidebarNavProps, "updateAvailable" | "onCollapsedChange"> & NavigationItem & {
   showUpdateIndicator?: boolean;
 }) {
   const active = activeView === id;
@@ -48,12 +49,14 @@ function NavigationButton({
         "group relative flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] font-medium text-muted-foreground outline-none transition-colors",
         "hover:bg-accent/70 hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/80",
         "max-[767px]:h-full max-[767px]:min-h-0 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:basis-0 max-[767px]:flex-col max-[767px]:justify-center max-[767px]:gap-1 max-[767px]:px-1 max-[767px]:py-1.5 max-[767px]:text-center max-[767px]:text-[10px]",
+        collapsed && "min-[768px]:justify-center min-[768px]:px-2",
         active && "bg-accent text-accent-foreground",
       )}
       type="button"
       data-view={id}
       aria-controls={`${id}View`}
       aria-current={active ? "page" : undefined}
+      aria-label={collapsed ? `${label}${showUpdateIndicator ? "，有可用更新" : ""}` : undefined}
       title={label}
       onClick={() => onViewChange(id)}
     >
@@ -66,7 +69,7 @@ function NavigationButton({
         aria-hidden="true"
       />
       <Icon className={cn("size-4 shrink-0", active && "text-primary")} strokeWidth={1.8} aria-hidden="true" />
-      <span className="min-w-0 flex-1 max-[767px]:flex-none">
+      <span className={cn("min-w-0 flex-1 max-[767px]:flex-none", collapsed && "min-[768px]:hidden")}>
         <span className="block truncate leading-none">{label}</span>
         <span className="mt-1 block truncate text-[9px] font-normal text-muted-foreground max-[767px]:hidden">{description}</span>
       </span>
@@ -86,9 +89,10 @@ function NavigationButton({
 
 export function SidebarNav({
   activeView,
-  children,
+  collapsed,
   updateAvailable = false,
   onViewChange,
+  onCollapsedChange,
 }: SidebarNavProps) {
   return (
     <aside
@@ -98,20 +102,15 @@ export function SidebarNav({
         "max-[767px]:h-[58px] max-[767px]:flex-row max-[767px]:rounded-xl max-[767px]:border max-[767px]:bg-card/95 max-[767px]:p-1 max-[767px]:shadow-[var(--shadow-menu)] max-[767px]:backdrop-blur-xl",
       )}
       aria-label="主功能"
+      data-collapsed={collapsed}
     >
       <nav className="flex min-h-0 flex-1 flex-col max-[767px]:flex-row" aria-label="功能导航">
         <div className="shrink-0 space-y-1 p-2 max-[767px]:flex max-[767px]:min-w-0 max-[767px]:flex-[2] max-[767px]:space-y-0 max-[767px]:p-0" data-nav-section="primary">
-          <p className="mb-1 px-2 text-[10px] font-medium text-muted-foreground max-[767px]:hidden">工作区</p>
+          <p className={cn("mb-1 px-2 text-[10px] font-medium text-muted-foreground max-[767px]:hidden", collapsed && "min-[768px]:sr-only")}>工作区</p>
           {primaryItems.map((item) => (
-            <NavigationButton key={item.id} {...item} activeView={activeView} onViewChange={onViewChange} />
+            <NavigationButton key={item.id} {...item} activeView={activeView} collapsed={collapsed} onViewChange={onViewChange} />
           ))}
         </div>
-
-        {children ? (
-          <div className="flex min-h-0 flex-1 flex-col border-t max-[767px]:hidden" data-nav-content="services">
-            {children}
-          </div>
-        ) : null}
 
         <div
           className="mt-auto shrink-0 border-t p-2 max-[767px]:mt-0 max-[767px]:flex max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:border-t-0 max-[767px]:p-0"
@@ -122,12 +121,31 @@ export function SidebarNav({
               key={item.id}
               {...item}
               activeView={activeView}
+              collapsed={collapsed}
               showUpdateIndicator={item.id === "settings" && updateAvailable}
               onViewChange={onViewChange}
             />
           ))}
         </div>
       </nav>
+
+      <div className="shrink-0 border-t p-2 max-[767px]:hidden">
+        <button
+          className={cn(
+            "flex min-h-9 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-medium text-muted-foreground outline-none transition-colors",
+            "hover:bg-accent/70 hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/80",
+            collapsed && "justify-center px-2",
+          )}
+          type="button"
+          aria-label={collapsed ? "展开菜单栏" : "收起菜单栏"}
+          aria-expanded={!collapsed}
+          title={collapsed ? "展开菜单栏" : "收起菜单栏"}
+          onClick={() => onCollapsedChange(!collapsed)}
+        >
+          {collapsed ? <PanelLeftOpen className="size-4 shrink-0" /> : <PanelLeftClose className="size-4 shrink-0" />}
+          {collapsed ? null : <span>收起菜单栏</span>}
+        </button>
+      </div>
     </aside>
   );
 }

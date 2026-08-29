@@ -1,6 +1,6 @@
 "use client";
 
-import { ListFilter, Search, ServerOff } from "lucide-react";
+import { ListFilter, Plus, Search, ServerOff } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -26,7 +26,8 @@ interface ServiceListPanelProps {
   selectedName: string | null;
   busyServices: Set<string>;
   className?: string;
-  variant?: "sidebar" | "drawer";
+  variant?: "content" | "drawer";
+  onAddService?: () => void;
   onSelect: (name: string) => void;
   onAction: (name: string, action: ServiceAction) => void;
 }
@@ -53,7 +54,8 @@ export function ServiceListPanel({
   selectedName,
   busyServices,
   className,
-  variant = "sidebar",
+  variant = "content",
+  onAddService,
   onSelect,
   onAction,
 }: ServiceListPanelProps) {
@@ -109,6 +111,7 @@ export function ServiceListPanel({
     <section
       className={cn(
         "flex min-h-0 flex-col overflow-hidden",
+        variant === "content" && "bg-[var(--sidebar)]",
         variant === "drawer" && "h-full bg-card",
         className,
       )}
@@ -129,6 +132,18 @@ export function ServiceListPanel({
             <span className={cn(statusCounts.failed > 0 && "text-destructive")}>异常 {statusCounts.failed}</span>
           </p>
         </div>
+        {onAddService ? (
+          <Button
+            className="h-7 shrink-0 rounded-md px-2 text-[10px] shadow-none"
+            size="sm"
+            type="button"
+            aria-label="添加服务"
+            onClick={onAddService}
+          >
+            <Plus className="size-3" />
+            添加
+          </Button>
+        ) : null}
       </header>
 
       <div className="flex shrink-0 items-center gap-1.5 px-2 pb-2">
@@ -199,7 +214,7 @@ export function ServiceListPanel({
           <div className="flex min-h-48 flex-col items-center justify-center gap-1 px-4 text-center text-muted-foreground">
             <ServerOff className="mb-1 size-6" strokeWidth={1.5} aria-hidden="true" />
             <strong className="text-[12px] text-secondary-foreground">{services.length ? "没有匹配的服务" : "还没有服务"}</strong>
-            <span className="text-[11px]">{services.length ? "调整关键词或状态筛选" : "点击工具栏中的“添加服务”"}</span>
+            <span className="text-[11px]">{services.length ? "调整关键词或状态筛选" : "点击右上角的“添加”"}</span>
           </div>
         )}
       </div>

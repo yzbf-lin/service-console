@@ -16,7 +16,6 @@ import { PortsView, type ProcessImportHint } from "@/components/ports-view";
 import { JenkinsView } from "@/components/jenkins-view";
 import { ServiceControlView } from "@/components/service-control-view";
 import { ServiceFormDialog, type ServiceFormMode } from "@/components/service-form-dialog";
-import { ServiceListPanel } from "@/components/service-list-panel";
 import { SettingsView } from "@/components/settings-view";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { ToastProvider, useToast } from "@/components/toast-provider";
@@ -76,6 +75,7 @@ function ServiceConsoleContent() {
     typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("token") || ""
   ));
   const [refreshing, setRefreshing] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [portRefreshSignal, setPortRefreshSignal] = useState(0);
   const [jenkinsRefreshSignal, setJenkinsRefreshSignal] = useState(0);
   const [formOpen, setFormOpen] = useState(false);
@@ -321,6 +321,7 @@ function ServiceConsoleContent() {
         active
         onSelect={serviceState.selectService}
         onAction={(name, action) => void handleServiceAction(name, action)}
+        onAddService={() => openForm("create")}
         onClearLogs={() => {
           serviceState.clearVisibleLogs();
           notify("当前视图已清空", "服务端日志文件不会被删除", "info");
@@ -330,7 +331,11 @@ function ServiceConsoleContent() {
   }
 
   return (
-    <div className="service-console-shell" data-view={activeView}>
+    <div
+      className="service-console-shell"
+      data-view={activeView}
+      data-sidebar-collapsed={sidebarCollapsed}
+    >
       <Topbar
         activeView={activeView}
         apiStatus={serviceState.apiStatus}
@@ -341,26 +346,17 @@ function ServiceConsoleContent() {
         serviceCount={serviceState.services.length}
         selectedServiceName={serviceState.selectedService?.name ?? null}
         onRefresh={() => void refresh()}
-        onAddService={() => openForm("create")}
         onToggleTheme={toggleTheme}
       />
 
       <div className="service-console-body" data-view={activeView}>
         <SidebarNav
           activeView={activeView}
+          collapsed={sidebarCollapsed}
           updateAvailable={updateAvailable}
           onViewChange={changeView}
-        >
-          {activeView === "services" ? (
-            <ServiceListPanel
-              services={serviceState.services}
-              selectedName={serviceState.selectedName}
-              busyServices={serviceState.busyServices}
-              onSelect={serviceState.selectService}
-              onAction={(name, action) => void handleServiceAction(name, action)}
-            />
-          ) : null}
-        </SidebarNav>
+          onCollapsedChange={setSidebarCollapsed}
+        />
         <div className="service-console-stage">{content}</div>
       </div>
 

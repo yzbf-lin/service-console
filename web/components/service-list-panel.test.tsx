@@ -91,4 +91,22 @@ describe("ServiceListPanel", () => {
     expect(screen.getByRole("button", { name: /^service-unknown，/ })).not.toBeNull();
     expect(screen.queryByRole("button", { name: /^service-stopped，/ })).toBeNull();
   });
+
+  it("places Add service in the service content header", async () => {
+    const user = userEvent.setup();
+    const onAddService = vi.fn();
+    render(
+      <ServiceListPanel
+        services={services}
+        selectedName={null}
+        busyServices={new Set()}
+        onSelect={vi.fn()}
+        onAction={vi.fn()}
+        onAddService={onAddService}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "添加服务" }));
+    expect(onAddService).toHaveBeenCalledOnce();
+  });
 });
