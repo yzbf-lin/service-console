@@ -37,7 +37,7 @@ class ServiceDefinition:
     def __post_init__(self) -> None:
         self.name = str(self.name).strip()
         self.command = str(self.command).strip()
-        self.cwd = str(self.cwd)
+        self.cwd = _normalize_working_directory(self.cwd)
         self.env = {str(key): str(value) for key, value in self.env.items()}
         self.auto_start = bool(self.auto_start)
         self.stop_timeout = float(self.stop_timeout)
@@ -73,6 +73,15 @@ class ServiceDefinition:
             auto_start=value.get("auto_start", False),
             stop_timeout=value.get("stop_timeout", 5.0),
         )
+
+
+def _normalize_working_directory(value: object) -> str:
+    """Keep spaces in a cwd while tolerating shell-style wrapping quotes from the UI/config."""
+
+    cwd = str(value).strip()
+    if len(cwd) >= 2 and cwd[0] == cwd[-1] and cwd[0] in {'"', "'"}:
+        cwd = cwd[1:-1].strip()
+    return cwd
 
 
 @dataclass(slots=True)

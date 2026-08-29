@@ -291,6 +291,11 @@ codex mcp add service-console -- \
 }
 ```
 
+Windows 工作目录可以包含空格。在应用表单中直接填写 `D:\Programs\Clash for Windows`，不要额外添加
+外层引号；也可以写成 `D:/Programs/Clash for Windows`。手写 JSON 时，反斜杠必须按 JSON 规则写成
+`"D:\\Programs\\Clash for Windows"`，使用正斜杠则不需要转义。若启动命令以带空格的绝对 `.exe`、
+`.com`、`.bat` 或 `.cmd` 路径开头，Service Console 会在 Windows 启动时自动保护可执行文件路径。
+
 AI 调用 `project_apply_config` 后会创建、更新或跳过未变化的服务，但不会删除文件中未声明的现有服务。
 随后可通过 `service_restart`、`service_status` 和 `service_logs` 完成代码修改后的重启验收。建议在项目的
 `AGENTS.md` 中记录：修改后端后重启 backend，修改 Celery 任务后重启 worker，修改定时调度配置时再

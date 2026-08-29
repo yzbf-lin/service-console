@@ -39,6 +39,49 @@ def matching_process_is_alive(pid: int, create_time: float) -> bool:
         return False
 
 
+def test_service_definition_preserves_windows_cwd_spaces_and_removes_wrapping_quotes() -> None:
+    plain = ServiceDefinition(
+        name="clash",
+        command="Clash.exe",
+        cwd=r"D:\Programs\Clash for Windows",
+    )
+    quoted = ServiceDefinition(
+        name="quoted-clash",
+        command="Clash.exe",
+        cwd=r'"D:\Programs\Clash for Windows"',
+    )
+
+    assert plain.cwd == r"D:\Programs\Clash for Windows"
+    assert quoted.cwd == plain.cwd
+
+
+def test_windows_shell_command_quotes_an_absolute_executable_path_with_spaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(manager_module, "_IS_WINDOWS", True)
+    command = (
+        r"D:\Programs\Clash for Windows\Clash for Windows.exe "
+        r'--profile "D:\Profiles\Default Profile"'
+    )
+
+    prepared = manager_module._prepare_shell_command(command)
+
+    assert prepared == (
+        r'"D:\Programs\Clash for Windows\Clash for Windows.exe" '
+        r'--profile "D:\Profiles\Default Profile"'
+    )
+
+
+def test_windows_shell_command_leaves_shell_commands_and_quoted_paths_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(manager_module, "_IS_WINDOWS", True)
+
+    assert manager_module._prepare_shell_command("python app.py") == "python app.py"
+    quoted = r'"D:\Programs\Clash for Windows\Clash.exe" --silent'
+    assert manager_module._prepare_shell_command(quoted) == quoted
+
+
 async def wait_for_state(
     manager: ServiceManager,
     name: str,
