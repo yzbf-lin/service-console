@@ -37,8 +37,8 @@ requiring Docker or another container runtime.
 
 - Register commands with a working directory, environment variables, auto-start policy, and graceful
   stop timeout.
-- Use a collapsible icon/text navigation rail while service items and service-specific actions remain
-  inside the compact service workspace.
+- Use a fixed JetBrains-style icon rail with hover and keyboard-focus labels, while service items and
+  service-specific actions remain inside the compact service workspace.
 - Start, stop, restart, edit, copy, remove, and inspect services from the service list, live console,
   and runtime details panes.
 - Track PID, uptime, exit code, restart count, CPU, and memory.
@@ -148,10 +148,11 @@ visit follows the operating-system color scheme; an explicit choice is saved in 
 directory as `ui-preferences.json`, so it survives desktop restarts and random loopback ports. The
 selected palette also updates the xterm.js log console and browser theme-color metadata.
 
-On desktop, the left rail is navigation only: use its bottom control to switch between the expanded
-icon-and-label mode and the compact icon-only mode. Service cards, filters, and **Add** stay in the
-**Services** content area, matching the content-owned layout used by the Jenkins workspace. On mobile,
-the rail becomes the bottom navigation and the service selector keeps the Add action in its own toolbar.
+On desktop, the left rail is a fixed icon-only tool window bar inspired by JetBrains IDEs. Hover an icon
+or move keyboard focus to it to reveal its destination name. Service cards, filters, and **Add** stay in
+the **Services** content area, matching the content-owned layout used by the Jenkins workspace. On
+mobile, the rail becomes a labeled bottom navigation and the service selector keeps the Add action in
+its own toolbar.
 
 Supabase is an optional cloud adapter. To make a Supabase client available to future authentication
 or state-sync integrations, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` at

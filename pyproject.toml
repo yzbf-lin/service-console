@@ -1,6 +1,6 @@
 [project]
 name = "service-console"
-version = "0.3.8"
+version = "0.3.9"
 description = "Native process supervisor with web and terminal interfaces"
 readme = "README.md"
 license = "MIT"

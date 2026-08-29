@@ -77,20 +77,15 @@ vi.mock("@/components/settings-view", () => ({
 }));
 vi.mock("@/components/sidebar-nav", () => ({
   SidebarNav: ({
-    collapsed,
     updateAvailable,
     onViewChange,
-    onCollapsedChange,
   }: {
-    collapsed: boolean;
     updateAvailable?: boolean;
     onViewChange: (view: ViewId) => void;
-    onCollapsedChange: (collapsed: boolean) => void;
   }) => (
-    <aside data-testid="sidebar" data-collapsed={String(collapsed)} data-update-available={String(Boolean(updateAvailable))}>
+    <aside data-testid="sidebar" data-update-available={String(Boolean(updateAvailable))}>
       <button type="button" onClick={() => onViewChange("services")}>切换服务页</button>
       <button type="button" onClick={() => onViewChange("settings")}>切换设置页</button>
-      <button type="button" onClick={() => onCollapsedChange(!collapsed)}>{collapsed ? "展开菜单栏" : "收起菜单栏"}</button>
     </aside>
   ),
 }));

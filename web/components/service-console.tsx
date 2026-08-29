@@ -75,7 +75,6 @@ function ServiceConsoleContent() {
     typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("token") || ""
   ));
   const [refreshing, setRefreshing] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [portRefreshSignal, setPortRefreshSignal] = useState(0);
   const [jenkinsRefreshSignal, setJenkinsRefreshSignal] = useState(0);
   const [formOpen, setFormOpen] = useState(false);
@@ -331,11 +330,7 @@ function ServiceConsoleContent() {
   }
 
   return (
-    <div
-      className="service-console-shell"
-      data-view={activeView}
-      data-sidebar-collapsed={sidebarCollapsed}
-    >
+    <div className="service-console-shell" data-view={activeView}>
       <Topbar
         activeView={activeView}
         apiStatus={serviceState.apiStatus}
@@ -352,10 +347,8 @@ function ServiceConsoleContent() {
       <div className="service-console-body" data-view={activeView}>
         <SidebarNav
           activeView={activeView}
-          collapsed={sidebarCollapsed}
           updateAvailable={updateAvailable}
           onViewChange={changeView}
-          onCollapsedChange={setSidebarCollapsed}
         />
         <div className="service-console-stage">{content}</div>
       </div>
