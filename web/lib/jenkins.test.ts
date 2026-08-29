@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveJenkinsBuildUrl } from "@/lib/jenkins";
+import { normalizeJenkinsJob, resolveJenkinsBuildUrl } from "@/lib/jenkins";
 
 describe("resolveJenkinsBuildUrl", () => {
   it("uses the configured origin and preserves the Jenkins Job URL suffix", () => {
@@ -48,5 +48,29 @@ describe("resolveJenkinsBuildUrl", () => {
     ["https://jenkins.example.com", "ftp://jenkins.internal/job/app/42/"],
   ])("rejects an invalid or unsafe URL pair (%s, %s)", (baseUrl, buildUrl) => {
     expect(resolveJenkinsBuildUrl(baseUrl, buildUrl)).toBeNull();
+  });
+});
+
+describe("normalizeJenkinsJob", () => {
+  it("preserves string-array defaults for multi-select parameters", () => {
+    const job = normalizeJenkinsJob({
+      name: "deploy",
+      parameters: [
+        {
+          name: "GROUP",
+          type: "choice",
+          choices: ["server-a", "server-b"],
+          default: ["server-a", "server-b", 3],
+          multiple: true,
+          options_state: "ready",
+        },
+      ],
+    });
+
+    expect(job.parameters[0]).toMatchObject({
+      name: "GROUP",
+      defaultValue: ["server-a", "server-b"],
+      multiple: true,
+    });
   });
 });

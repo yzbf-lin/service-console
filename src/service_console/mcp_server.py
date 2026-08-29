@@ -831,9 +831,9 @@ async def jenkins_queue_list(
 async def jenkins_build_trigger(
     instance_id: Annotated[str, Field(min_length=1, max_length=200)],
     job: Annotated[str, Field(min_length=1, max_length=1_000)],
-    parameters: dict[str, str | int | float | bool] | None = None,
+    parameters: dict[str, str | int | float | bool | list[str]] | None = None,
 ) -> dict[str, object]:
-    """Trigger one Jenkins build. This non-idempotent request is never retried automatically."""
+    """Trigger one Jenkins build, using string arrays for multi-select parameters. Never retried."""
 
     return await _bridge.request(
         "POST",

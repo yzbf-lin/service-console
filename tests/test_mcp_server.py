@@ -385,7 +385,7 @@ async def test_jenkins_tools_use_explicit_instance_routes_and_bounded_logs(
     triggered = await mcp_module.jenkins_build_trigger(
         "jenkins one",
         "team/backend",
-        {"BRANCH": "main", "RETRIES": 2, "CLEAN": True},
+        {"BRANCH": "main", "GROUP": ["server-a", "server-b"], "RETRIES": 2, "CLEAN": True},
     )
     stopped = await mcp_module.jenkins_build_stop("jenkins one", "team/backend", 8)
     cancelled = await mcp_module.jenkins_queue_cancel("jenkins one", 17)
@@ -436,7 +436,12 @@ async def test_jenkins_tools_use_explicit_instance_routes_and_bounded_logs(
             {
                 "params": {"job": "team/backend"},
                 "json_body": {
-                    "parameters": {"BRANCH": "main", "RETRIES": 2, "CLEAN": True}
+                    "parameters": {
+                        "BRANCH": "main",
+                        "GROUP": ["server-a", "server-b"],
+                        "RETRIES": 2,
+                        "CLEAN": True,
+                    }
                 },
                 "retry_on_failure": False,
             },

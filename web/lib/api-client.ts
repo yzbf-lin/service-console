@@ -21,6 +21,7 @@ import {
 import type {
   AppUpdateStatus,
   JenkinsBuild,
+  JenkinsBuildParameterValue,
   JenkinsBuildTriggerResult,
   JenkinsConnectionResult,
   JenkinsInstance,
@@ -105,7 +106,7 @@ export interface ServiceConsoleApiClient {
   triggerJenkinsBuild(
     id: string,
     job: string,
-    parameters: Record<string, string | number | boolean>,
+    parameters: Record<string, JenkinsBuildParameterValue>,
   ): Promise<JenkinsBuildTriggerResult>;
   stopJenkinsBuild(id: string, job: string, number: number): Promise<void>;
   listJenkinsQueue(id: string): Promise<JenkinsQueueItem[]>;

@@ -147,7 +147,10 @@ describe("Jenkins API client", () => {
       expect.objectContaining({ number: 42 }),
     ]);
     await client.getJenkinsBuild(rawInstance.id, "folder/job", 42);
-    await client.triggerJenkinsBuild(rawInstance.id, "folder/job", { DRY_RUN: true });
+    await client.triggerJenkinsBuild(rawInstance.id, "folder/job", {
+      DRY_RUN: true,
+      GROUP: ["server-a", "server-b"],
+    });
     await client.stopJenkinsBuild(rawInstance.id, "folder/job", 42);
     await expect(client.listJenkinsQueue(rawInstance.id)).resolves.toEqual([
       expect.objectContaining({ id: 10 }),
@@ -171,5 +174,8 @@ describe("Jenkins API client", () => {
       ["/api/jenkins/instances/prod%2Fid/queue/10/cancel", "POST"],
       ["/api/jenkins/instances/prod%2Fid/builds/42/log?job=folder%2Fjob&start=128", undefined],
     ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[5]?.[1]?.body))).toEqual({
+      parameters: { DRY_RUN: true, GROUP: ["server-a", "server-b"] },
+    });
   });
 });

@@ -428,7 +428,8 @@ describe("JenkinsView", () => {
     }));
   });
 
-  it("explains dynamically discovered multiple parameters and disables confirmation", async () => {
+  it("selects and submits dynamically discovered multiple parameters", async () => {
+    const user = userEvent.setup();
     const metadataJob = jobFixture("Job A", [
       parameterFixture({ name: "ARTIFACTS", type: "choice" }),
     ]);
@@ -438,6 +439,7 @@ describe("JenkinsView", () => {
         choices: ["a.zip", "b.zip"],
         optionsState: "ready",
         multiple: true,
+        defaultValue: ["a.zip"],
       },
     ]);
     mocks.listJenkinsJobs.mockResolvedValue([metadataJob]);
@@ -448,10 +450,17 @@ describe("JenkinsView", () => {
 
     const runButton = await screen.findByRole("button", { name: "运行" });
     await waitFor(() => expect((runButton as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(runButton);
+    await user.click(runButton);
     const dialog = await screen.findByRole("dialog", { name: /运行/ });
-    expect(within(dialog).getByText(/多选参数暂不支持/)).toBeTruthy();
-    expect((within(dialog).getByRole("button", { name: "确认运行" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(within(dialog).getByRole("button", { name: /参数 ARTIFACTS/ }));
+    expect(screen.getByRole("menuitemcheckbox", { name: "a.zip" }).getAttribute("data-state")).toBe("checked");
+    await user.click(screen.getByRole("menuitemcheckbox", { name: "b.zip" }));
+    await user.keyboard("{Escape}");
+    await user.click(within(dialog).getByRole("button", { name: "确认运行" }));
+
+    await waitFor(() => expect(mocks.triggerJenkinsBuild).toHaveBeenCalledWith("a", "Job A", {
+      ARTIFACTS: ["a.zip", "b.zip"],
+    }));
   });
 
   it("falls back to the first Git option when Jenkins returns an unavailable default", async () => {

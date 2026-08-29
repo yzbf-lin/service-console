@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ChevronDown,
   ChevronLeft,
   CircleAlert,
   Copy,
@@ -46,6 +47,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -62,6 +64,7 @@ import type { ServiceConsoleApiClient } from "@/lib/api-client";
 import { resolveJenkinsBuildUrl } from "@/lib/jenkins";
 import type {
   JenkinsBuild,
+  JenkinsBuildParameterValue,
   JenkinsInstance,
   JenkinsInstanceInput,
   JenkinsJob,
@@ -176,16 +179,65 @@ function isReactiveParameter(parameter: JenkinsJobParameter): boolean {
 
 function unsupportedParameterMessage(parameters: JenkinsJobParameter[]): string {
   const files = parameters.filter((parameter) => parameter.type === "file").map((parameter) => parameter.name);
-  const multiple = parameters.filter((parameter) => parameter.multiple).map((parameter) => parameter.name);
   const unsupported = parameters.filter((parameter) => parameter.type === "unsupported");
   const reactive = unsupported.filter(isReactiveParameter).map((parameter) => parameter.name);
   const other = unsupported.filter((parameter) => !isReactiveParameter(parameter)).map((parameter) => parameter.name);
   return [
     files.length ? `文件上传参数 ${files.join("、")} 暂不支持` : "",
-    multiple.length ? `多选参数 ${multiple.join("、")} 暂不支持` : "",
     reactive.length ? `级联或响应式参数 ${reactive.join("、")} 暂不支持` : "",
     other.length ? `参数 ${other.join("、")} 的类型暂不支持` : "",
   ].filter(Boolean).join("；");
+}
+
+function ParameterMultiSelect({
+  choices,
+  name,
+  onValueChange,
+  value,
+}: {
+  choices: string[];
+  name: string;
+  onValueChange: (value: string[]) => void;
+  value: string[];
+}) {
+  const selected = new Set(value);
+  const summary = value.length === 0
+    ? "请选择"
+    : value.length === 1
+      ? value[0] || "（空值）"
+      : `已选择 ${value.length} 项`;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          className="h-8 w-full justify-between px-2 text-xs font-normal"
+          variant="outline"
+          size="sm"
+          aria-label={`参数 ${name}，${summary}`}
+        >
+          <span className={cn("truncate", value.length === 0 && "text-muted-foreground")}>{summary}</span>
+          <ChevronDown className="size-3.5 shrink-0 opacity-50" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        className="max-h-72 w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto"
+      >
+        {choices.map((choice, index) => (
+          <DropdownMenuCheckboxItem
+            key={`${choice}-${index}`}
+            checked={selected.has(choice)}
+            onCheckedChange={(checked) => onValueChange(
+              checked ? [...value, choice] : value.filter((item) => item !== choice),
+            )}
+            onSelect={(event) => event.preventDefault()}
+          >
+            {choice || "（空值）"}
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 function choiceUnavailableMessage(parameter: JenkinsJobParameter): string {
@@ -259,7 +311,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const [preparingBuild, setPreparingBuild] = useState(false);
 
   const [triggerOpen, setTriggerOpen] = useState(false);
-  const [parameterValues, setParameterValues] = useState<Record<string, string | boolean>>({});
+  const [parameterValues, setParameterValues] = useState<Record<string, string | boolean | string[]>>({});
   const [stopTarget, setStopTarget] = useState<JenkinsBuild | null>(null);
   const [cancelTarget, setCancelTarget] = useState<JenkinsQueueItem | null>(null);
 
@@ -305,7 +357,6 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const triggerInvalidChoiceParameters = useMemo(
     () => triggerJob?.parameters.filter((parameter) => (
       parameter.type === "choice"
-      && !parameter.multiple
       && (parameterOptionsState(parameter) !== "ready" || parameter.choices.length === 0)
     )) ?? [],
     [triggerJob],
@@ -709,15 +760,24 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         onError("暂不支持文件参数", `任务包含文件参数 ${fileParameter.name}，请在 Jenkins 页面运行`);
         return;
       }
-      const initial: Record<string, string | boolean> = {};
+      const initial: Record<string, string | boolean | string[]> = {};
       prepared.parameters.forEach((parameter) => {
-        if (!isEditableParameter(parameter) || parameter.type === "file" || parameter.multiple) return;
+        if (!isEditableParameter(parameter) || parameter.type === "file") return;
         if (
           parameter.type === "choice"
           && (parameterOptionsState(parameter) !== "ready" || parameter.choices.length === 0)
         ) return;
         if (typeof parameter.defaultValue === "boolean") {
           initial[parameter.name] = parameter.defaultValue;
+          return;
+        }
+        if (parameter.multiple) {
+          const defaults = Array.isArray(parameter.defaultValue)
+            ? parameter.defaultValue
+            : typeof parameter.defaultValue === "string"
+              ? [parameter.defaultValue]
+              : [];
+          initial[parameter.name] = defaults.filter((value) => parameter.choices.includes(value));
           return;
         }
         const defaultValue = parameter.defaultValue === null ? "" : String(parameter.defaultValue);
@@ -743,12 +803,11 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     const instanceId = activeInstance?.id;
     const job = triggerJob;
     if (!instanceId || !job) return;
-    const parameters: Record<string, string | number | boolean> = {};
+    const parameters: Record<string, JenkinsBuildParameterValue> = {};
     let invalidNumericParameter = "";
     let invalidChoiceParameter = "";
     let missingPasswordParameter = "";
     let unsupportedFileParameter = "";
-    let unsupportedMultipleParameter = "";
     let unsupportedParameter = "";
     job.parameters.forEach((parameter) => {
       const value = parameterValues[parameter.name] ?? "";
@@ -758,14 +817,16 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         unsupportedFileParameter = parameter.name;
       } else if (parameter.type === "unsupported") {
         unsupportedParameter = parameter.name;
-      } else if (parameter.multiple) {
-        unsupportedMultipleParameter = parameter.name;
       } else if (parameter.type === "choice") {
-        const selected = String(value);
+        const selected = parameter.multiple
+          ? (Array.isArray(value) ? value : [])
+          : String(value);
         if (
           parameterOptionsState(parameter) !== "ready"
           || !parameter.choices.length
-          || !parameter.choices.includes(selected)
+          || (Array.isArray(selected)
+            ? selected.some((item) => !parameter.choices.includes(item))
+            : !parameter.choices.includes(selected))
         ) invalidChoiceParameter = parameter.name;
         else parameters[parameter.name] = selected;
       } else if (parameter.type === "password" && String(value) === "") {
@@ -782,10 +843,6 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     });
     if (unsupportedFileParameter) {
       onError("暂不支持文件参数", `任务包含文件参数 ${unsupportedFileParameter}，请在 Jenkins 页面运行`);
-      return;
-    }
-    if (unsupportedMultipleParameter) {
-      onError("暂不支持多选参数", `任务包含多选参数 ${unsupportedMultipleParameter}，请在 Jenkins 页面运行`);
       return;
     }
     if (unsupportedParameter) {
@@ -1092,8 +1149,16 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
               return (
                 <label key={parameter.name} className="grid gap-1 text-[11px] font-medium">
                   <span>{parameter.name}<span className="ml-1 font-normal text-muted-foreground">{parameter.description}</span></span>
-                  {parameter.multiple ? (
-                    <span className="rounded-md border border-warning/25 bg-warning/5 px-2 py-2 text-[10px] font-normal text-warning" role="note">多选参数暂不支持，请在 Jenkins 页面运行。</span>
+                  {parameter.type === "choice" && parameter.multiple && parameterOptionsState(parameter) === "ready" && parameter.choices.length ? (
+                    <ParameterMultiSelect
+                      choices={parameter.choices}
+                      name={parameter.name}
+                      value={Array.isArray(parameterValues[parameter.name]) ? parameterValues[parameter.name] as string[] : []}
+                      onValueChange={(value) => setParameterValues((current) => ({
+                        ...current,
+                        [parameter.name]: value,
+                      }))}
+                    />
                   ) : parameter.type === "choice" && parameterOptionsState(parameter) === "ready" && parameter.choices.length ? (
                     <ParameterChoiceSelect
                       choices={parameter.choices}

@@ -116,13 +116,15 @@ Parameter discovery supports both the Jenkins core `property` export and the com
 export. Static choices and Git Parameter `allValueItems` come from the Remote API. Active Choices and
 File System List options are not exported consistently, so the controller reads a bounded copy of the
 job's Jenkins build form only when **Run** is opened, extracts its server-rendered selects, and refreshes
-and validates them again immediately before queuing. Hidden parameters are never returned to the UI
-and use the value supplied by the same Jenkins form; separators are display-only. Form-backed plugin
-jobs use Jenkins' classic structured `/build` request for compatibility with older plugins, while
-ordinary jobs continue to use `buildWithParameters`.
+and validates them again immediately before queuing. Active Choices `PT_SINGLE_SELECT` stays a single
+choice even when Jenkins renders a listbox; `PT_MULTI_SELECT` and `PT_CHECKBOX` use a compact checkbox
+menu and submit all selected strings. Hidden parameters are never returned to the UI and use the value
+supplied by the same Jenkins form; separators are display-only. Form-backed plugin jobs use Jenkins'
+classic structured `/build` request for compatibility with older plugins, while ordinary jobs continue
+to use `buildWithParameters`.
 
-Radio controls, multi-select, reactive/cascade Active Choices, and true upload parameters remain
-disabled with an explicit explanation. Reactive choices stay in Jenkins until dependency-aware refresh is available.
+Radio controls, reactive/cascade Active Choices, and true upload parameters remain disabled with an
+explicit explanation. Reactive choices stay in Jenkins until dependency-aware refresh is available.
 A form-backed job that also has a password parameter requires the password to be entered, because
 the classic form cannot safely recover an unread secret default. Dynamic option discovery uses the
 authenticated job's read-only build-form page; Jenkins enforces `Job/Build` when the subsequent POST
@@ -373,11 +375,12 @@ automatically after a transport failure. Stop and queue-cancel tools are marked 
 the browse/status/log tools are read-only. Jenkins tokens are not MCP inputs and are never returned
 to the AI—the local controller resolves the selected instance's credential from the system keyring.
 To inspect Git Parameter, Active Choices, or File System List values, call `jenkins_job_status` with
-`include_parameter_options=true`, then pass one of the returned `choices` to
-`jenkins_build_trigger`. Dynamic discovery can query SCM or the Jenkins controller's configured
-filesystem and is therefore disabled by default. The trigger path re-reads and validates these
-choices; stale, empty, ambiguous one-item File System List, multi-select, reactive, and unavailable
-option sets are rejected before any POST.
+`include_parameter_options=true`, then pass returned choices to `jenkins_build_trigger`. A single-select
+parameter uses one string; a multi-select parameter uses a string array such as
+`{"GROUP":["server-a","server-b"]}`. Dynamic discovery can query SCM or the Jenkins controller's
+configured filesystem and is therefore disabled by default. The trigger path re-reads and validates
+these choices; stale selections, empty option sets, ambiguous one-item File System List results,
+reactive parameters, and unavailable option sets are rejected before any POST.
 
 ## Browser controller
 

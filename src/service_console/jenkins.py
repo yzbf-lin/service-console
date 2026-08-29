@@ -45,6 +45,7 @@ _MAX_LOG_CHUNK_BYTES = 2 * 1024 * 1024
 _MAX_BUILD_FORM_BYTES = 1024 * 1024
 _MAX_BUILD_FORM_OPTIONS = 5_000
 _MAX_PARAMETER_VALUE_LENGTH = 16_384
+_MAX_MULTI_SELECT_VALUES = 5_000
 _MIN_BUILD_FORM_TIMEOUT_SECONDS = 30
 _MAX_BUILD_FORM_TIMEOUT_SECONDS = 60
 _HTML_VOID_ELEMENTS = frozenset(
@@ -763,7 +764,7 @@ class JenkinsGateway:
         token: str,
         *,
         job: str,
-        parameters: Mapping[str, str | int | float | bool],
+        parameters: Mapping[str, str | int | float | bool | list[str]],
         parameterized: bool,
         classic: bool = False,
     ) -> dict[str, object]:
@@ -781,7 +782,12 @@ class JenkinsGateway:
             request_params: Mapping[str, object] | None = None
         else:
             endpoint = f"{_job_path(job)}/buildWithParameters" if parameterized else f"{_job_path(job)}/build"
-            form_data = {key: _parameter_value(value) for key, value in parameters.items()}
+            form_data = {
+                key: [_parameter_value(item) for item in value]
+                if isinstance(value, list)
+                else _parameter_value(value)
+                for key, value in parameters.items()
+            }
             request_params = None
         # This state-changing request is deliberately issued exactly once.
         response = await self._request(
@@ -1321,6 +1327,10 @@ class JenkinsGateway:
                                 _parameter_is_multiple(candidate)
                                 for candidate in (choice_type, raw_type, classification_type)
                             ),
+                            "_explicit_single": any(
+                                _parameter_is_explicit_single(candidate)
+                                for candidate in (choice_type, raw_type, classification_type)
+                            ),
                             **(
                                 {
                                     "header": str(
@@ -1533,7 +1543,7 @@ class JenkinsService:
         instance_id: str,
         *,
         job: str,
-        parameters: Mapping[str, str | int | float | bool],
+        parameters: Mapping[str, str | int | float | bool | list[str]],
     ) -> dict[str, object]:
         instance, token = await self._connection(instance_id)
         job_detail = await self.gateway.get_job(
@@ -1555,10 +1565,6 @@ class JenkinsService:
             for definition in definitions
         ):
             raise JenkinsApiError(400, "Jenkins parameter type is not supported")
-        if any(
-            isinstance(definition, dict) and definition.get("multiple") is True for definition in definitions
-        ):
-            raise JenkinsApiError(400, "Jenkins multi-select parameters are not supported")
         if not parameterized and parameters:
             raise JenkinsApiError(400, "Jenkins job is not parameterized")
         definition_names = {
@@ -1600,31 +1606,67 @@ class JenkinsService:
             for definition in definitions
             if isinstance(definition, dict) and definition.get("type") == "hidden"
         }
-        submitted_parameters = {
+        submitted_parameters: dict[str, str | int | float | bool | list[str]] = {
             name: value
             for name, value in parameters.items()
             if name not in separator_names
             and name not in hidden_names
             and not (name in password_names and value == "")
         }
+        definitions_by_name = {
+            str(definition.get("name")): definition
+            for definition in definitions
+            if isinstance(definition, dict) and definition.get("name")
+        }
+        for name, value in submitted_parameters.items():
+            multiple = definitions_by_name[name].get("multiple") is True
+            if multiple:
+                if not isinstance(value, list):
+                    raise JenkinsApiError(400, f"Jenkins multi-select parameter {name} must be a list")
+                if len(value) > _MAX_MULTI_SELECT_VALUES:
+                    raise JenkinsApiError(400, f"Jenkins multi-select parameter {name} has too many values")
+                if any(not isinstance(item, str) for item in value):
+                    raise JenkinsApiError(400, f"Jenkins multi-select parameter {name} must contain strings")
+                submitted_parameters[name] = list(dict.fromkeys(value))
+            elif isinstance(value, list):
+                raise JenkinsApiError(400, f"Jenkins parameter {name} does not accept multiple values")
+
         for definition in dynamic_definitions:
             name = str(definition.get("name") or "")
             choices_value = definition.get("choices")
             choices = choices_value if isinstance(choices_value, list) else []
             choice_values = [choice for choice in choices if isinstance(choice, str)]
             if name in submitted_parameters:
-                submitted_value = _parameter_value(submitted_parameters[name])
-                if submitted_value not in choice_values:
-                    raise JenkinsApiError(
-                        400,
-                        f"Jenkins parameter {name} is not one of the current choices",
-                    )
-                submitted_parameters[name] = submitted_value
+                submitted_value = submitted_parameters[name]
+                if definition.get("multiple") is True:
+                    selected_values = submitted_value if isinstance(submitted_value, list) else []
+                    if any(value not in choice_values for value in selected_values):
+                        raise JenkinsApiError(
+                            400,
+                            f"Jenkins parameter {name} contains a value that is not a current choice",
+                        )
+                    submitted_parameters[name] = selected_values
+                else:
+                    if isinstance(submitted_value, list):
+                        raise JenkinsApiError(400, f"Jenkins parameter {name} does not accept multiple values")
+                    normalized_value = _parameter_value(submitted_value)
+                    if normalized_value not in choice_values:
+                        raise JenkinsApiError(
+                            400,
+                            f"Jenkins parameter {name} is not one of the current choices",
+                        )
+                    submitted_parameters[name] = normalized_value
             elif choice_values and definition.get("_form_dynamic") is True:
                 default = definition.get("default")
-                submitted_parameters[name] = (
-                    default if isinstance(default, str) and default in choice_values else choice_values[0]
-                )
+                if definition.get("multiple") is True:
+                    default_values = default if isinstance(default, list) else []
+                    submitted_parameters[name] = [
+                        value for value in default_values if isinstance(value, str) and value in choice_values
+                    ]
+                else:
+                    submitted_parameters[name] = (
+                        default if isinstance(default, str) and default in choice_values else choice_values[0]
+                    )
 
         if form_dynamic_definitions:
             for definition in definitions:
@@ -1640,7 +1682,9 @@ class JenkinsService:
                 if not name or name in submitted_parameters or parameter_type in {"hidden", "separator"}:
                     continue
                 default = definition.get("default")
-                if isinstance(default, str | int | float | bool):
+                if isinstance(default, list) and definition.get("multiple") is True:
+                    submitted_parameters[name] = [value for value in default if isinstance(value, str)]
+                elif isinstance(default, str | int | float | bool):
                     submitted_parameters[name] = default
 
         hidden_values_value = job_detail.get("_hidden_values")
@@ -1841,6 +1885,10 @@ def _parameter_is_multiple(value: str) -> bool:
     return simple_name in {"pt_checkbox", "pt_multi_select"}
 
 
+def _parameter_is_explicit_single(value: str) -> bool:
+    return value.casefold().rsplit(".", 1)[-1] == "pt_single_select"
+
+
 def _merge_build_form_parameters(
     parameters: list[dict[str, object]],
     form_parameters: Mapping[str, _BuildFormParameter],
@@ -1864,12 +1912,16 @@ def _merge_build_form_parameters(
             if choices[0] not in selected:
                 choices = []
         parameter["choices"] = choices or None
-        parameter["multiple"] = bool(parameter.get("multiple")) or bool(
-            form_parameter and form_parameter.multiple
+        parameter["multiple"] = False if parameter.get("_explicit_single") is True else (
+            bool(parameter.get("multiple")) or bool(form_parameter and form_parameter.multiple)
         )
         parameter["options_state"] = "ready" if choices else "unavailable"
         if form_parameter is not None and form_parameter.selected:
-            parameter["default"] = form_parameter.selected[0]
+            parameter["default"] = (
+                list(form_parameter.selected)
+                if parameter["multiple"] is True
+                else form_parameter.selected[0]
+            )
     return hidden_values
 
 
