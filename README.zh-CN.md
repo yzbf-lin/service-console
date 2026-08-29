@@ -182,6 +182,11 @@ JSON 配置只保存非敏感实例字段。Linux 仅接受安全的 Secret Serv
 可用的安全凭据后端，Token 只保留在当前应用进程内存中，重启后需要重新输入。API 回包最多返回
 `token_present`，浏览器与 MCP 工具结果都不会取得 Token，也不会降级写入明文 Token 文件。
 
+添加或编辑实例时，可展开 **如何获取 API Token**。填写 Jenkins 地址后，界面会生成新版
+`/me/security` 与旧版 `/me/configure` 两个个人配置快捷入口，并说明如何使用 **Add new Token →
+Generate**。若 Security 返回 `404`，应改用 Configure；登录后仍返回 `403` 时，需要管理员确认个人配置
+权限。API Token 沿用所属账号的现有权限，不会扩大该账号可访问的 Job 范围。
+
 建议为 Service Console 创建专用 Jenkins 用户或 API Token，并只授予已启用操作所需权限。只读浏览通常
 需要 `Overall/Read` 与 `Job/Read`；触发构建还需要 `Job/Build`，停止构建或取消排队需要
 `Job/Cancel`。本机仍需能够访问每个 Jenkins 地址；若系统信任库不包含私有 CA，需要为该实例显式提供
