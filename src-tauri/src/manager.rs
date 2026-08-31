@@ -368,7 +368,10 @@ impl ServiceManager {
         };
 
         if let Some(pid) = pid {
+            #[cfg(unix)]
             terminate_group(pid, false)?;
+            #[cfg(windows)]
+            let _ = terminate_group(pid, false);
             let deadline = Instant::now() + timeout;
             while process_group_exists(pid) && Instant::now() < deadline {
                 sleep(Duration::from_millis(50)).await;

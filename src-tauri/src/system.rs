@@ -205,6 +205,7 @@ fn run_lsof(protocol: &str) -> AppResult<Vec<SocketRow>> {
     ))
 }
 
+#[cfg(target_os = "macos")]
 fn parse_lsof_socket_rows(output: &str, protocol: &str) -> Vec<SocketRow> {
     let mut current_pid = None;
     let mut rows = Vec::new();
@@ -1314,6 +1315,7 @@ mod tests {
         assert!(!environment.contains_key("DATABASE_URL"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn parses_lsof_ipv4_and_ipv6_endpoints() {
         let rows = parse_lsof_socket_rows(
