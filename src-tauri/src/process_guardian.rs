@@ -5,13 +5,18 @@ use std::{
     io::{BufRead, BufReader as StdBufReader, Write},
     path::{Path, PathBuf},
     process::Stdio,
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+#[cfg(unix)]
+use std::time::Instant;
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sysinfo::{Pid, ProcessStatus, ProcessesToUpdate, System};
+#[cfg(unix)]
+use sysinfo::ProcessStatus;
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -346,7 +351,6 @@ fn configure_guardian_process(command: &mut Command) {
 
 #[cfg(windows)]
 fn configure_guardian_process(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
     command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
 }

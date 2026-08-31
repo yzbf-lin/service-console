@@ -1,11 +1,14 @@
 use std::{
     collections::BTreeSet,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::Write,
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
+
+#[cfg(unix)]
+use std::io::Read;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::json;
@@ -371,7 +374,10 @@ fn validate_archive(path: &Path) -> AppResult<()> {
         ));
     }
     let mut names = BTreeSet::new();
-    let mut symlinks = BTreeSet::new();
+    #[cfg(unix)]
+    let mut symlinks: BTreeSet<String> = BTreeSet::new();
+    #[cfg(not(unix))]
+    let symlinks: BTreeSet<String> = BTreeSet::new();
     let mut extracted_size = 0_u64;
     for index in 0..archive.len() {
         let mut entry = archive
@@ -862,7 +868,6 @@ fn configure_detached(command: &mut Command) {
 
 #[cfg(windows)]
 fn configure_detached(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
     command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
 }
