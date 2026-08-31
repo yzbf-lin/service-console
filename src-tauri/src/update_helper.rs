@@ -380,7 +380,7 @@ fn validate_archive(path: &Path) -> AppResult<()> {
     let symlinks: BTreeSet<String> = BTreeSet::new();
     let mut extracted_size = 0_u64;
     for index in 0..archive.len() {
-        let mut entry = archive
+        let entry = archive
             .by_index(index)
             .map_err(|error| AppError::conflict(error.to_string()))?;
         let relative = safe_archive_path(entry.name())?;
@@ -406,6 +406,7 @@ fn validate_archive(path: &Path) -> AppResult<()> {
             ));
             #[cfg(unix)]
             {
+                let mut entry = entry;
                 let mut target = String::new();
                 entry
                     .by_ref()
@@ -868,6 +869,7 @@ fn configure_detached(command: &mut Command) {
 
 #[cfg(windows)]
 fn configure_detached(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
     command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
 }
