@@ -11,14 +11,14 @@ permissions:
 
 jobs:
   build-macos:
-    name: Build macOS arm64
+    name: Build Rust/Tauri macOS arm64
     runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-          python-version: "3.12"
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 11.7.0
@@ -31,33 +31,47 @@ jobs:
         id: version
         shell: bash
         run: |
-          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n 1)"
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)"
           test -n "$VERSION"
+          test "$(uname -m)" = "arm64"
           if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match pyproject version $VERSION" >&2
+            echo "Tag $GITHUB_REF_NAME does not match Rust package version $VERSION" >&2
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-      - name: Build application
-        run: ./scripts/build-macos-app.sh
-      - name: Smoke-test executable and signature
+      - name: Install web dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test native workspace
+        run: |
+          cargo test --locked --workspace --all-targets
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build Tauri application
+        run: pnpm tauri build --bundles app
+      - name: Sign and smoke-test application
         shell: bash
         run: |
-          test "$(uname -m)" = "arm64"
-          codesign --verify --deep --strict "dist/Service Console.app"
-          "dist/Service Console.app/Contents/MacOS/Service Console" --help >/dev/null
-          "dist/Service Console.app/Contents/MacOS/Service Console MCP" --help >/dev/null
-          uv run --locked python scripts/smoke_test_mcp_helper.py \
-            "dist/Service Console.app/Contents/MacOS/Service Console MCP"
-      - name: Package application
+          APP="target/release/bundle/macos/Service Console.app"
+          test -d "$APP"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          test -x "$APP/Contents/MacOS/Service Console"
+          "$APP/Contents/MacOS/service-console" --help >/dev/null
+          "$APP/Contents/MacOS/service-console-mcp" --help >/dev/null
+          test -x "$APP/Contents/MacOS/service-console-guardian"
+          test -x "$APP/Contents/MacOS/service-console-updater"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = \
+            "dev.service-console.desktop"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = \
+            "${{ steps.version.outputs.version }}"
+          RESPONSE="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' | "$APP/Contents/MacOS/service-console-mcp")"
+          grep -q '"name":"service-console"' <<<"$RESPONSE"
+      - name: Package application update
         shell: bash
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          STAGE="release/Service Console"
-          mkdir -p "$STAGE"
-          ditto "dist/Service Console.app" "$STAGE/Service Console.app"
-          cp LICENSE README.md README.zh-CN.md "$STAGE/"
-          ditto -c -k --sequesterRsrc --keepParent "$STAGE" \
+          mkdir -p release
+          ditto -c -k --sequesterRsrc --keepParent \
+            "target/release/bundle/macos/Service Console.app" \
             "release/Service-Console-v${VERSION}-macOS-arm64.zip"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -67,14 +81,15 @@ jobs:
           retention-days: 30
 
   build-windows:
-    name: Build Windows x64
+    name: Build Rust/Tauri Windows x64
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-          python-version: "3.12"
+      - name: Install Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 11.7.0
@@ -87,60 +102,65 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $match = Select-String -Path pyproject.toml -Pattern '^version = "([^"]+)"$'
-          if (-not $match) { throw "Unable to read project version" }
+          $match = Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"$' | Select-Object -First 1
+          if (-not $match) { throw "Unable to read Rust package version" }
           $version = $match.Matches[0].Groups[1].Value
           if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne "v$version") {
-            throw "Tag $env:GITHUB_REF_NAME does not match pyproject version $version"
+            throw "Tag $env:GITHUB_REF_NAME does not match Rust package version $version"
           }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-      - name: Run Windows Python tests
+      - name: Install web dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test native workspace
+        run: |
+          cargo test --locked --workspace --all-targets
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build Tauri installer
+        run: pnpm tauri build --bundles nsis
+      - name: Smoke-test Rust executables
         shell: pwsh
         run: |
-          uv sync --locked --group dev
-          uv run --locked pytest
-      - name: Build application
-        shell: pwsh
-        run: ./scripts/build-windows-app.ps1
-      - name: Smoke-test executable
-        shell: pwsh
-        run: |
-          $process = Start-Process `
-            -FilePath "dist/Service Console/Service Console.exe" `
-            -ArgumentList "--help" `
-            -PassThru
-          if (-not $process.WaitForExit(30000)) {
-            Stop-Process -Id $process.Id -Force
-            throw "Desktop executable smoke test timed out"
+          & "target/release/service-console.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Rust CLI smoke test failed" }
+          & "target/release/service-console-mcp.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Rust MCP helper smoke test failed" }
+          & "target/release/service-console-updater.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Rust transition updater smoke test failed" }
+          $request = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
+          $response = $request | & "target/release/service-console-mcp.exe"
+          if ($LASTEXITCODE -ne 0 -or $response -notmatch '"name":"service-console"') {
+            throw "Rust MCP handshake failed"
           }
-          if ($process.ExitCode -ne 0) {
-            throw "Desktop executable smoke test failed with exit code $($process.ExitCode)"
+          if (-not (Test-Path "target/release/service-console-guardian.exe" -PathType Leaf)) {
+            throw "Rust process guardian is missing"
           }
-          & "dist/Service Console/Service Console Updater.exe" --help | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            throw "Updater smoke test failed with exit code $LASTEXITCODE"
-          }
-          & "dist/Service Console/Service Console MCP.exe" --help | Out-Null
-          if ($LASTEXITCODE -ne 0) {
-            throw "MCP helper smoke test failed with exit code $LASTEXITCODE"
-          }
-          uv run --locked python scripts/smoke_test_mcp_helper.py `
-            "dist/Service Console/Service Console MCP.exe"
-          if ($LASTEXITCODE -ne 0) {
-            throw "MCP helper handshake failed with exit code $LASTEXITCODE"
-          }
-      - name: Package application
+          $installer = Get-ChildItem "target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Tauri NSIS installer is missing" }
+      - name: Package portable update and installer
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          $appDir = "dist/Service Console"
-          Copy-Item LICENSE, README.md, README.zh-CN.md -Destination $appDir
-          New-Item -ItemType Directory -Force -Path release | Out-Null
+          $appDir = "release/Service Console"
+          New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+          Copy-Item "target/release/Service Console.exe" "$appDir/Service Console.exe"
+          Copy-Item "target/release/service-console.exe" $appDir
+          Copy-Item "target/release/service-console-mcp.exe" $appDir
+          Copy-Item "target/release/service-console-guardian.exe" $appDir
+          Copy-Item "target/release/service-console-updater.exe" "$appDir/Service Console Updater.exe"
+          Copy-Item "src-tauri/resources/static" "$appDir/static" -Recurse
+          Copy-Item "src-tauri/resources/update_public_key.pem" $appDir
+          Copy-Item LICENSE, README.md, README.zh-CN.md $appDir
           Compress-Archive -Path $appDir -DestinationPath "release/Service-Console-v$version-Windows-x64.zip"
+          if (-not (Test-Path "$appDir/Service Console.exe" -PathType Leaf) -or
+              -not (Test-Path "$appDir/Service Console Updater.exe" -PathType Leaf)) {
+            throw "The portable package is missing the legacy transition entry points"
+          }
+          $installer = Get-ChildItem "target/release/bundle/nsis/*-setup.exe" | Select-Object -First 1
+          Copy-Item $installer.FullName "release/Service-Console-v$version-Windows-x64-Setup.exe"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: service-console-windows-x64
-          path: release/Service-Console-*.zip
+          path: release/Service-Console-*
           if-no-files-found: error
           retention-days: 30
 
@@ -151,6 +171,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: service-console-*
@@ -159,24 +183,17 @@ jobs:
       - name: Create checksums
         run: |
           cd release
-          sha256sum Service-Console-*.zip > SHA256SUMS.txt
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-          python-version: "3.12"
-      - name: Prepare locked signing dependencies
-        run: uv sync --frozen --no-dev --no-install-project
-      - name: Create signed update manifest
+          sha256sum Service-Console-* > SHA256SUMS.txt
+      - name: Create signed update manifest with Rust
         env:
           UPDATE_PRIVATE_KEY_B64: ${{ secrets.SERVICE_CONSOLE_UPDATE_PRIVATE_KEY_B64 }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           test -n "$UPDATE_PRIVATE_KEY_B64"
-          uv run --frozen --no-sync \
-            python scripts/create_update_manifest.py \
-              --version "$VERSION" \
-              --repository "$GITHUB_REPOSITORY" \
-              --published-at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          cargo run --locked --package service-console-release-manifest -- \
+            --version "$VERSION" \
+            --repository "$GITHUB_REPOSITORY" \
+            --published-at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
       - name: Publish signed release
         env:
           GH_TOKEN: ${{ github.token }}

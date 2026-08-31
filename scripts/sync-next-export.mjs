@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 const scriptPath = fileURLToPath(import.meta.url);
 const root = resolve(dirname(scriptPath), "..");
 const exportDir = resolve(root, "web/out");
-const packageStaticDir = resolve(root, "src/service_console/static");
+const packageStaticDir = resolve(root, "src-tauri/resources/static");
 const themePlaceholder = "__SERVICE_CONSOLE_THEME__";
 
 async function pathExists(path) {

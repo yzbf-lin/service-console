@@ -5,10 +5,11 @@ Contributions and focused bug reports are welcome.
 ## Development setup
 
 ```bash
-uv sync --group dev
 pnpm install --frozen-lockfile
 pnpm run build:web-assets
-uv run pytest
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets
 ```
 
 Please keep changes small, preserve existing CLI and API behavior unless a breaking change is
@@ -18,7 +19,7 @@ changes.
 ## macOS desktop build
 
 ```bash
-./scripts/build-macos-app.sh
+pnpm tauri build --bundles app
 ```
 
 The local application is ad-hoc signed. Developer ID signing, notarization, and release packaging are
@@ -29,16 +30,16 @@ maintainer release steps and are not required for ordinary pull requests.
 Run this on Windows with PowerShell 7:
 
 ```powershell
-pwsh ./scripts/build-windows-app.ps1
+pnpm tauri build --bundles nsis
 ```
 
-The portable directory bundle is written to `dist/Service Console`. Windows lifecycle changes must
-also pass the `Windows Python tests` CI job. The GitHub `Release` workflow owns ZIP packaging,
-checksums, and tag-based publication; generated binaries must not be committed.
+The installer is written below `target/release/bundle/nsis`. Windows lifecycle changes must pass the
+native Windows Rust CI job. The GitHub `Release` workflow owns portable ZIP packaging, checksums,
+signed update manifests, and tag-based publication; generated binaries must not be committed.
 
 ## Pull requests
 
 - Explain the user-facing problem and the chosen behavior.
 - Include test results and manual verification where applicable.
-- Do not commit `.service-console` data, logs, runtime descriptors, tokens, virtual environments,
-  `node_modules`, or build output.
+- Do not commit `.service-console` data, logs, runtime descriptors, tokens, `node_modules`, or build
+  output.

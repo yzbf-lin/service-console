@@ -6,7 +6,7 @@ container runtime.
 1. Start the packaged desktop application (recommended):
 
    ```bash
-   open "dist/Service Console.app"
+   open "target/release/bundle/macos/Service Console.app"
    ```
 
    A packaged macOS app opened from Finder restores the exported interactive login-shell environment
@@ -14,7 +14,7 @@ container runtime.
    A service-level `env.PATH` remains the final override for project-specific toolchains.
 
    The CLI automatically discovers the desktop controller's random loopback endpoint. For isolated
-   acceptance tests, `uv run service-console serve --data-dir /tmp/service-console-pd-qa` remains an
+   acceptance tests, `target/debug/service-console serve --data-dir /tmp/service-console-pd-qa` is an
    alternative, but it must not use the desktop application's data directory.
 
 2. From another terminal, register the sibling checkout:
@@ -36,12 +36,12 @@ container runtime.
 3. Start each service from the browser, TUI, or CLI:
 
    ```bash
-   uv run service-console start pd-qa-backend
-   uv run service-console start pd-qa-frontend
-   uv run service-console start pd-qa-celery-worker
+   target/debug/service-console start pd-qa-backend
+   target/debug/service-console start pd-qa-frontend
+   target/debug/service-console start pd-qa-celery-worker
 
    # Start only when periodic scheduling is required.
-   uv run service-console start pd-qa-celery-beat
+   target/debug/service-console start pd-qa-celery-beat
    ```
 
 4. Acceptance checks:

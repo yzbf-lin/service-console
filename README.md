@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img alt="Python 3.12+" src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white">
   <img alt="macOS, Windows, and Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-555555">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2ea44f">
 </p>
@@ -145,7 +145,7 @@ arbitrary text value.
 
 Follow the operating system or select a persistent light or dark theme. The same page shows the
 installed version, checks for signed updates, and guides download and restart. Optional Supabase
-connection settings remain separate from the local FastAPI controller and are not required locally.
+connection settings remain separate from the local Rust/Axum controller and are not required locally.
 
 ### Appearance
 
@@ -164,30 +164,30 @@ its own toolbar.
 
 Supabase is an optional cloud adapter. To make a Supabase client available to future authentication
 or state-sync integrations, set `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` at
-build time. Local start, stop, restart, logging, and port operations always remain on the FastAPI
+build time. Local start, stop, restart, logging, and port operations always remain on the Rust/Axum
 controller and work without Supabase.
 
 ## Requirements
 
 | Purpose | Requirement |
 |---|---|
-| Controller, CLI, TUI | Python 3.12+ and [uv](https://docs.astral.sh/uv/) |
+| Controller, CLI, TUI | Stable Rust toolchain |
 | Web asset development | Node.js 22+ and pnpm 11 |
-| Native desktop window | macOS, Windows, or a Linux environment supported by pywebview |
-| macOS `.app` build | macOS, Xcode command-line tools, Node.js, pnpm, and uv |
-| Windows `.exe` build | Windows, PowerShell 7, Node.js, pnpm, and uv |
+| Native desktop window | macOS or Windows with the platform WebView runtime |
+| macOS `.app` build | macOS, Xcode command-line tools, Rust, Node.js, and pnpm |
+| Windows `.exe` build | Windows, PowerShell 7, Rust, Node.js, pnpm, and WebView2 |
 
 ## Quick start
 
 ```bash
 git clone https://github.com/yzbf-lin/service-console.git
 cd service-console
-uv sync --all-groups
-uv run service-console-desktop
+pnpm install --frozen-lockfile
+pnpm tauri dev
 ```
 
-The desktop app starts a private FastAPI controller on a random loopback port and opens the dashboard
-in a native pywebview window. Definitions and logs are stored in `~/.service-console` by default.
+The Tauri 2 desktop app starts a private Axum controller on a random loopback port and opens the
+dashboard in the system WebView. Definitions and logs are stored in `~/.service-console` by default.
 
 When the frozen macOS app is opened from Finder, Service Console captures the user's interactive
 login-shell environment once during desktop startup. Managed services therefore resolve Homebrew,
@@ -200,13 +200,13 @@ fails or exceeds eight seconds, the desktop falls back to its process environmen
 Register and control a native service:
 
 ```bash
-uv run service-console add api \
+target/debug/service-console add api \
   --command "uv run backend/run.py" \
   --cwd /path/to/project
 
-uv run service-console start api
-uv run service-console restart api
-uv run service-console logs api --tail 200 --follow
+target/debug/service-console start api
+target/debug/service-console restart api
+target/debug/service-console logs api --tail 200 --follow
 ```
 
 When `--url` is omitted, the CLI automatically discovers the running desktop controller. Explicit
@@ -245,7 +245,7 @@ import a process; Windows can still restrict metadata for another account or a h
 Use **Jenkins → Add instance** to configure a display name, base URL, username, API token, optional CA
 bundle, enabled state, and request timeout. Existing instances can be edited, copied, deleted, or
 connection-tested independently. The API token is write-only in the UI: it is stored by the operating
-system credential backend through Python `keyring` (Keychain on macOS and Credential Locker on
+system credential backend through Rust's `keyring` crate (Keychain on macOS and Credential Locker on
 Windows), while the ordinary JSON configuration stores only non-sensitive instance fields. On Linux,
 only a secure Secret Service, KWallet, or libsecret backend is accepted. If no secure credential
 backend is available, the token remains in process memory only and must be entered again after a
@@ -317,17 +317,18 @@ Manual registration is also available:
 ```bash
 # macOS release
 codex mcp add service-console -- \
-  "/Applications/Service Console.app/Contents/MacOS/Service Console MCP"
+  "/Applications/Service Console.app/Contents/MacOS/service-console-mcp"
 
 # Source checkout
+cargo build --locked --bin service-console-mcp
 codex mcp add service-console -- \
-  "$(pwd)/.venv/bin/python" -m service_console.mcp_server
+  "$(pwd)/target/debug/service-console-mcp"
 ```
 
 ```powershell
 # Windows release; adjust the installation directory as needed
 codex mcp add service-console -- `
-  "C:\Program Files\Service Console\Service Console MCP.exe"
+  "C:\Program Files\Service Console\service-console-mcp.exe"
 ```
 
 ### Declarative project configuration
@@ -399,7 +400,7 @@ results, and unavailable option sets are rejected before the build request.
 The standalone controller is useful on Linux, headless machines, or when a browser UI is preferred:
 
 ```bash
-uv run service-console serve --host 127.0.0.1 --port 8787
+cargo run --locked --bin service-console -- serve --host 127.0.0.1 --port 8787
 ```
 
 Open <http://127.0.0.1:8787>. The controller owns its child process groups. Closing the last desktop
@@ -437,7 +438,7 @@ controller. Keep localhost as the default. For remote access, require a strong t
 in front of the controller:
 
 ```bash
-uv run service-console serve \
+cargo run --locked --bin service-console -- serve \
   --host 0.0.0.0 \
   --port 8787 \
   --token "$SERVICE_CONSOLE_TOKEN"
@@ -465,69 +466,55 @@ Console gracefully stops its managed services. After the updated app opens, serv
 Automatic replacement is available only in frozen macOS arm64 and Windows x64 Release builds and
 requires a writable install directory. Source runs, browser-only controllers, and unsupported
 architectures still discover a release but direct the user to its download page. The first version
-that contains this updater must be installed manually; subsequent releases can update in-app.
+that introduced the signed update channel had to be installed manually. The Rust 0.4.0 transition
+package preserves the legacy bundle identity and desktop entry point, and includes a Rust Windows
+helper that accepts the 0.3.x updater protocol. Existing 0.3.x desktop releases can therefore install
+0.4.0 through **Install and restart** after its signed Release is published.
 
-On Windows, the Release package includes a native `Service Console Updater.exe`. Before the desktop
-closes, that helper is copied outside the installation directory and must acknowledge that it has
-started. It then waits for the exact desktop process, replaces the application directory, starts the
-new executable, and keeps the backup until the new window reports ready. A failed launch restores
-and relaunches the previous version. Diagnostic details are written to
-`%USERPROFILE%\.service-console\updates\vVERSION\install-update.log`.
-
-Windows releases 0.2.0 and 0.2.1 contain the legacy update launcher. If **Install and restart** only
-closes one of those versions, download and extract 0.2.2 or later manually once. In-app updates after
-that migration use the native helper and the readiness/rollback flow described above.
+Before replacement, the Rust desktop copies itself outside the installation directory and starts in
+update-helper mode. The helper acknowledges readiness, waits for the exact desktop process, replaces
+the app atomically, launches the new version, and keeps a backup until the new controller reports
+ready. A failed launch restores and relaunches the previous version. Diagnostic details are written
+below `~/.service-console/updates/vVERSION/`.
 
 ## Build the macOS application
 
 ```bash
-./scripts/build-macos-app.sh
-open "dist/Service Console.app"
+pnpm install --frozen-lockfile
+pnpm tauri build --bundles app
+open "target/release/bundle/macos/Service Console.app"
 ```
 
-The build script:
-
-1. regenerates the multi-resolution ICNS icon from `assets/service-console-icon-1024.png`; the
-   original transparent product mark is retained in `assets/service-console-logo.png`;
-2. builds and statically exports the Next.js dashboard into the Python package;
-3. installs the desktop dependency group;
-4. bundles CPython, pywebview, FastAPI, the complete dashboard, and a console-mode MCP sidecar with
-   PyInstaller;
-5. synchronizes the bundle version with `pyproject.toml` and applies an ad-hoc signature.
+Tauri statically exports the Next.js dashboard, compiles the controller, CLI, TUI, MCP bridge,
+guardian, transition updater, and updater flow from Rust, and places the binaries inside one `.app`.
+The product version comes from `src-tauri/Cargo.toml`.
 
 The resulting app runs without Node.js or network access. It matches the build machine architecture;
-the current build has been tested on Apple Silicon. It is ad-hoc signed and not notarized with an
-Apple Developer ID, so downloaded builds may trigger a Gatekeeper warning. `dist/` is intentionally
-ignored; publish distributable binaries through GitHub Releases.
+the release workflow targets Apple Silicon. Current artifacts are ad-hoc signed and are not notarized
+with an Apple Developer ID, so downloaded builds may trigger a Gatekeeper warning. Publish
+distributable binaries through GitHub Releases.
 
-When replacing the product mark, save the transparent source as
-`assets/service-console-logo.png`, then regenerate the desktop, README, top-bar, and favicon assets:
-
-```bash
-uv run --group icon python scripts/build_brand_assets.py
-./scripts/build-macos-icon.sh
-pnpm run build:web-assets
-```
+Committed Tauri icons live in `src-tauri/icons`; the transparent source artwork remains in `assets`.
 
 ## Build the Windows application
 
-Run the PowerShell build on Windows:
+Run the Tauri build on Windows:
 
 ```powershell
-pwsh ./scripts/build-windows-app.ps1
-& "dist/Service Console/Service Console.exe" --help
+pnpm install --frozen-lockfile
+pnpm tauri build --bundles nsis
+& "target/release/service-console.exe" --help
 ```
 
-The script generates a multi-resolution ICO icon, builds the same offline dashboard, and creates a
-PyInstaller directory bundle at `dist/Service Console`, including `Service Console MCP.exe` and the
-one-file native `Service Console Updater.exe`. Windows 10/11 must have the Microsoft Edge
-WebView2 Runtime installed. The executable is unsigned, so Windows may show a SmartScreen warning
-until the project is configured with a trusted code-signing certificate.
+The build creates an NSIS installer plus the Rust desktop, CLI/TUI, MCP bridge, and guardian binaries.
+The update helper is copied from the running Rust desktop executable to a temporary location before
+performing atomic replacement and rollback. Windows 10/11 must have the Microsoft Edge WebView2
+Runtime installed. The installer is currently unsigned, so Windows may show a SmartScreen warning.
 
 ## Publish release packages
 
 The `Release` GitHub Actions workflow builds an Apple Silicon macOS ZIP and a Windows x64 ZIP. A tag
-matching the version in `pyproject.toml` publishes both packages, `SHA256SUMS.txt`, and the signed
+matching the version in `src-tauri/Cargo.toml` publishes both packages, `SHA256SUMS.txt`, and the signed
 `latest-update.json` / `latest-update.json.sig` pair to GitHub Releases:
 
 ```bash
@@ -547,7 +534,7 @@ a GitHub Release.
 
 The interface uses Next.js, React, TypeScript, Tailwind CSS, shadcn/ui-style components, Radix UI,
 Lucide React, and an xterm.js console with Fit, Search, and WebLinks addons. Runtime assets are
-statically exported into the Python package and never loaded from a CDN:
+statically exported into `src-tauri/resources/static` and never loaded from a CDN:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -576,7 +563,7 @@ The matching response preserves the request ID:
 
 See [CONTRACT.md](CONTRACT.md) for the complete controller contract.
 
-## FastAPI + Vite + Celery example
+## Backend + Vite + Celery example
 
 The repository includes a concrete native profile for supervising a FastAPI backend, Vite frontend,
 Celery worker, and Celery beat. See [examples/pd-qa-backend.md](examples/pd-qa-backend.md). Beat is
@@ -585,10 +572,11 @@ kept explicit in that workflow to avoid accidental duplicate scheduling.
 ## Development
 
 ```bash
-uv sync --group dev
 pnpm install --frozen-lockfile
 pnpm run build:web-assets
-uv run pytest
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets
 ```
 
 Architecture and API invariants are documented in [CONTRACT.md](CONTRACT.md). Contributions are

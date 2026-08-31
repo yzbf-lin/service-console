@@ -6,7 +6,15 @@ PD_QA_BACKEND_ROOT="${PD_QA_BACKEND_ROOT:-$(cd "${SERVICE_CONSOLE_ROOT}/../pd-qa
 DEFAULT_PD_QA_LOG_FORMAT='<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</> | <lvl>{level: <8}</> | <cyan>{request_id}</> | <lvl>{message}</>'
 PD_QA_LOG_FORMAT="${PD_QA_LOG_FORMAT:-$DEFAULT_PD_QA_LOG_FORMAT}"
 
-client=(uv run --project "${SERVICE_CONSOLE_ROOT}" service-console)
+if [[ -n "${SERVICE_CONSOLE_BIN:-}" ]]; then
+  client=("${SERVICE_CONSOLE_BIN}")
+elif [[ -x "${SERVICE_CONSOLE_ROOT}/target/release/service-console" ]]; then
+  client=("${SERVICE_CONSOLE_ROOT}/target/release/service-console")
+elif [[ -x "${SERVICE_CONSOLE_ROOT}/target/debug/service-console" ]]; then
+  client=("${SERVICE_CONSOLE_ROOT}/target/debug/service-console")
+else
+  client=(cargo run --locked --manifest-path "${SERVICE_CONSOLE_ROOT}/Cargo.toml" --bin service-console --)
+fi
 if [[ -n "${SERVICE_CONSOLE_URL:-}" ]]; then
   client+=(--url "${SERVICE_CONSOLE_URL}")
 fi
@@ -41,4 +49,4 @@ echo "Registering native services from ${PD_QA_BACKEND_ROOT}"
   --stop-timeout 15
 
 echo "Registered backend, frontend, Celery worker, and Celery beat."
-echo "Open Service Console or run: uv run --project ${SERVICE_CONSOLE_ROOT} service-console tui"
+echo "Open Service Console or run: ${SERVICE_CONSOLE_ROOT}/target/debug/service-console tui"

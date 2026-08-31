@@ -360,7 +360,7 @@ export function SettingsView({
                   <Badge className="rounded-md px-1.5 py-0.5 text-[9px]" variant={cloudConfigured ? "success" : "secondary"}>{cloudConfigured ? "已配置" : "未配置"}</Badge>
                 </div>
                 <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-                  本机的启动、停止、日志和端口操作始终直接连接 FastAPI 控制器。构建时提供 Supabase URL 和匿名密钥后，才启用远程认证与状态同步。
+                  本机的启动、停止、日志和端口操作始终直接连接 Rust/Axum 控制器。构建时提供 Supabase URL 和匿名密钥后，才启用远程认证与状态同步。
                 </p>
               </div>
             </div>

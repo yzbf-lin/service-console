@@ -8,49 +8,90 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  web:
+    name: Web application
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
-        with:
-          enable-cache: true
-          python-version: "3.12"
-      - uses: pnpm/action-setup@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 11.7.0
           run_install: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: pnpm
-      - name: Install Python dependencies
-        run: uv sync --group dev
       - name: Install web dependencies
         run: pnpm install --frozen-lockfile
-      - name: Lint web application
-        run: pnpm run lint:web
-      - name: Type-check web application
-        run: pnpm run typecheck:web
+      - name: Lint and type-check web application
+        run: |
+          pnpm run lint:web
+          pnpm run typecheck:web
       - name: Run web tests
         run: pnpm run test:web
-      - name: Build web application
-        run: pnpm run build:web-assets
-      - name: Verify generated web assets
-        run: uv run pytest tests/test_static_assets.py
-      - name: Run remaining tests
-        run: uv run pytest --ignore=tests/test_static_assets.py
+      - name: Build and verify embedded web assets
+        run: |
+          pnpm run build:web-assets
+          test -f src-tauri/resources/static/index.html
+          test -f src-tauri/resources/static/THIRD_PARTY_LICENSES.txt
+          grep -q '__SERVICE_CONSOLE_THEME__' src-tauri/resources/static/index.html
+          grep -q '/static/_next/' src-tauri/resources/static/index.html
+      - name: Verify Rust-only native runtime
+        run: |
+          test ! -e pyproject.toml
+          test ! -e uv.lock
+          test -z "$(git ls-files 'src/service_console/**')"
+          test -z "$(git ls-files '*.py')"
 
-  windows-test:
-    name: Windows Python tests
-    runs-on: windows-2025
+  rust-native:
+    name: Rust ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            bundle: app
+          - os: windows-2025
+            bundle: nsis
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          enable-cache: true
-          python-version: "3.12"
-      - name: Install Python dependencies
-        run: uv sync --group dev
-      - name: Run Python tests
-        run: uv run pytest
+          version: 11.7.0
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install web dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check Rust workspace
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          cargo test --locked --workspace --all-targets
+      - name: Build native desktop bundle
+        run: pnpm tauri build --debug --bundles ${{ matrix.bundle }}
+      - name: Verify macOS transition bundle
+        if: runner.os == 'macOS'
+        run: |
+          APP="target/debug/bundle/macos/Service Console.app"
+          test -x "$APP/Contents/MacOS/Service Console"
+          test -x "$APP/Contents/MacOS/service-console-updater"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = \
+            "dev.service-console.desktop"
+      - name: Verify Windows transition binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "target/debug/Service Console.exe" -PathType Leaf)) {
+            throw "Rust desktop binary is missing"
+          }
+          if (-not (Test-Path "target/debug/service-console-updater.exe" -PathType Leaf)) {
+            throw "Rust transition updater is missing"
+          }

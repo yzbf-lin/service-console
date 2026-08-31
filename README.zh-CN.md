@@ -109,7 +109,7 @@ Parameter、Active Choices 与 File System List 插件都应保持安全修复�
 </p>
 
 支持跟随系统、浅色和深色主题，选择结果会持久化。同一页面会显示当前版本、检查签名更新并引导下载
-和重启。Supabase 云端连接保持可选，并不影响本地 FastAPI 控制器提供的启动、停止、日志与端口功能。
+和重启。Supabase 云端连接保持可选，并不影响本地 Rust/Axum 控制器提供的启动、停止、日志与端口功能。
 
 ### 外观与主题
 
@@ -126,29 +126,29 @@ Parameter、Active Choices 与 File System List 插件都应保持安全修复�
 
 Supabase 是可选云端适配器。构建时提供 `NEXT_PUBLIC_SUPABASE_URL` 和
 `NEXT_PUBLIC_SUPABASE_ANON_KEY` 后，可供后续远程认证或状态同步使用。本地启动、停止、重启、日志和
-端口操作始终由 FastAPI 控制器执行，不配置 Supabase 也可完整离线使用。
+端口操作始终由 Rust/Axum 控制器执行，不配置 Supabase 也可完整离线使用。
 
 ## 环境要求
 
 | 用途 | 要求 |
 |---|---|
-| 控制器、CLI、TUI | Python 3.12+ 和 [uv](https://docs.astral.sh/uv/) |
+| 控制器、CLI、TUI | Rust stable 工具链 |
 | Web 资源开发 | Node.js 22+ 和 pnpm 11 |
-| 原生桌面窗口 | macOS、Windows，或 pywebview 支持的 Linux 环境 |
-| 构建 macOS `.app` | macOS、Xcode Command Line Tools、Node.js、pnpm 和 uv |
-| 构建 Windows `.exe` | Windows、PowerShell 7、Node.js、pnpm 和 uv |
+| 原生桌面窗口 | macOS 或 Windows 的系统 WebView 环境 |
+| 构建 macOS `.app` | macOS、Xcode Command Line Tools、Rust、Node.js 和 pnpm |
+| 构建 Windows `.exe` | Windows、PowerShell 7、Rust、Node.js、pnpm 和 WebView2 |
 
 ## 快速开始
 
 ```bash
 git clone https://github.com/yzbf-lin/service-console.git
 cd service-console
-uv sync --all-groups
-uv run service-console-desktop
+pnpm install --frozen-lockfile
+pnpm tauri dev
 ```
 
-桌面应用会在随机本机端口启动 FastAPI 控制器，并在原生 pywebview 窗口中打开界面。服务定义和日志
-默认保存在 `~/.service-console`。
+Tauri 2 桌面应用会在随机本机端口启动 Axum 控制器，并在系统 WebView 中打开界面。服务定义和日志默认
+保存在 `~/.service-console`。
 
 正式打包的 macOS 应用从 Finder 打开时，Service Console 会在桌面端启动阶段捕获一次用户的交互式
 登录 Shell 环境，使受管服务能使用与终端一致的导出 `PATH`，直接解析 Homebrew、`uv`、pnpm、pyenv
@@ -159,13 +159,13 @@ uv run service-console-desktop
 注册并控制一个原生服务：
 
 ```bash
-uv run service-console add api \
+target/debug/service-console add api \
   --command "uv run backend/run.py" \
   --cwd /path/to/project
 
-uv run service-console start api
-uv run service-console restart api
-uv run service-console logs api --tail 200 --follow
+target/debug/service-console start api
+target/debug/service-console restart api
+target/debug/service-console logs api --tail 200 --follow
 ```
 
 桌面端运行时，CLI 会自动发现随机端口和临时 Token，无需手工复制连接参数。
@@ -196,7 +196,7 @@ Windows 可能把同一账户表示为 `DOMAIN\User` 或 `User`；Service Consol
 
 使用 **Jenkins → 添加实例** 配置显示名称、基础 URL、用户名、API Token、可选 CA 证书包、启用状态和
 请求超时。每个实例都可独立编辑、复制、删除或测试连接。Token 在界面中只写不回显：Service Console
-通过 Python `keyring` 保存到操作系统凭据后端（macOS Keychain / Windows Credential Locker），普通
+通过 Rust `keyring` crate 保存到操作系统凭据后端（macOS Keychain / Windows Credential Locker），普通
 JSON 配置只保存非敏感实例字段。Linux 仅接受安全的 Secret Service、KWallet 或 libsecret 后端；若没有
 可用的安全凭据后端，Token 只保留在当前应用进程内存中，重启后需要重新输入。API 回包最多返回
 `token_present`，浏览器与 MCP 工具结果都不会取得 Token，也不会降级写入明文 Token 文件。
@@ -254,20 +254,21 @@ MCP 握手并调用只读的 `service_list` 工具。
 ```bash
 # macOS
 codex mcp add service-console -- \
-  "/Applications/Service Console.app/Contents/MacOS/Service Console MCP"
+  "/Applications/Service Console.app/Contents/MacOS/service-console-mcp"
 ```
 
 ```powershell
 # Windows：请按实际安装目录调整路径
 codex mcp add service-console -- `
-  "C:\Program Files\Service Console\Service Console MCP.exe"
+  "C:\Program Files\Service Console\service-console-mcp.exe"
 ```
 
-源码开发环境可以使用同一个虚拟环境入口：
+源码开发环境可直接注册 Rust MCP 二进制：
 
 ```bash
+cargo build --locked --bin service-console-mcp
 codex mcp add service-console -- \
-  "$(pwd)/.venv/bin/python" -m service_console.mcp_server
+  "$(pwd)/target/debug/service-console-mcp"
 ```
 
 ### 项目启动配置
@@ -336,7 +337,7 @@ Jenkins。
 Linux、无桌面服务器或偏好浏览器界面时，可以单独启动控制器：
 
 ```bash
-uv run service-console serve --host 127.0.0.1 --port 8787
+cargo run --locked --bin service-console -- serve --host 127.0.0.1 --port 8787
 ```
 
 打开 <http://127.0.0.1:8787>。控制器拥有其子进程组；关闭最后一个桌面窗口、停止控制器或收到可捕获
@@ -375,61 +376,52 @@ pipe EOF 回收进程组，Windows 使用带 `KILL_ON_JOB_CLOSE` 的 Job Object�
 
 自动替换仅用于正式打包的 macOS arm64 与 Windows x64 Release，且安装目录必须可写。源码运行、纯
 浏览器控制器或不支持的架构仍能发现版本，但会引导前往 Release 下载页。首个内置更新公钥的版本需要
-手动安装，从它之后发布的版本才能在应用内更新。
+手动安装。Rust 0.4.0 迁移包会保留旧版 Bundle 身份和桌面入口，并内置兼容 0.3.x 更新协议的 Rust
+Windows 助手；因此签名 Release 发布后，现有 0.3.x 桌面端可以直接通过“安装并重启”升级到 0.4.0。
 
-Windows Release 会内置原生 `Service Console Updater.exe`。桌面端关闭前，程序先把更新器复制到安装
-目录之外，并等待它写入启动确认；更新器随后等待原桌面进程准确退出、替换应用目录、启动新版本，并在
-新窗口报告 ready 前保留旧版本备份。新版本启动失败时会恢复并重新打开旧版本。诊断日志位于
-`%USERPROFILE%\.service-console\updates\vVERSION\install-update.log`。
-
-Windows 0.2.0 和 0.2.1 使用旧更新启动器。如果这两个版本点击“安装并重启”后只关闭应用，请手动下载
-并解压安装一次 0.2.2 或更高版本；完成这次迁移后，后续应用内更新会使用上述原生更新器和回滚流程。
+替换前，Rust 桌面程序会把自身复制到安装目录之外，并以更新助手模式启动。助手确认就绪后等待原桌面
+进程准确退出，原子替换应用目录并启动新版本；在新控制器报告 ready 前会保留旧版本备份。新版本启动
+失败时会恢复并重新打开旧版本。诊断日志位于 `~/.service-console/updates/vVERSION/`。
 
 ## 打包 macOS 应用
 
-需要 macOS、Xcode Command Line Tools、Node.js、pnpm 和 uv：
+需要 macOS、Xcode Command Line Tools、Rust、Node.js 和 pnpm：
 
 ```bash
-./scripts/build-macos-app.sh
-open "dist/Service Console.app"
+pnpm install --frozen-lockfile
+pnpm tauri build --bundles app
+open "target/release/bundle/macos/Service Console.app"
 ```
 
-脚本会从 `assets/service-console-icon-1024.png` 生成多分辨率 ICNS 图标；用户提供的透明产品标志原图
-保留在 `assets/service-console-logo.png`。随后静态导出 Next.js 与 xterm.js 界面，再用 PyInstaller 打包
-CPython、pywebview、FastAPI、完整界面和 console 型 MCP sidecar。Bundle 版本自动与
-`pyproject.toml` 同步并进行 ad-hoc 签名。
+Tauri 会静态导出 Next.js 界面，编译 Rust 控制器、CLI/TUI、MCP Bridge、guardian、迁移更新助手和
+更新流程，并将这些二进制文件放入同一个 `.app`。产品版本来自 `src-tauri/Cargo.toml`。
 
 产物匹配构建机器架构，目前已在 Apple Silicon 上验证。它尚未使用 Apple Developer ID 签名和公证，
-通过 GitHub 下载后可能触发 Gatekeeper 提示。`dist/` 默认不进入 Git，应通过 GitHub Releases 分发。
+通过 GitHub 下载后可能触发 Gatekeeper 提示。`target/` 默认不进入 Git，应通过 GitHub Releases 分发。
 
-更换产品标志时，将透明原图保存为 `assets/service-console-logo.png`，再统一生成桌面图标、README 图标、
-顶栏 Logo 和 favicon：
-
-```bash
-uv run --group icon python scripts/build_brand_assets.py
-./scripts/build-macos-icon.sh
-pnpm run build:web-assets
-```
+已经生成并提交的 Tauri 图标位于 `src-tauri/icons`，透明产品标志原图保留在 `assets`。
 
 ## 打包 Windows 应用
 
-在 Windows 上使用 PowerShell 7、Node.js、pnpm 和 uv：
+在 Windows 上使用 PowerShell 7、Rust、Node.js 和 pnpm：
 
 ```powershell
-pwsh ./scripts/build-windows-app.ps1
-& "dist/Service Console/Service Console.exe" --help
+pnpm install --frozen-lockfile
+pnpm tauri build --bundles nsis
+& "target/release/service-console.exe" --help
 ```
 
-脚本会生成多分辨率 ICO 图标、构建同一套离线界面，并在 `dist/Service Console` 生成 PyInstaller
-目录包、`Service Console MCP.exe` 和单文件原生 `Service Console Updater.exe`。Windows 10/11 需要
-安装 Microsoft Edge WebView2 Runtime。
+构建会生成 NSIS 安装器以及 Rust 桌面程序、CLI/TUI、MCP Bridge 和 guardian。更新助手会在原子替换和
+回滚前，从正在运行的 Rust 桌面可执行文件复制到临时位置。Windows 10/11 需要安装 Microsoft Edge
+WebView2 Runtime。
 当前 Windows 可执行文件未进行
 商业代码签名，在配置可信代码签名证书前可能出现 SmartScreen 提示。
 
 ## 发布 Release 包
 
 仓库的 `Release` GitHub Actions 工作流会构建 Apple Silicon macOS ZIP 和 Windows x64 ZIP。推送与
-`pyproject.toml` 版本一致的标签后，会将两个安装包、`SHA256SUMS.txt`、`latest-update.json` 和
+`src-tauri/Cargo.toml` 版本一致的标签后，会将两个平台包、Windows NSIS 安装器、`SHA256SUMS.txt`、
+`latest-update.json` 和
 `latest-update.json.sig` 发布到 GitHub Releases：
 
 ```bash
@@ -443,7 +435,7 @@ Release。若需要由 GitHub 强制保护标签和资产，还应在仓库设�
 
 也可以手动运行该工作流，只生成可下载的 Actions 构建产物而不创建 GitHub Release。
 
-## FastAPI + Vite + Celery 示例
+## 后端 + Vite + Celery 示例
 
 仓库提供了后端、前端、Celery Worker 和 Celery Beat 的完整原生管理示例，见
 [examples/pd-qa-backend.md](examples/pd-qa-backend.md)。Beat 需要显式启动，避免多个调度器重复投递任务。
@@ -451,13 +443,11 @@ Release。若需要由 GitHub 强制保护标签和资产，还应在仓库设�
 ## 开发与测试
 
 ```bash
-uv sync --group dev
 pnpm install --frozen-lockfile
-pnpm run typecheck:web
-pnpm run lint:web
-pnpm run test:web
 pnpm run build:web-assets
-uv run pytest
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets
 ```
 
 接口和架构约束见 [CONTRACT.md](CONTRACT.md)，贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。

@@ -39,10 +39,13 @@ Update responses expose `state`, `can_install`, `downloaded`, `downloaded_bytes`
 
 ## Module map
 
-- `models.py`, `store.py`: persistent service definitions and runtime data models.
-- `manager.py`: platform process-tree lifecycle, metrics, and log capture.
-- `api.py`: HTTP and WebSocket controller surface.
-- `cli.py`, `tui.py`: command-line and terminal clients.
-- `desktop.py`, `runtime.py`: native window lifecycle and private local discovery.
-- `update.py`: signed release discovery, package verification, staging, replacement, and rollback.
-- `static/`: responsive dashboard and bundled terminal assets.
+- `src-tauri/src/models.rs`, `store.rs`: persistent service definitions and runtime data models.
+- `src-tauri/src/manager.rs`, `process_guardian.rs`: process-tree lifecycle, metrics, log capture,
+  crash cleanup, and persistent process leases.
+- `src-tauri/src/server.rs`: Axum HTTP, WebSocket, and embedded static-dashboard surface.
+- `src-tauri/src/bin/service-console.rs`: controller, command-line client, and terminal UI.
+- `src-tauri/src/main.rs`, `runtime.rs`: Tauri window lifecycle and private local discovery.
+- `src-tauri/src/mcp_bridge.rs`, `mcp_integration.rs`: stdio MCP bridge and Codex registration.
+- `src-tauri/src/update.rs`, `update_helper.rs`: signed release discovery, verification, staging,
+  atomic replacement, readiness confirmation, and rollback.
+- `src-tauri/resources/static/`: responsive dashboard and bundled terminal assets.
