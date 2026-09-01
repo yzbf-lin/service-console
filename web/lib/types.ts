@@ -82,6 +82,7 @@ export interface AppUpdateStatus {
 
 export interface ServiceDefinition {
   name: string;
+  group: string | null;
   command: string;
   cwd: string;
   env: Record<string, string>;
@@ -107,6 +108,7 @@ export interface ServiceSnapshot extends ServiceDefinition {
 
 export interface NormalizedService {
   name: string;
+  group: string | null;
   command: string;
   cwd: string;
   env: Record<string, string>;
@@ -193,9 +195,22 @@ export interface NormalizedProcessCandidate {
 }
 
 export type ServiceLifecycleAction = "start" | "stop" | "restart";
+export type ServiceGroupAction = "start" | "stop";
 export type ServiceDefinitionAction = "edit" | "copy" | "delete";
 export type ServiceAction = ServiceLifecycleAction | ServiceDefinitionAction;
 export type ServiceActionDisabled = Record<ServiceAction, boolean>;
+
+export interface ServiceGroupActionError {
+  service: string;
+  error: string;
+}
+
+export interface ServiceGroupActionResult {
+  group: string;
+  action: ServiceGroupAction;
+  services: NormalizedService[];
+  errors: ServiceGroupActionError[];
+}
 
 export interface ProcessTerminateInput {
   expected_port: number | null;

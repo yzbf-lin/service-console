@@ -26,6 +26,7 @@ describe("service normalization", () => {
     const service = normalizeService({
       definition: {
         name: "backend",
+        group: "workers",
         command: "uv run backend/run.py",
         cwd: "/workspace",
         env: { PORT: 8000 },
@@ -42,6 +43,7 @@ describe("service normalization", () => {
 
     expect(service).toMatchObject({
       name: "backend",
+      group: "workers",
       command: "uv run backend/run.py",
       cwd: "/workspace",
       env: { PORT: "8000" },
@@ -148,6 +150,7 @@ describe("running process normalization", () => {
     }), ["QA-worker"]);
     expect(input).toEqual({
       name: "QA-worker-2",
+      group: null,
       command: "python app.py",
       cwd: "/workspace",
       env: { PYTHONUNBUFFERED: "1" },
@@ -293,6 +296,46 @@ describe("API client", () => {
     await client.restartService("api worker");
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/services/api%20worker/restart");
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it("creates, assigns, controls, and deletes service groups", async () => {
+    const service = {
+      name: "api worker",
+      group: "后端/核心",
+      command: "worker",
+      cwd: "/tmp",
+      env: {},
+      auto_start: false,
+      stop_timeout: 5,
+      state: "STOPPED",
+    };
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ groups: ["后端/核心"] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ group: "后端/核心" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ service }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        result: { group: "后端/核心", action: "start", services: [service], errors: [] },
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ services: [{ ...service, group: null }] }), { status: 200 }));
+    const client = createApiClient({ fetch: fetchMock });
+
+    await expect(client.listServiceGroups()).resolves.toEqual(["后端/核心"]);
+    await expect(client.createServiceGroup("后端/核心")).resolves.toBe("后端/核心");
+    await expect(client.assignServiceGroup("api worker", "后端/核心")).resolves.toMatchObject({ group: "后端/核心" });
+    await expect(client.runServiceGroupAction("后端/核心", "start")).resolves.toMatchObject({
+      group: "后端/核心",
+      action: "start",
+      services: [{ name: "api worker", group: "后端/核心" }],
+      errors: [],
+    });
+    await expect(client.deleteServiceGroup("后端/核心")).resolves.toMatchObject([{ name: "api worker", group: null }]);
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/service-groups");
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ name: "后端/核心" });
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("/api/services/api%20worker/group");
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({ group: "后端/核心" });
+    expect(fetchMock.mock.calls[3]?.[0]).toBe("/api/service-groups/%E5%90%8E%E7%AB%AF%2F%E6%A0%B8%E5%BF%83/start");
+    expect(fetchMock.mock.calls[4]?.[0]).toBe("/api/service-groups/%E5%90%8E%E7%AB%AF%2F%E6%A0%B8%E5%BF%83");
   });
 
   it("lists and reads normalized running processes", async () => {

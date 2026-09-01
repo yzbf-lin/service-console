@@ -82,7 +82,16 @@ jobs:
         run: |
           APP="target/debug/bundle/macos/Service Console.app"
           test -x "$APP/Contents/MacOS/Service Console"
+          test -x "$APP/Contents/MacOS/service-console"
+          test -x "$APP/Contents/MacOS/service-console-mcp"
+          test -x "$APP/Contents/MacOS/service-console-guardian"
           test -x "$APP/Contents/MacOS/service-console-updater"
+          RESPONSE="$(printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | \
+            "$APP/Contents/MacOS/service-console-mcp")"
+          grep -q '"name":"service-console"' <<<"$RESPONSE"
+          grep -q '"name":"service_group_start"' <<<"$RESPONSE"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = \
             "dev.service-console.desktop"
       - name: Verify Windows transition binaries
@@ -94,4 +103,15 @@ jobs:
           }
           if (-not (Test-Path "target/debug/service-console-updater.exe" -PathType Leaf)) {
             throw "Rust transition updater is missing"
+          }
+          if (-not (Test-Path "target/debug/service-console-mcp.exe" -PathType Leaf)) {
+            throw "Rust MCP bridge is missing"
+          }
+          $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}',
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          ) -join "`n"
+          $response = $requests | & "target/debug/service-console-mcp.exe"
+          if ($LASTEXITCODE -ne 0 -or $response -notmatch 'service_group_start') {
+            throw "Rust MCP bridge tool-list smoke test failed"
           }

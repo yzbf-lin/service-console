@@ -1,4 +1,6 @@
 use std::{
+    collections::BTreeMap,
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -19,6 +21,7 @@ use crate::{
     mcp_bridge::TOOL_NAMES,
     models::expand_home,
     runtime::{load_runtime, runtime_path},
+    shell_environment::resolve_desktop_service_environment,
 };
 
 const SERVER_NAME: &str = "service-console";
@@ -28,12 +31,14 @@ pub struct McpIntegration {
     runtime_file: PathBuf,
     bridge: Option<PathBuf>,
     codex: Option<PathBuf>,
+    command_environment: BTreeMap<String, String>,
     last_test: RwLock<Option<Value>>,
 }
 
 impl McpIntegration {
     pub fn new(data_dir: impl AsRef<Path>) -> Arc<Self> {
         let data_dir = expand_home(data_dir);
+        let command_environment = resolve_desktop_service_environment();
         let current = std::env::current_exe().ok();
         let bridge_names: &[&str] = if cfg!(windows) {
             &["service-console-mcp.exe", "Service Console MCP.exe"]
@@ -48,12 +53,18 @@ impl McpIntegration {
                     .map(|name| current.with_file_name(name))
                     .find(|path| path.is_file())
             })
-            .or_else(|| find_on_path("service-console-mcp"));
-        Self::with_paths(
+            .or_else(|| {
+                find_on_path(
+                    "service-console-mcp",
+                    command_environment.get("PATH").map(OsStr::new),
+                )
+            });
+        Self::with_paths_and_environment(
             data_dir.clone(),
             runtime_path(&data_dir),
             bridge,
-            find_on_path("codex"),
+            find_on_path("codex", command_environment.get("PATH").map(OsStr::new)),
+            command_environment,
         )
     }
 
@@ -63,13 +74,36 @@ impl McpIntegration {
         bridge: Option<PathBuf>,
         codex: Option<PathBuf>,
     ) -> Arc<Self> {
+        Self::with_paths_and_environment(
+            data_dir,
+            runtime_file,
+            bridge,
+            codex,
+            std::env::vars().collect(),
+        )
+    }
+
+    fn with_paths_and_environment(
+        data_dir: PathBuf,
+        runtime_file: PathBuf,
+        bridge: Option<PathBuf>,
+        codex: Option<PathBuf>,
+        command_environment: BTreeMap<String, String>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             data_dir,
             runtime_file,
             bridge,
             codex,
+            command_environment,
             last_test: RwLock::new(None),
         })
+    }
+
+    fn command(&self, executable: &Path) -> Command {
+        let mut command = Command::new(executable);
+        command.envs(&self.command_environment);
+        command
     }
 
     fn bridge_args(&self) -> Vec<String> {
@@ -85,7 +119,8 @@ impl McpIntegration {
         let Some(codex) = &self.codex else {
             return Ok(None);
         };
-        let output = Command::new(codex)
+        let output = self
+            .command(codex)
             .args(["mcp", "get", SERVER_NAME, "--json"])
             .output()
             .await?;
@@ -176,13 +211,13 @@ impl McpIntegration {
             .ok_or_else(|| AppError::conflict("Service Console MCP bridge was not found"))?;
         if let Some(registration) = self.registration().await? {
             if self.registration_is_current(&registration) {
+                self.record_bridge_test().await?;
                 return Ok(self.status().await);
             }
-            return Err(AppError::conflict(
-                "A different service-console MCP registration already exists; remove it explicitly before installing",
-            ));
+            self.remove_registration(codex).await?;
         }
-        let output = Command::new(codex)
+        let output = self
+            .command(codex)
             .args(["mcp", "add", SERVER_NAME, "--"])
             .arg(bridge)
             .args(self.bridge_args())
@@ -194,6 +229,12 @@ impl McpIntegration {
                 "Codex MCP registration failed",
             )));
         }
+        if let Err(error) = self.record_bridge_test().await {
+            let _ = self.remove_registration(codex).await;
+            return Err(AppError::conflict(format!(
+                "Codex MCP registration was rolled back because verification failed: {error}"
+            )));
+        }
         Ok(self.status().await)
     }
 
@@ -203,29 +244,40 @@ impl McpIntegration {
                 .codex
                 .as_ref()
                 .ok_or_else(|| AppError::conflict("Codex CLI was not found"))?;
-            let output = Command::new(codex)
-                .args(["mcp", "remove", SERVER_NAME])
-                .output()
-                .await?;
-            if !output.status.success() {
-                return Err(AppError::conflict(command_error(
-                    &output,
-                    "Codex MCP removal failed",
-                )));
-            }
+            self.remove_registration(codex).await?;
         }
         *self.last_test.write().await = None;
         Ok(self.status().await)
     }
 
     pub async fn test(&self) -> Value {
+        let _ = self.record_bridge_test().await;
+        self.status().await
+    }
+
+    async fn record_bridge_test(&self) -> AppResult<()> {
         let tested_at = Utc::now().to_rfc3339();
         let result = self.test_bridge().await;
-        *self.last_test.write().await = Some(match result {
+        *self.last_test.write().await = Some(match &result {
             Ok(()) => json!({"ok":true,"tested_at":tested_at,"error":null}),
             Err(error) => json!({"ok":false,"tested_at":tested_at,"error":error.to_string()}),
         });
-        self.status().await
+        result
+    }
+
+    async fn remove_registration(&self, codex: &Path) -> AppResult<()> {
+        let output = self
+            .command(codex)
+            .args(["mcp", "remove", SERVER_NAME])
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Err(AppError::conflict(command_error(
+                &output,
+                "Codex MCP removal failed",
+            )));
+        }
+        Ok(())
     }
 
     async fn test_bridge(&self) -> AppResult<()> {
@@ -233,12 +285,14 @@ impl McpIntegration {
             .bridge
             .as_ref()
             .ok_or_else(|| AppError::conflict("Service Console MCP bridge was not found"))?;
-        let mut child = Command::new(bridge)
+        let mut command = self.command(bridge);
+        command
             .args(self.bridge_args())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()?;
+            .kill_on_drop(true);
+        let mut child = command.spawn()?;
         let mut stdin = child
             .stdin
             .take()
@@ -277,20 +331,47 @@ impl McpIntegration {
             .copied()
             .filter(|name| !names.contains(name))
             .collect();
-        let _ = child.kill().await;
         if !missing.is_empty() {
             return Err(AppError::conflict(format!(
                 "MCP bridge is missing tools: {}",
                 missing.join(", ")
             )));
         }
+        for (id, tool, result_key) in [
+            (3_u64, "service_list", "services"),
+            (4, "service_group_list", "groups"),
+            (5, "jenkins_instance_list", "instances"),
+        ] {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {"name": tool, "arguments": {}},
+            });
+            stdin.write_all(format!("{request}\n").as_bytes()).await?;
+            let called = timeout(Duration::from_secs(10), lines.next_line())
+                .await
+                .map_err(|_| AppError::conflict(format!("MCP {tool} call timed out")))??
+                .ok_or_else(|| AppError::conflict(format!("MCP bridge exited during {tool}")))?;
+            let payload: Value = serde_json::from_str(&called)?;
+            if payload["id"] != id
+                || payload["result"]["isError"].as_bool().unwrap_or(true)
+                || !payload["result"]["structuredContent"][result_key].is_array()
+            {
+                return Err(AppError::conflict(format!(
+                    "MCP {tool} call failed: {}",
+                    payload.get("error").unwrap_or(&payload["result"])
+                )));
+            }
+        }
+        let _ = child.kill().await;
         Ok(())
     }
 }
 
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
+fn find_on_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    path.and_then(|paths| {
+        std::env::split_paths(paths)
             .map(|path| {
                 path.join(if cfg!(windows) {
                     format!("{name}.exe")
@@ -326,5 +407,86 @@ fn command_error(output: &std::process::Output, fallback: &str) -> String {
         fallback.into()
     } else {
         format!("{fallback}: {detail}")
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::{fs, os::unix::fs::PermissionsExt};
+    use tempfile::tempdir;
+
+    fn executable(path: &Path, source: &str) {
+        fs::write(path, source).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn install_replaces_stale_python_registration_and_verifies_core_tool_calls() {
+        let directory = tempdir().unwrap();
+        let bridge = directory.path().join("service-console-mcp");
+        let codex = directory.path().join("codex");
+        let state = directory.path().join("registration-state");
+        fs::write(&state, "stale").unwrap();
+
+        let listed_tools = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "tools": TOOL_NAMES.iter().map(|name| json!({"name": name})).collect::<Vec<_>>()
+            }
+        });
+        executable(
+            &bridge,
+            &format!(
+                "#!/bin/sh\nwhile IFS= read -r line; do\ncase \"$line\" in\n  *'\"id\":1'*) printf '%s\\n' '{}' ;;\n  *'\"id\":2'*) printf '%s\\n' '{}' ;;\n  *'\"id\":3'*) printf '%s\\n' '{}' ;;\n  *'\"id\":4'*) printf '%s\\n' '{}' ;;\n  *'\"id\":5'*) printf '%s\\n' '{}' ;;\nesac\ndone\n",
+                json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"service-console","version":"test"}}}),
+                listed_tools,
+                json!({"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"services\":[]}"}],"structuredContent":{"services":[]},"isError":false}}),
+                json!({"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\"groups\":[]}"}],"structuredContent":{"groups":[]},"isError":false}}),
+                json!({"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"{\"instances\":[]}"}],"structuredContent":{"instances":[]},"isError":false}}),
+            ),
+        );
+        executable(
+            &codex,
+            "#!/bin/sh\ncase \"$1:$2\" in\n  mcp:get)\n    if [ \"$(cat \"$FAKE_MCP_STATE\")\" = current ]; then printf '%s\\n' \"$FAKE_CURRENT_JSON\"; else printf '%s\\n' \"$FAKE_STALE_JSON\"; fi ;;\n  mcp:remove) printf '%s' removed > \"$FAKE_MCP_STATE\" ;;\n  mcp:add) printf '%s' current > \"$FAKE_MCP_STATE\" ;;\n  *) exit 2 ;;\nesac\n",
+        );
+
+        let data_dir = directory.path().join("data");
+        let runtime_file = data_dir.join("controller.json");
+        let args = vec![
+            "--runtime-file".to_owned(),
+            runtime_file.to_string_lossy().into_owned(),
+            "--data-dir".to_owned(),
+            data_dir.to_string_lossy().into_owned(),
+        ];
+        let current = json!({
+            "enabled": true,
+            "transport": {"type":"stdio","command":bridge,"args":args},
+        });
+        let stale = json!({
+            "enabled": true,
+            "transport": {"type":"stdio","command":"python","args":["-m","service_console.cli"]},
+        });
+        let mut environment: BTreeMap<String, String> = std::env::vars().collect();
+        environment.insert(
+            "FAKE_MCP_STATE".into(),
+            state.to_string_lossy().into_owned(),
+        );
+        environment.insert("FAKE_CURRENT_JSON".into(), current.to_string());
+        environment.insert("FAKE_STALE_JSON".into(), stale.to_string());
+        let integration = McpIntegration::with_paths_and_environment(
+            data_dir,
+            runtime_file,
+            Some(bridge),
+            Some(codex),
+            environment,
+        );
+
+        assert_eq!(integration.status().await["state"], "conflict");
+        let installed = integration.install().await.unwrap();
+        assert_eq!(installed["state"], "installed");
+        assert_eq!(installed["last_test"]["ok"], true);
+        assert_eq!(fs::read_to_string(state).unwrap(), "current");
     }
 }

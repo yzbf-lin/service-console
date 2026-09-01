@@ -7,6 +7,7 @@ pub mod models;
 pub mod preferences;
 pub mod process_guardian;
 pub mod runtime;
+pub mod runtime_log;
 pub mod server;
 pub mod shell_environment;
 pub mod store;
@@ -49,6 +50,19 @@ pub fn run_desktop() {
     let data_dir = std::env::var_os("SERVICE_CONSOLE_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(default_data_dir);
+    match runtime_log::init(&data_dir) {
+        Ok(path) => runtime_log::info(
+            "desktop.start",
+            format_args!(
+                "version={} platform={}-{} log={}",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                path.display()
+            ),
+        ),
+        Err(error) => eprintln!("runtime log initialization failed: {error}"),
+    }
     let runtime_file = std::env::var_os("SERVICE_CONSOLE_RUNTIME_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|| runtime_path(&data_dir));
@@ -99,11 +113,15 @@ pub fn run_desktop() {
                     *state.manager.lock().await = Some(manager);
                     *state.controller.lock().await = Some(controller);
                     *state.connection.lock().await = Some(connection);
+                    runtime_log::info(
+                        "desktop.ready",
+                        "main window and local controller are ready",
+                    );
                     anyhow::Ok(())
                 }
                 .await;
                 if let Err(error) = startup {
-                    eprintln!("desktop startup failed: {error:#}");
+                    runtime_log::error("desktop.start_failed", format_args!("{error:#}"));
                     handle.exit(1);
                 }
             });
@@ -112,20 +130,35 @@ pub fn run_desktop() {
         .build(tauri::generate_context!())
         .expect("failed to build Service Console desktop application");
 
-    app.run(|handle, event| {
-        if matches!(event, tauri::RunEvent::Exit) {
+    app.run(|handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => {
+            runtime_log::info("desktop.exit_requested", "application exit requested");
             let state = handle.state::<DesktopState>();
             tauri::async_runtime::block_on(async {
-                if let Some(manager) = state.manager.lock().await.take() {
-                    manager.shutdown().await;
+                if let Some(controller) = state.controller.lock().await.as_ref() {
+                    controller.request_shutdown();
                 }
+            });
+        }
+        tauri::RunEvent::Exit => {
+            runtime_log::info(
+                "desktop.shutdown",
+                "stopping local controller and managed services",
+            );
+            let state = handle.state::<DesktopState>();
+            tauri::async_runtime::block_on(async {
                 if let Some(controller) = state.controller.lock().await.take() {
                     controller.shutdown().await;
+                }
+                if let Some(manager) = state.manager.lock().await.take() {
+                    manager.shutdown().await;
                 }
                 if let Some(connection) = state.connection.lock().await.take() {
                     let _ = remove_runtime(&state.runtime_file, &connection.instance_id);
                 }
             });
+            runtime_log::info("desktop.stopped", "application shutdown completed");
         }
+        _ => {}
     });
 }

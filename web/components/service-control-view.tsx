@@ -13,36 +13,49 @@ import type {
   NormalizedService,
   ResolvedTheme,
   ServiceAction,
+  ServiceGroupAction,
 } from "@/lib/types";
 import { cn } from "@/lib/cn";
 
 interface ServiceControlViewProps {
   services: NormalizedService[];
+  groups: string[];
   selectedName: string | null;
   selectedService: NormalizedService | null;
   logs: NormalizedLogEntry[];
   logRevision: number;
   busyServices: Set<string>;
+  busyGroups: Set<string>;
   theme: ResolvedTheme;
   active: boolean;
   onSelect: (name: string) => void;
   onAction: (name: string, action: ServiceAction) => void;
   onAddService: () => void;
+  onCreateGroup: () => void;
+  onDeleteGroup: (group: string) => void;
+  onMoveService: (service: string, group: string | null) => void;
+  onGroupAction: (group: string, action: ServiceGroupAction) => void;
   onClearLogs: () => void;
 }
 
 export function ServiceControlView({
   services,
+  groups,
   selectedName,
   selectedService,
   logs,
   logRevision,
   busyServices,
+  busyGroups,
   theme,
   active,
   onSelect,
   onAction,
   onAddService,
+  onCreateGroup,
+  onDeleteGroup,
+  onMoveService,
+  onGroupAction,
   onClearLogs,
 }: ServiceControlViewProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -67,11 +80,17 @@ export function ServiceControlView({
       <ServiceListPanel
         className="border-r max-[767px]:hidden"
         services={services}
+        groups={groups}
         selectedName={selectedName}
         busyServices={busyServices}
+        busyGroups={busyGroups}
         onSelect={onSelect}
         onAction={onAction}
         onAddService={onAddService}
+        onCreateGroup={onCreateGroup}
+        onDeleteGroup={onDeleteGroup}
+        onMoveService={onMoveService}
+        onGroupAction={onGroupAction}
       />
 
       <section className="service-view-grid" aria-label="服务详情">
@@ -138,10 +157,16 @@ export function ServiceControlView({
             className="h-full"
             variant="drawer"
             services={services}
+            groups={groups}
             selectedName={selectedName}
             busyServices={busyServices}
+            busyGroups={busyGroups}
             onSelect={selectFromDrawer}
             onAction={onAction}
+            onCreateGroup={onCreateGroup}
+            onDeleteGroup={onDeleteGroup}
+            onMoveService={onMoveService}
+            onGroupAction={onGroupAction}
           />
         </DialogContent>
       </Dialog>

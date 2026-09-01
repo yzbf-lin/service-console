@@ -37,6 +37,8 @@ import type {
   ProcessTerminateInput,
   ProcessTerminateResult,
   ServiceCreateInput,
+  ServiceGroupAction,
+  ServiceGroupActionResult,
   ServiceLifecycleAction,
   ServiceUpdateInput,
   ThemePreference,
@@ -73,6 +75,11 @@ export interface ServiceConsoleApiClient {
   request<T>(path: string, options?: RequestOptions): Promise<T>;
   checkHealth(): Promise<boolean>;
   listServices(): Promise<NormalizedService[]>;
+  listServiceGroups(): Promise<string[]>;
+  createServiceGroup(name: string): Promise<string>;
+  deleteServiceGroup(name: string): Promise<NormalizedService[]>;
+  assignServiceGroup(name: string, group: string | null): Promise<NormalizedService>;
+  runServiceGroupAction(group: string, action: ServiceGroupAction): Promise<ServiceGroupActionResult>;
   createService(input: ServiceCreateInput): Promise<NormalizedService>;
   updateService(name: string, input: ServiceUpdateInput): Promise<NormalizedService>;
   deleteService(name: string): Promise<void>;
@@ -133,6 +140,10 @@ function joinUrl(baseUrl: string, path: string): string {
 
 function jenkinsPath(instanceId: string, suffix = ""): string {
   return `/api/jenkins/instances/${encodeURIComponent(instanceId)}${suffix}`;
+}
+
+function serviceGroupPath(group: string, suffix = ""): string {
+  return `/api/service-groups/${encodeURIComponent(group)}${suffix}`;
 }
 
 function withQuery(path: string, values: Record<string, string | number | boolean | undefined>): string {
@@ -212,6 +223,48 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
     },
     async listServices() {
       return extractServices(await request<unknown>("/api/services"));
+    },
+    async listServiceGroups() {
+      const payload = await request<unknown>("/api/service-groups");
+      return isRecord(payload) && Array.isArray(payload.groups)
+        ? payload.groups.map(String).filter(Boolean)
+        : [];
+    },
+    async createServiceGroup(name) {
+      const payload = await request<unknown>("/api/service-groups", {
+        method: "POST",
+        body: { name },
+      });
+      if (!isRecord(payload) || typeof payload.group !== "string") {
+        throw new ApiError("响应缺少 group 字段", 0, payload);
+      }
+      return payload.group;
+    },
+    async deleteServiceGroup(name) {
+      return extractServices(await request<unknown>(serviceGroupPath(name), { method: "DELETE" }));
+    },
+    async assignServiceGroup(name, group) {
+      const payload = await request<unknown>(`/api/services/${encodeURIComponent(name)}/group`, {
+        method: "PUT",
+        body: { group },
+      });
+      return normalizeService(responseRecord(payload, "service"), name);
+    },
+    async runServiceGroupAction(group, action) {
+      const payload = await request<unknown>(serviceGroupPath(group, `/${action}`), { method: "POST" });
+      const result = responseRecord(payload, "result");
+      const errors = Array.isArray(result.errors)
+        ? result.errors.filter(isRecord).map((error) => ({
+          service: String(error.service ?? ""),
+          error: String(error.error ?? "unknown error"),
+        }))
+        : [];
+      return {
+        group: String(result.group ?? group),
+        action: String(result.action ?? action) as ServiceGroupAction,
+        services: extractServices({ services: result.services }),
+        errors,
+      };
     },
     async createService(input) {
       const payload = await request<unknown>("/api/services", { method: "POST", body: input });

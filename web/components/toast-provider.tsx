@@ -48,7 +48,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <Toast.Root
               key={item.id}
               className={cn(
-                "grid w-[min(380px,calc(100vw-24px))] grid-cols-[auto_1fr_auto] items-start gap-2 rounded-lg border bg-popover p-3 text-popover-foreground shadow-2xl",
+                "glass-popover grid w-[min(380px,calc(100vw-24px))] grid-cols-[auto_1fr_auto] items-start gap-2 rounded-lg border bg-popover p-3 text-popover-foreground shadow-2xl",
                 "data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)]",
                 item.kind === "error" && "border-destructive/40",
                 item.kind === "success" && "border-success/40",

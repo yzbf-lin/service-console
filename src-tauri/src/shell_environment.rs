@@ -3,6 +3,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::OnceLock,
     thread,
     time::{Duration, Instant},
 };
@@ -19,13 +20,18 @@ const PRESERVED_KEYS: &[&str] = &[
     "TERM_SESSION_ID",
     "_",
 ];
+static DESKTOP_SERVICE_ENVIRONMENT: OnceLock<BTreeMap<String, String>> = OnceLock::new();
 
 pub fn resolve_desktop_service_environment() -> BTreeMap<String, String> {
-    let base = std::env::vars().collect();
-    if !cfg!(target_os = "macos") || !is_packaged_macos_app() {
-        return base;
-    }
-    resolve_login_environment(base, None, Duration::from_secs(8))
+    DESKTOP_SERVICE_ENVIRONMENT
+        .get_or_init(|| {
+            let base = std::env::vars().collect();
+            if !cfg!(target_os = "macos") || !is_packaged_macos_app() {
+                return base;
+            }
+            resolve_login_environment(base, None, Duration::from_secs(8))
+        })
+        .clone()
 }
 
 fn is_packaged_macos_app() -> bool {

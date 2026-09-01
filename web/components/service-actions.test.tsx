@@ -8,6 +8,7 @@ import type { NormalizedService, ServiceState } from "@/lib/types";
 function serviceFixture(status: ServiceState): NormalizedService {
   return {
     name: "pd-qa-backend",
+    group: null,
     command: "uv run backend/run.py",
     cwd: "/workspace/pd-qa-backend",
     env: {},

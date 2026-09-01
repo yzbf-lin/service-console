@@ -33,6 +33,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
@@ -52,6 +53,8 @@ import type {
 
 export type ServiceFormMode = "create" | "edit" | "copy";
 type CreateTab = "manual" | "process";
+const UNGROUPED_SELECT_VALUE = "ungrouped";
+const GROUP_SELECT_PREFIX = "group:";
 
 interface ServiceFormDialogProps {
   open: boolean;
@@ -59,6 +62,7 @@ interface ServiceFormDialogProps {
   sourceService: NormalizedService | null;
   sourceProcess: NormalizedProcessCandidate | null;
   existingNames: string[];
+  groups: string[];
   submitting: boolean;
   api: ServiceConsoleApiClient;
   onOpenChange: (open: boolean) => void;
@@ -67,6 +71,7 @@ interface ServiceFormDialogProps {
 
 interface FormState {
   name: string;
+  group: string;
   command: string;
   cwd: string;
   env: string;
@@ -76,6 +81,7 @@ interface FormState {
 
 const emptyForm: FormState = {
   name: "",
+  group: "",
   command: "",
   cwd: "",
   env: "",
@@ -110,6 +116,7 @@ const modeCopy = {
 function formFromInput(input: ServiceCreateInput): FormState {
   return {
     name: input.name,
+    group: input.group ?? "",
     command: input.command,
     cwd: input.cwd,
     env: serializeEnvironment(input.env),
@@ -130,6 +137,7 @@ function initialForm(
   if (!sourceService || mode === "create") return emptyForm;
   return {
     name: mode === "copy" ? nextCopyName(sourceService.name, existingNames) : sourceService.name,
+    group: sourceService.group ?? "",
     command: sourceService.command,
     cwd: sourceService.cwd,
     env: serializeEnvironment(sourceService.env),
@@ -181,6 +189,7 @@ export function ServiceFormDialog({
   sourceService,
   sourceProcess,
   existingNames,
+  groups,
   submitting,
   api,
   onOpenChange,
@@ -320,6 +329,7 @@ export function ServiceFormDialog({
     setError("");
     try {
       const definition = {
+        group: form.group || null,
         command: form.command.trim(),
         cwd: form.cwd.trim(),
         env: parseEnvironment(form.env),
@@ -405,6 +415,24 @@ export function ServiceFormDialog({
                   <span>停止超时（秒）</span>
                   <Input type="number" min="0" max="300" step="0.1" value={form.stopTimeout} required onChange={(event) => update("stopTimeout", event.target.value)} />
                   <small className="block text-[10px] font-normal text-muted-foreground">超时后将强制结束进程组</small>
+                </label>
+
+                <label className="col-span-2 space-y-1.5 text-xs font-semibold max-[600px]:col-span-1">
+                  <span>所属分组</span>
+                  <Select
+                    value={form.group ? `${GROUP_SELECT_PREFIX}${form.group}` : UNGROUPED_SELECT_VALUE}
+                    onValueChange={(value) => update(
+                      "group",
+                      value === UNGROUPED_SELECT_VALUE ? "" : value.slice(GROUP_SELECT_PREFIX.length),
+                    )}
+                  >
+                    <SelectTrigger aria-label="所属分组"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={UNGROUPED_SELECT_VALUE}>未分组</SelectItem>
+                      {groups.map((group) => <SelectItem key={group} value={`${GROUP_SELECT_PREFIX}${group}`}>{group}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <small className="block text-[10px] font-normal text-muted-foreground">也可以保存后在服务列表中拖拽调整</small>
                 </label>
 
                 <label className="col-span-2 space-y-1.5 text-xs font-semibold max-[600px]:col-span-1">

@@ -21,6 +21,8 @@ fn default_stop_timeout() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServiceDefinition {
     pub name: String,
+    #[serde(default)]
+    pub group: Option<String>,
     pub command: String,
     #[serde(default = "default_cwd")]
     pub cwd: String,
@@ -35,6 +37,11 @@ pub struct ServiceDefinition {
 impl ServiceDefinition {
     pub fn normalize(mut self) -> AppResult<Self> {
         self.name = self.name.trim().to_owned();
+        self.group = self
+            .group
+            .take()
+            .map(|group| group.trim().to_owned())
+            .filter(|group| !group.is_empty());
         self.command = self.command.trim().to_owned();
         self.cwd = normalize_cwd(&self.cwd);
         if self.name.is_empty() {
@@ -44,6 +51,9 @@ impl ServiceDefinition {
             return Err(AppError::bad_request(
                 "service name must not contain a null byte",
             ));
+        }
+        if let Some(group) = self.group.as_deref() {
+            validate_group_name(group)?;
         }
         if self.command.is_empty() {
             return Err(AppError::bad_request("service command must not be empty"));
@@ -58,6 +68,34 @@ impl ServiceDefinition {
         }
         Ok(self)
     }
+}
+
+pub fn normalize_group_name(value: &str) -> AppResult<String> {
+    let group = value.trim();
+    validate_group_name(group)?;
+    Ok(group.to_owned())
+}
+
+fn validate_group_name(group: &str) -> AppResult<()> {
+    if group.is_empty() {
+        return Err(AppError::bad_request("group name must not be empty"));
+    }
+    if group.chars().count() > 80 {
+        return Err(AppError::bad_request(
+            "group name must not exceed 80 characters",
+        ));
+    }
+    if matches!(group, "." | "..") {
+        return Err(AppError::bad_request(
+            "group name must not be a relative path segment",
+        ));
+    }
+    if group.chars().any(char::is_control) {
+        return Err(AppError::bad_request(
+            "group name must not contain control characters",
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_cwd(value: &str) -> String {
@@ -146,6 +184,7 @@ impl ManagedService {
     pub fn snapshot(&self) -> ServiceSnapshot {
         ServiceSnapshot {
             name: self.definition.name.clone(),
+            group: self.definition.group.clone(),
             command: self.definition.command.clone(),
             cwd: self.definition.cwd.clone(),
             env: self.definition.env.clone(),
@@ -171,6 +210,7 @@ impl ManagedService {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServiceSnapshot {
     pub name: String,
+    pub group: Option<String>,
     pub command: String,
     pub cwd: String,
     pub env: BTreeMap<String, String>,
@@ -209,6 +249,7 @@ mod tests {
     fn definition(cwd: &str) -> ServiceDefinition {
         ServiceDefinition {
             name: " demo ".into(),
+            group: None,
             command: " echo ok ".into(),
             cwd: cwd.into(),
             env: BTreeMap::new(),
@@ -230,5 +271,20 @@ mod tests {
         let mut value = definition(".");
         value.stop_timeout = -1.0;
         assert!(value.normalize().is_err());
+    }
+
+    #[test]
+    fn normalizes_and_validates_group_names() {
+        let mut value = definition(".");
+        value.group = Some("  Backend  ".into());
+        assert_eq!(value.normalize().unwrap().group.as_deref(), Some("Backend"));
+
+        let mut empty = definition(".");
+        empty.group = Some("   ".into());
+        assert_eq!(empty.normalize().unwrap().group, None);
+
+        assert!(normalize_group_name("line\nbreak").is_err());
+        assert!(normalize_group_name("..").is_err());
+        assert!(normalize_group_name(&"x".repeat(81)).is_err());
     }
 }

@@ -57,6 +57,7 @@ class FakeWebSocket {
 function serviceFixture(): NormalizedService {
   return {
     name: "backend",
+    group: null,
     command: "uv run backend/run.py",
     cwd: "/workspace",
     env: {},
@@ -92,6 +93,7 @@ describe("useServices log reconciliation", () => {
     const logRequest = deferred<NormalizedLogEntry[]>();
     const api = {
       listServices: vi.fn().mockResolvedValue([serviceFixture()]),
+      listServiceGroups: vi.fn().mockResolvedValue([]),
       checkHealth: vi.fn().mockResolvedValue(true),
       getLogs: vi.fn().mockReturnValue(logRequest.promise),
     } as unknown as ServiceConsoleApiClient;

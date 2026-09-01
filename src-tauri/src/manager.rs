@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
     process::Stdio,
     sync::{
@@ -10,6 +10,8 @@ use std::{
 };
 
 use chrono::Utc;
+use futures_util::future::join_all;
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
@@ -21,16 +23,50 @@ use uuid::Uuid;
 
 use crate::{
     error::{AppError, AppResult},
-    models::{LogEntry, ManagedService, ServiceDefinition, ServiceSnapshot, ServiceState},
+    models::{
+        LogEntry, ManagedService, ServiceDefinition, ServiceSnapshot, ServiceState,
+        normalize_group_name,
+    },
     process_guardian::{MANAGED_PROCESS_ID_ENV, ProcessGuardian, ProcessLease},
+    runtime_log,
     store::DefinitionStore,
 };
 
 const LOG_BUFFER_SIZE: usize = 1_000;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupActionError {
+    pub service: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupActionResult {
+    pub group: String,
+    pub action: String,
+    pub services: Vec<ServiceSnapshot>,
+    pub errors: Vec<GroupActionError>,
+}
+
+#[derive(Clone, Copy)]
+enum GroupAction {
+    Start,
+    Stop,
+}
+
+impl GroupAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+        }
+    }
+}
+
 pub struct ServiceManager {
     store: DefinitionStore,
     services: RwLock<BTreeMap<String, ManagedService>>,
+    groups: RwLock<BTreeSet<String>>,
     child_environment: BTreeMap<String, String>,
     guardian: Mutex<ProcessGuardian>,
     events: broadcast::Sender<Value>,
@@ -41,16 +77,22 @@ impl ServiceManager {
     pub fn new(data_dir: impl AsRef<Path>) -> AppResult<Arc<Self>> {
         let store = DefinitionStore::new(data_dir)?;
         let definitions = store.load()?;
+        let mut groups = store.load_groups()?;
         let mut services = BTreeMap::new();
         for (name, definition) in definitions {
+            if let Some(group) = definition.group.as_ref() {
+                groups.insert(group.clone());
+            }
             let logs = store.load_logs(&name, LOG_BUFFER_SIZE)?;
             services.insert(name, ManagedService::new(definition, logs));
         }
+        store.save_groups(&groups)?;
         let (events, _) = broadcast::channel(1_024);
         let guardian = ProcessGuardian::new(store.data_dir());
         Ok(Arc::new(Self {
             store,
             services: RwLock::new(services),
+            groups: RwLock::new(groups),
             child_environment: crate::shell_environment::resolve_desktop_service_environment(),
             guardian: Mutex::new(guardian),
             events,
@@ -89,6 +131,14 @@ impl ServiceManager {
             .filter(|service| service.definition.auto_start)
             .map(|service| service.definition.name.clone())
             .collect();
+        runtime_log::info(
+            "services.initialized",
+            format_args!(
+                "registered={} auto_start={}",
+                self.services.read().await.len(),
+                names.len()
+            ),
+        );
         for name in names {
             if let Err(error) = self.start(&name).await {
                 self.set_failure(&name, error.to_string()).await;
@@ -110,7 +160,7 @@ impl ServiceManager {
             let _ = self.stop(&name).await;
         }
         if let Err(error) = self.guardian.lock().await.shutdown().await {
-            eprintln!("process guardian shutdown failed: {error}");
+            runtime_log::warn("guardian.shutdown_failed", error);
         }
     }
 
@@ -121,6 +171,187 @@ impl ServiceManager {
             .values()
             .map(ManagedService::snapshot)
             .collect()
+    }
+
+    pub async fn list_groups(&self) -> Vec<String> {
+        self.groups.read().await.iter().cloned().collect()
+    }
+
+    pub async fn create_group(&self, name: &str) -> AppResult<String> {
+        let name = normalize_group_name(name)?;
+        let mut groups = self.groups.write().await;
+        if !groups.insert(name.clone()) {
+            return Err(AppError::conflict(format!(
+                "service group already exists: {name}"
+            )));
+        }
+        if let Err(error) = self.store.save_groups(&groups) {
+            groups.remove(&name);
+            return Err(error);
+        }
+        runtime_log::info("group.created", format_args!("name={name}"));
+        Ok(name)
+    }
+
+    pub async fn delete_group(&self, name: &str) -> AppResult<Vec<ServiceSnapshot>> {
+        let name = normalize_group_name(name)?;
+        let mut groups = self.groups.write().await;
+        if !groups.remove(&name) {
+            return Err(AppError::not_found(format!("service group: {name}")));
+        }
+        let mut services = self.services.write().await;
+        let affected: Vec<String> = services
+            .iter()
+            .filter(|(_, service)| service.definition.group.as_deref() == Some(name.as_str()))
+            .map(|(service_name, _)| service_name.clone())
+            .collect();
+        for service_name in &affected {
+            services
+                .get_mut(service_name)
+                .expect("affected service remains present")
+                .definition
+                .group = None;
+        }
+        let persist_result = self
+            .persist_locked(&services)
+            .and_then(|_| self.store.save_groups(&groups));
+        if let Err(error) = persist_result {
+            groups.insert(name.clone());
+            for service_name in &affected {
+                services
+                    .get_mut(service_name)
+                    .expect("affected service remains present while rolling back")
+                    .definition
+                    .group = Some(name.clone());
+            }
+            let _ = self.persist_locked(&services);
+            let _ = self.store.save_groups(&groups);
+            return Err(error);
+        }
+        let snapshots: Vec<_> = affected
+            .iter()
+            .filter_map(|service_name| services.get(service_name).map(ManagedService::snapshot))
+            .collect();
+        drop(services);
+        drop(groups);
+        for snapshot in &snapshots {
+            self.emit_status(snapshot);
+        }
+        runtime_log::info(
+            "group.deleted",
+            format_args!("name={name} ungrouped_services={}", snapshots.len()),
+        );
+        Ok(snapshots)
+    }
+
+    pub async fn assign_group(
+        &self,
+        service_name: &str,
+        group: Option<String>,
+    ) -> AppResult<ServiceSnapshot> {
+        let group = match group {
+            Some(group) if !group.trim().is_empty() => Some(normalize_group_name(&group)?),
+            _ => None,
+        };
+        let lifecycle = self.lifecycle_lock(service_name).await?;
+        let _lifecycle = lifecycle.lock().await;
+        let groups = self.groups.read().await;
+        if let Some(group) = group.as_deref()
+            && !groups.contains(group)
+        {
+            return Err(AppError::not_found(format!("service group: {group}")));
+        }
+        let snapshot = {
+            let mut services = self.services.write().await;
+            let service = services
+                .get_mut(service_name)
+                .ok_or_else(|| AppError::not_found(service_name.to_owned()))?;
+            let previous = service.definition.group.clone();
+            service.definition.group = group.clone();
+            let snapshot = service.snapshot();
+            if let Err(error) = self.persist_locked(&services) {
+                services
+                    .get_mut(service_name)
+                    .expect("service remains present while rolling back group assignment")
+                    .definition
+                    .group = previous;
+                return Err(error);
+            }
+            snapshot
+        };
+        drop(groups);
+        self.emit_status(&snapshot);
+        runtime_log::info(
+            "service.group_changed",
+            format_args!(
+                "name={service_name} group={}",
+                snapshot.group.as_deref().unwrap_or("ungrouped")
+            ),
+        );
+        Ok(snapshot)
+    }
+
+    pub async fn start_group(self: &Arc<Self>, group: &str) -> AppResult<GroupActionResult> {
+        self.run_group_action(group, GroupAction::Start).await
+    }
+
+    pub async fn stop_group(self: &Arc<Self>, group: &str) -> AppResult<GroupActionResult> {
+        self.run_group_action(group, GroupAction::Stop).await
+    }
+
+    async fn run_group_action(
+        self: &Arc<Self>,
+        group: &str,
+        action: GroupAction,
+    ) -> AppResult<GroupActionResult> {
+        let group = normalize_group_name(group)?;
+        if !self.groups.read().await.contains(&group) {
+            return Err(AppError::not_found(format!("service group: {group}")));
+        }
+        let names: Vec<_> = self
+            .services
+            .read()
+            .await
+            .iter()
+            .filter(|(_, service)| service.definition.group.as_deref() == Some(group.as_str()))
+            .map(|(name, _)| name.clone())
+            .collect();
+        let operations = names.into_iter().map(|name| {
+            let manager = Arc::clone(self);
+            async move {
+                let result = match action {
+                    GroupAction::Start => manager.start(&name).await,
+                    GroupAction::Stop => manager.stop(&name).await,
+                };
+                (name, result)
+            }
+        });
+        let mut services = Vec::new();
+        let mut errors = Vec::new();
+        for (service, result) in join_all(operations).await {
+            match result {
+                Ok(snapshot) => services.push(snapshot),
+                Err(error) => errors.push(GroupActionError {
+                    service,
+                    error: error.to_string(),
+                }),
+            }
+        }
+        runtime_log::info(
+            "group.action_completed",
+            format_args!(
+                "name={group} action={} succeeded={} failed={}",
+                action.as_str(),
+                services.len(),
+                errors.len()
+            ),
+        );
+        Ok(GroupActionResult {
+            group,
+            action: action.as_str().into(),
+            services,
+            errors,
+        })
     }
 
     pub async fn get_service(&self, name: &str) -> AppResult<ServiceSnapshot> {
@@ -147,6 +378,12 @@ impl ServiceManager {
 
     pub async fn add_service(&self, definition: ServiceDefinition) -> AppResult<ServiceSnapshot> {
         let definition = definition.normalize()?;
+        let groups = self.groups.read().await;
+        if let Some(group) = definition.group.as_deref()
+            && !groups.contains(group)
+        {
+            return Err(AppError::not_found(format!("service group: {group}")));
+        }
         let name = definition.name.clone();
         let snapshot = {
             let mut services = self.services.write().await;
@@ -164,6 +401,7 @@ impl ServiceManager {
             }
             snapshot
         };
+        drop(groups);
         self.emit_status(&snapshot);
         Ok(snapshot)
     }
@@ -177,6 +415,12 @@ impl ServiceManager {
         let definition = definition.normalize()?;
         let lifecycle = self.lifecycle_lock(name).await?;
         let _lifecycle = lifecycle.lock().await;
+        let groups = self.groups.read().await;
+        if let Some(group) = definition.group.as_deref()
+            && !groups.contains(group)
+        {
+            return Err(AppError::not_found(format!("service group: {group}")));
+        }
         let snapshot = {
             let mut services = self.services.write().await;
             let service = services
@@ -194,6 +438,7 @@ impl ServiceManager {
             }
             snapshot
         };
+        drop(groups);
         self.emit_status(&snapshot);
         Ok(snapshot)
     }
@@ -339,6 +584,10 @@ impl ServiceManager {
             let result = child.wait().await;
             manager.process_exited(&name, generation, result).await;
         });
+        runtime_log::info(
+            "service.started",
+            format_args!("name={} pid={pid}", snapshot.name),
+        );
         Ok(snapshot)
     }
 
@@ -406,6 +655,7 @@ impl ServiceManager {
             self.emit_status(&snapshot);
             snapshot
         };
+        runtime_log::info("service.stopped", format_args!("name={}", snapshot.name));
         Ok(snapshot)
     }
 
@@ -524,7 +774,28 @@ impl ServiceManager {
                 }
             }
         }
-        self.emit_status(&service.snapshot());
+        let snapshot = service.snapshot();
+        self.emit_status(&snapshot);
+        drop(services);
+        if snapshot.state == ServiceState::Failed {
+            runtime_log::warn(
+                "service.failed",
+                format_args!(
+                    "name={} exit_code={:?} error={}",
+                    snapshot.name,
+                    snapshot.exit_code,
+                    snapshot.last_error.as_deref().unwrap_or("unknown")
+                ),
+            );
+        } else if snapshot.state != ServiceState::Stopped {
+            runtime_log::info(
+                "service.exited",
+                format_args!(
+                    "name={} state={:?} exit_code={:?}",
+                    snapshot.name, snapshot.state, snapshot.exit_code
+                ),
+            );
+        }
     }
 
     async fn set_failure(&self, name: &str, message: String) {
@@ -533,9 +804,14 @@ impl ServiceManager {
             service.state = ServiceState::Failed;
             service.pid = None;
             service.started_instant = None;
-            service.last_error = Some(message);
+            service.last_error = Some(message.clone());
             self.emit_status(&service.snapshot());
         }
+        drop(services);
+        runtime_log::warn(
+            "service.start_failed",
+            format_args!("name={name} error={message}"),
+        );
     }
 
     async fn refresh_metrics(&self) {

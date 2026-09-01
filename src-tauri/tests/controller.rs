@@ -164,8 +164,63 @@ async fn core_http_contract_enforces_statuses_validation_and_theme_persistence()
     assert_eq!(created.status(), StatusCode::CREATED);
     let created: Value = created.json().await.unwrap();
     assert_eq!(created["service"]["name"], "contract");
+    assert!(created["service"]["group"].is_null());
     assert_eq!(created["service"]["state"], "STOPPED");
     assert!(created["service"]["pid"].is_null());
+
+    let group = client
+        .post(format!("{base}api/service-groups"))
+        .bearer_auth("contract-token")
+        .json(&json!({"name": "contract-group"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(group.status(), StatusCode::CREATED);
+    assert_eq!(
+        group.json::<Value>().await.unwrap(),
+        json!({"group": "contract-group"})
+    );
+
+    let groups: Value = client
+        .get(format!("{base}api/service-groups"))
+        .bearer_auth("contract-token")
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(groups, json!({"groups": ["contract-group"]}));
+
+    let assigned: Value = client
+        .put(format!("{base}api/services/contract/group"))
+        .bearer_auth("contract-token")
+        .json(&json!({"group": "contract-group"}))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(assigned["service"]["group"], "contract-group");
+
+    let deleted_group: Value = client
+        .delete(format!("{base}api/service-groups/contract-group"))
+        .bearer_auth("contract-token")
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(deleted_group["services"][0]["name"], "contract");
+    assert!(deleted_group["services"][0]["group"].is_null());
 
     let duplicate = client
         .post(format!("{base}api/services"))
@@ -315,6 +370,7 @@ async fn websocket_contract_closes_invalid_tokens_and_reports_invalid_commands()
 fn definition(name: &str, command: impl Into<String>, cwd: &std::path::Path) -> ServiceDefinition {
     ServiceDefinition {
         name: name.into(),
+        group: None,
         command: command.into(),
         cwd: cwd.to_string_lossy().into_owned(),
         env: BTreeMap::new(),
@@ -415,4 +471,66 @@ async fn logs_larger_than_the_live_buffer_are_loaded_from_persistent_storage() {
     assert_eq!(logs.first().unwrap().message, "line-1");
     assert_eq!(logs.last().unwrap().message, "line-1050");
     manager.shutdown().await;
+}
+
+#[tokio::test]
+async fn groups_persist_assignments_and_control_all_members() {
+    let directory = tempdir().unwrap();
+    let manager = ServiceManager::new(directory.path()).unwrap();
+    manager.initialize().await.unwrap();
+    manager.create_group("workers").await.unwrap();
+    manager.create_group("empty").await.unwrap();
+
+    let command = if cfg!(windows) {
+        "ping -n 30 127.0.0.1 >NUL"
+    } else {
+        "sleep 30"
+    };
+    for name in ["worker-a", "worker-b"] {
+        let mut service = definition(name, command, directory.path());
+        service.group = Some("workers".into());
+        manager.add_service(service).await.unwrap();
+    }
+
+    let started = manager.start_group("workers").await.unwrap();
+    assert_eq!(started.action, "start");
+    assert_eq!(started.services.len(), 2);
+    assert!(started.errors.is_empty());
+    assert!(
+        started
+            .services
+            .iter()
+            .all(|service| service.state == ServiceState::Running)
+    );
+
+    let stopped = manager.stop_group("workers").await.unwrap();
+    assert_eq!(stopped.action, "stop");
+    assert_eq!(stopped.services.len(), 2);
+    assert!(stopped.errors.is_empty());
+    assert!(
+        stopped
+            .services
+            .iter()
+            .all(|service| service.state == ServiceState::Stopped)
+    );
+
+    let moved = manager.assign_group("worker-a", None).await.unwrap();
+    assert_eq!(moved.group, None);
+    let ungrouped = manager.delete_group("workers").await.unwrap();
+    assert_eq!(ungrouped.len(), 1);
+    assert_eq!(ungrouped[0].name, "worker-b");
+    assert_eq!(manager.list_groups().await, vec!["empty"]);
+
+    manager.shutdown().await;
+    drop(manager);
+
+    let restored = ServiceManager::new(directory.path()).unwrap();
+    assert_eq!(restored.list_groups().await, vec!["empty"]);
+    assert!(
+        restored
+            .list_services()
+            .await
+            .iter()
+            .all(|service| service.group.is_none())
+    );
 }

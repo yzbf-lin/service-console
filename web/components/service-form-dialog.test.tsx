@@ -34,6 +34,7 @@ function processFixture(overrides: Partial<NormalizedProcessCandidate> = {}): No
 function serviceFixture(): NormalizedService {
   return {
     name: "backend",
+    group: null,
     command: "uv run backend/run.py",
     cwd: "/workspace",
     env: {},
@@ -84,6 +85,7 @@ function renderDialog({
       sourceService={sourceService}
       sourceProcess={sourceProcess}
       existingNames={["pd-worker"]}
+      groups={["后端"]}
       submitting={false}
       api={api}
       onOpenChange={vi.fn()}
@@ -111,8 +113,26 @@ describe("ServiceFormDialog process import", () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       name: "clash",
+      group: null,
       command: "D:\\Programs\\Clash for Windows\\Clash for Windows.exe",
       cwd: "D:\\Programs\\Clash for Windows",
+    })));
+  });
+
+  it("saves the selected service group", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = renderDialog();
+
+    await user.type(screen.getByLabelText(/服务名称/), "api");
+    await user.type(screen.getByLabelText(/启动命令/), "cargo run");
+    await user.type(screen.getByLabelText(/工作目录/), "/workspace");
+    await user.click(screen.getByRole("combobox", { name: "所属分组" }));
+    await user.click(await screen.findByRole("option", { name: "后端" }));
+    await user.click(screen.getByRole("button", { name: "添加服务" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      name: "api",
+      group: "后端",
     })));
   });
 
@@ -179,6 +199,7 @@ describe("ServiceFormDialog process import", () => {
     await user.click(screen.getByRole("button", { name: "仅保存配置" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({
       name: "pd-worker-2",
+      group: null,
       command: "uv run fba celery worker",
       cwd: "/workspace",
       env: { PYTHONUNBUFFERED: "1" },

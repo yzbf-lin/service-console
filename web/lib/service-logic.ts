@@ -53,6 +53,7 @@ export function normalizeService(raw: unknown, fallbackName = ""): NormalizedSer
 
   return {
     name: String(source.name ?? definition.name ?? fallbackName),
+    group: asNullableString(source.group ?? definition.group),
     command: String(source.command ?? definition.command ?? ""),
     cwd: String(source.cwd ?? definition.cwd ?? ""),
     env: normalizeEnvironment(env),
@@ -428,6 +429,7 @@ export function serviceInputFromProcess(
 
   return {
     name,
+    group: null,
     command: process.command.trim(),
     cwd: process.cwd.trim(),
     env: process.safeEnv,

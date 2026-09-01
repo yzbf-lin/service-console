@@ -63,8 +63,12 @@ jobs:
             "dev.service-console.desktop"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = \
             "${{ steps.version.outputs.version }}"
-          RESPONSE="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' | "$APP/Contents/MacOS/service-console-mcp")"
+          RESPONSE="$(printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | \
+            "$APP/Contents/MacOS/service-console-mcp")"
           grep -q '"name":"service-console"' <<<"$RESPONSE"
+          grep -q '"name":"service_group_start"' <<<"$RESPONSE"
       - name: Package application update
         shell: bash
         run: |
@@ -126,9 +130,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Rust MCP helper smoke test failed" }
           & "target/release/service-console-updater.exe" --help | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Rust transition updater smoke test failed" }
-          $request = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}'
-          $response = $request | & "target/release/service-console-mcp.exe"
-          if ($LASTEXITCODE -ne 0 -or $response -notmatch '"name":"service-console"') {
+          $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}',
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          ) -join "`n"
+          $response = $requests | & "target/release/service-console-mcp.exe"
+          if ($LASTEXITCODE -ne 0 -or $response -notmatch '"name":"service-console"' -or
+              $response -notmatch 'service_group_start') {
             throw "Rust MCP handshake failed"
           }
           if (-not (Test-Path "target/release/service-console-guardian.exe" -PathType Leaf)) {

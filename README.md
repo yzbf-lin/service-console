@@ -41,6 +41,8 @@ requiring Docker or another container runtime.
   service-specific actions remain inside the compact service workspace.
 - Start, stop, restart, edit, copy, remove, and inspect services from the service list, live console,
   and runtime details panes.
+- Create persistent service groups, drag services between them, and start or stop every group member
+  with one action.
 - Track PID, uptime, exit code, restart count, CPU, and memory.
 - Capture stdout and stderr in independent persistent logs and bounded live buffers.
 - Reap processes started by Service Console on window close, catchable termination signals, or
@@ -56,7 +58,7 @@ requiring Docker or another container runtime.
   when Windows denies access to complete metadata.
 - Use the same controller through the desktop app, Web UI, CLI, TUI, HTTP, or WebSocket.
 - Use a compact Next.js dashboard built with React, TypeScript, Tailwind CSS, shadcn/ui, Radix UI,
-  and Lucide React, with persistent light and dark themes.
+  Motion, and Lucide React, with persistent light and dark themes.
 - Keep desktop automation private with a random loopback port, temporary bearer token, and a `0600`
   runtime descriptor.
 - Let Codex and other AI clients configure and operate services through the bundled stdio MCP bridge.
@@ -150,8 +152,8 @@ connection settings remain separate from the local Rust/Axum controller and are 
 ### Appearance
 
 The dashboard is a statically exported Next.js application. Its reusable components follow
-shadcn/ui conventions, use Radix UI accessibility primitives, Tailwind CSS design tokens, and Lucide
-React icons. Use the sun/moon button in the top bar to switch themes without reloading. The first
+shadcn/ui conventions, use Radix UI accessibility primitives, Tailwind CSS design tokens, Motion
+interactions, and Lucide React icons. Use the sun/moon button in the top bar to switch themes without reloading. The first
 visit follows the operating-system color scheme; an explicit choice is saved in the controller data
 directory as `ui-preferences.json`, so it survives desktop restarts and random loopback ports. The
 selected palette also updates the xterm.js log console and browser theme-color metadata.
@@ -300,7 +302,8 @@ Run `service-console --help` for all options.
 
 ## AI and MCP integration
 
-Desktop release packages include a separate console-mode stdio MCP bridge. Open **Settings → AI /
+Desktop release packages include a separate console-mode stdio MCP bridge and do not depend on the
+removed Python `service_console.cli` module. Open **Settings → AI /
 MCP integration** and choose **Install in Codex** once, then restart Codex once so it loads the new
 tools. On subsequent launches, the desktop app publishes its private controller and the registered
 bridge becomes ready automatically. Codex starts
@@ -309,8 +312,9 @@ the bridge on demand; the bridge discovers the random port and temporary token f
 
 If an AI tool is called while the desktop app is closed, the bridge starts the app from the same
 installation and waits for the controller. It re-reads the descriptor after application updates and
-restarts. **Test connection** performs a real MCP handshake and calls the read-only `service_list`
-tool.
+restarts. **Install in Codex** replaces a stale same-name Python registration and verifies a real MCP
+handshake, the complete tool list, and read-only `service_list`, `service_group_list`, and
+`jenkins_instance_list` calls; a failed verification rolls the new registration back.
 
 Manual registration is also available:
 
@@ -320,7 +324,7 @@ codex mcp add service-console -- \
   "/Applications/Service Console.app/Contents/MacOS/service-console-mcp"
 
 # Source checkout
-cargo build --locked --bin service-console-mcp
+cargo build --locked --bin service-console-desktop --bin service-console-mcp
 codex mcp add service-console -- \
   "$(pwd)/target/debug/service-console-mcp"
 ```
@@ -340,9 +344,11 @@ manifest directory:
 {
   "version": 1,
   "project": "example-project",
+  "groups": ["backend"],
   "services": [
     {
       "name": "example-backend",
+      "group": "backend",
       "command": "uv run backend/run.py",
       "cwd": ".",
       "env": {"PYTHONUNBUFFERED": "1"},
@@ -359,10 +365,11 @@ JSON, escape backslashes as `"D:\\Programs\\Clash for Windows"`; forward slashes
 When a command starts with an absolute `.exe`, `.com`, `.bat`, or `.cmd` path containing spaces,
 Service Console protects the executable path automatically when launching it on Windows.
 
-`project_apply_config` creates, updates, or skips unchanged definitions without deleting other
-services. An AI agent can then use `service_restart`, `service_status`, and `service_logs` to validate
-a code change. The bridge also exposes service lifecycle/configuration tools, port inspection, running
-process discovery/import, and explicit process termination. Mutating tools carry MCP annotations so
+`project_apply_config` creates or updates definitions without deleting other services and resolves
+relative working directories from the configuration file. An AI agent can then use `service_restart`,
+`service_status`, and `service_logs` to validate a code change. The bridge also exposes
+`service_group_list/create/delete/assign/start/stop`, service lifecycle/configuration tools, port
+inspection, running process discovery/import, and explicit process termination. Mutating tools carry MCP annotations so
 clients can apply their normal confirmation policy.
 
 ### Jenkins tools for AI
@@ -533,7 +540,7 @@ a GitHub Release.
 ## Web application and terminal assets
 
 The interface uses Next.js, React, TypeScript, Tailwind CSS, shadcn/ui-style components, Radix UI,
-Lucide React, and an xterm.js console with Fit, Search, and WebLinks addons. Runtime assets are
+Motion, Lucide React, and an xterm.js console with Fit, Search, and WebLinks addons. Runtime assets are
 statically exported into `src-tauri/resources/static` and never loaded from a CDN:
 
 ```bash

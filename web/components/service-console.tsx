@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MotionConfig, motion } from "motion/react";
 
 import {
   AlertDialog,
@@ -12,6 +13,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { PortsView, type ProcessImportHint } from "@/components/ports-view";
 import { JenkinsView } from "@/components/jenkins-view";
 import { ServiceControlView } from "@/components/service-control-view";
@@ -83,6 +94,11 @@ function ServiceConsoleContent() {
   const [formProcessSource, setFormProcessSource] = useState<NormalizedProcessCandidate | null>(null);
   const [formSubmitting, setFormSubmitting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<NormalizedService | null>(null);
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [groupName, setGroupName] = useState("");
+  const [groupError, setGroupError] = useState("");
+  const [groupSubmitting, setGroupSubmitting] = useState(false);
+  const [deleteGroupTarget, setDeleteGroupTarget] = useState<string | null>(null);
   const processImportRequestId = useRef(0);
   const notifiedUpdateVersionsRef = useRef(new Set<string>());
 
@@ -241,6 +257,68 @@ function ServiceConsoleContent() {
     }
   }, [deleteTarget, serviceState, showError, showSuccess]);
 
+  const createGroup = useCallback(async () => {
+    const name = groupName.trim();
+    if (!name) {
+      setGroupError("请输入分组名称");
+      return;
+    }
+    if (name === "未分组") {
+      setGroupError("“未分组”是系统保留区域，请使用其他名称");
+      return;
+    }
+    setGroupSubmitting(true);
+    setGroupError("");
+    try {
+      await serviceState.createGroup(name);
+      setGroupDialogOpen(false);
+      setGroupName("");
+      showSuccess("分组已创建", name);
+    } catch (error) {
+      setGroupError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setGroupSubmitting(false);
+    }
+  }, [groupName, serviceState, showSuccess]);
+
+  const moveServiceToGroup = useCallback(async (service: string, group: string | null) => {
+    try {
+      await serviceState.assignGroup(service, group);
+      showSuccess("服务分组已更新", `${service} → ${group ?? "未分组"}`);
+    } catch (error) {
+      showError("调整分组失败", error instanceof Error ? error.message : String(error));
+    }
+  }, [serviceState, showError, showSuccess]);
+
+  const runGroupAction = useCallback(async (group: string, action: "start" | "stop") => {
+    try {
+      const result = await serviceState.runGroupAction(group, action);
+      const label = action === "start" ? "启动" : "停止";
+      if (result.errors.length) {
+        showError(
+          `分组${label}部分失败`,
+          result.errors.map((error) => `${error.service}：${error.error}`).join("；"),
+        );
+      } else {
+        showSuccess(`分组${label}完成`, `${group}：${result.services.length} 个服务`);
+      }
+    } catch (error) {
+      showError("分组操作失败", error instanceof Error ? error.message : String(error));
+    }
+  }, [serviceState, showError, showSuccess]);
+
+  const confirmDeleteGroup = useCallback(async () => {
+    const group = deleteGroupTarget;
+    setDeleteGroupTarget(null);
+    if (!group) return;
+    try {
+      await serviceState.deleteGroup(group);
+      showSuccess("分组已删除", "组内服务已移至“未分组”，运行状态未改变");
+    } catch (error) {
+      showError("删除分组失败", error instanceof Error ? error.message : String(error));
+    }
+  }, [deleteGroupTarget, serviceState, showError, showSuccess]);
+
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -311,16 +389,26 @@ function ServiceConsoleContent() {
     content = (
       <ServiceControlView
         services={serviceState.services}
+        groups={serviceState.groups}
         selectedName={serviceState.selectedName}
         selectedService={serviceState.selectedService}
         logs={serviceState.selectedLogs}
         logRevision={serviceState.logRevision}
         busyServices={serviceState.busyServices}
+        busyGroups={serviceState.busyGroups}
         theme={resolvedTheme}
         active
         onSelect={serviceState.selectService}
         onAction={(name, action) => void handleServiceAction(name, action)}
         onAddService={() => openForm("create")}
+        onCreateGroup={() => {
+          setGroupName("");
+          setGroupError("");
+          setGroupDialogOpen(true);
+        }}
+        onDeleteGroup={setDeleteGroupTarget}
+        onMoveService={(service, group) => void moveServiceToGroup(service, group)}
+        onGroupAction={(group, action) => void runGroupAction(group, action)}
         onClearLogs={() => {
           serviceState.clearVisibleLogs();
           notify("当前视图已清空", "服务端日志文件不会被删除", "info");
@@ -330,58 +418,103 @@ function ServiceConsoleContent() {
   }
 
   return (
-    <div className="service-console-shell" data-view={activeView}>
-      <Topbar
-        activeView={activeView}
-        apiStatus={serviceState.apiStatus}
-        socketStatus={serviceState.socketStatus}
-        resolvedTheme={resolvedTheme}
-        refreshing={refreshing}
-        runningCount={runningCount}
-        serviceCount={serviceState.services.length}
-        selectedServiceName={serviceState.selectedService?.name ?? null}
-        onRefresh={() => void refresh()}
-        onToggleTheme={toggleTheme}
-      />
-
-      <div className="service-console-body" data-view={activeView}>
-        <SidebarNav
+    <MotionConfig reducedMotion="user">
+      <div className="service-console-shell" data-view={activeView}>
+        <Topbar
           activeView={activeView}
-          updateAvailable={updateAvailable}
-          onViewChange={changeView}
+          apiStatus={serviceState.apiStatus}
+          socketStatus={serviceState.socketStatus}
+          resolvedTheme={resolvedTheme}
+          refreshing={refreshing}
+          runningCount={runningCount}
+          serviceCount={serviceState.services.length}
+          selectedServiceName={serviceState.selectedService?.name ?? null}
+          onRefresh={() => void refresh()}
+          onToggleTheme={toggleTheme}
         />
-        <div className="service-console-stage">{content}</div>
+
+        <div className="service-console-body" data-view={activeView}>
+          <SidebarNav
+            activeView={activeView}
+            updateAvailable={updateAvailable}
+            onViewChange={changeView}
+          />
+          <motion.div
+            key={activeView}
+            className="service-console-stage"
+            initial={{ opacity: 0, y: 5, filter: "blur(3px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+          >
+            {content}
+          </motion.div>
+        </div>
+
+        {formOpen ? (
+          <ServiceFormDialog
+            open
+            mode={formMode}
+            sourceService={formSource}
+            sourceProcess={formProcessSource}
+            existingNames={existingNames}
+            groups={serviceState.groups}
+            submitting={formSubmitting}
+            api={serviceState.api}
+            onOpenChange={changeFormOpen}
+            onSubmit={submitServiceForm}
+          />
+        ) : null}
+
+        <Dialog open={groupDialogOpen} onOpenChange={(open) => !groupSubmitting && setGroupDialogOpen(open)}>
+          <DialogContent className="max-w-sm">
+            <form onSubmit={(event) => { event.preventDefault(); void createGroup(); }}>
+              <DialogHeader>
+                <DialogTitle>新建服务分组</DialogTitle>
+                <DialogDescription>创建后，将服务卡片拖拽到分组中即可归类。</DialogDescription>
+              </DialogHeader>
+              <div className="py-4">
+                <Input autoFocus value={groupName} maxLength={80} placeholder="例如：后端服务" aria-label="分组名称" onChange={(event) => { setGroupName(event.target.value); setGroupError(""); }} />
+                {groupError ? <p className="mt-2 text-xs text-destructive" role="alert">{groupError}</p> : null}
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" disabled={groupSubmitting} onClick={() => setGroupDialogOpen(false)}>取消</Button>
+                <Button type="submit" disabled={groupSubmitting}>{groupSubmitting ? "创建中…" : "创建分组"}</Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>删除服务“{deleteTarget?.name}”</AlertDialogTitle>
+              <AlertDialogDescription>
+                服务定义和当前控制台日志缓存会被移除；如果服务仍在运行，后端会先停止进程。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void confirmDelete()}>删除服务</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog open={Boolean(deleteGroupTarget)} onOpenChange={(open) => !open && setDeleteGroupTarget(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>删除分组“{deleteGroupTarget}”</AlertDialogTitle>
+              <AlertDialogDescription>
+                组内服务会移至“未分组”，正在运行的进程不会停止。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>取消</AlertDialogCancel>
+              <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void confirmDeleteGroup()}>删除分组</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
-
-      {formOpen ? (
-        <ServiceFormDialog
-          open
-          mode={formMode}
-          sourceService={formSource}
-          sourceProcess={formProcessSource}
-          existingNames={existingNames}
-          submitting={formSubmitting}
-          api={serviceState.api}
-          onOpenChange={changeFormOpen}
-          onSubmit={submitServiceForm}
-        />
-      ) : null}
-
-      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>删除服务“{deleteTarget?.name}”</AlertDialogTitle>
-            <AlertDialogDescription>
-              服务定义和当前控制台日志缓存会被移除；如果服务仍在运行，后端会先停止进程。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void confirmDelete()}>删除服务</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
+    </MotionConfig>
   );
 }
 

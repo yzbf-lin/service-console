@@ -10,6 +10,8 @@
 
 <p align="center"><a href="README.md">English</a></p>
 
+> 最新的中文使用手册：[docs/usage.zh-CN.md](docs/usage.zh-CN.md)
+
 Service Console 是面向开发工作流的原生进程管理器。服务命令注册一次后，即可从桌面应用、浏览器、
 命令行或终端界面执行启动、停止、重启、状态监控和独立日志查看。所有命令都直接作为宿主机进程运行，
 不依赖 Docker 或其他容器运行时。
@@ -27,6 +29,7 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 - 配置命令、工作目录、环境变量、自动启动和优雅停止超时。
 - 左侧菜单栏可在“图标 + 名称”和“仅图标”两种模式间切换，服务 item 与服务专属操作保留在内容区。
 - 在服务列表、实时终端和运行详情组成的紧凑工作区中启动、停止、重启、编辑、复制、删除或检查服务。
+- 创建持久化服务分组，将服务拖拽归组，并对整个分组一键启动或停止。
 - 查看 PID、运行时间、退出码、重启次数、CPU 和内存。
 - 分服务持久化 stdout/stderr，并通过 WebSocket 实时推送。
 - 关闭窗口、收到可捕获的终止信号或控制器崩溃时，通过独立 guardian 与持久化进程租约回收本次启动的
@@ -38,7 +41,7 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 - 自动发现桌面端新版本，验证 Ed25519 签名清单与安装包 SHA-256，并在用户确认后安装重启。
 - 搜索当前用户的运行中进程（包括无端口 Worker），自动提取 `uv`/`pnpm` 启动命令和工作目录；
   Windows 无权读取完整元数据时可安全降级为手动补全。
-- 使用 Next.js、React、TypeScript、Tailwind CSS、shadcn/ui、Radix UI 与 Lucide React
+- 使用 Next.js、React、TypeScript、Tailwind CSS、shadcn/ui、Radix UI、Motion 与 Lucide React
   构建紧凑控制台，并支持可持久化的浅色/深色主题。
 - 桌面端使用随机回环端口、临时 Token 和权限为 `0600` 的运行描述文件。
 - 内置 stdio MCP Bridge，让 Codex/AI 配置、启动、停止、重启服务并检查状态与日志。
@@ -114,7 +117,7 @@ Parameter、Active Choices 与 File System List 插件都应保持安全修复�
 ### 外观与主题
 
 控制台是静态导出的 Next.js 应用。通用组件遵循 shadcn/ui 结构，交互基础使用 Radix UI，无障碍样式
-和主题 token 由 Tailwind CSS 管理，图标使用 Lucide React。可通过顶栏太阳/月亮按钮即时切换浅色和
+和主题 token 由 Tailwind CSS 管理，状态动效使用 Motion，图标使用 Lucide React。可通过顶栏太阳/月亮按钮即时切换浅色和
 深色主题。首次打开会跟随操作系统配色，手动选择后会保存到控制器数据目录中的
 `ui-preferences.json`，因此桌面端重启或随机回环端口变化后仍能保留；日志终端和页面主题色元数据会
 同步更新。
@@ -239,15 +242,16 @@ Jenkins 地址应优先使用 HTTPS。为兼容旧版或隔离内网控制器，
 
 ## 给 AI 使用（MCP）
 
-桌面 Release 包内置独立的 console 型 stdio MCP Bridge。打开 **设置 → AI / MCP 集成**，点击
-**安装到 Codex** 即可完成一次性注册，然后按 Codex 的 MCP 加载机制重启 Codex 一次；以后 Service
+桌面 Release 包内置独立的 console 型 stdio MCP Bridge，不依赖已移除的 Python `service_console.cli`。
+打开 **设置 → AI / MCP 集成**，点击 **安装到 Codex** 即可完成一次性注册，然后按 Codex 的 MCP 加载机制重启 Codex 一次；以后 Service
 Console 启动并发布本机控制器后，AI 能力会自动就绪。Codex 按需启动 Bridge，Bridge 从
 `~/.service-console/controller.json` 发现随机端口和临时
 Token，因此 Codex 配置中不保存凭据，也不需要在每次应用启动后更新端口。
 
 如果 AI 首次调用工具时桌面应用尚未运行，Bridge 会自动拉起同一安装目录中的 Service Console 并等待
-控制器就绪。应用更新或重启后，Bridge 会重新读取运行描述文件。设置页的 **测试连接** 会执行真实的
-MCP 握手并调用只读的 `service_list` 工具。
+控制器就绪。应用更新或重启后，Bridge 会重新读取运行描述文件。设置页的 **安装到 Codex** 会自动替换
+同名的旧 Python 注册，并在写入后执行真实 MCP 握手、工具清单检查，以及只读
+`service_list`、`service_group_list`、`jenkins_instance_list` 调用；任一步失败都会回滚新注册。
 
 也可以手工注册打包后的 Bridge：
 
@@ -266,7 +270,7 @@ codex mcp add service-console -- `
 源码开发环境可直接注册 Rust MCP 二进制：
 
 ```bash
-cargo build --locked --bin service-console-mcp
+cargo build --locked --bin service-console-desktop --bin service-console-mcp
 codex mcp add service-console -- \
   "$(pwd)/target/debug/service-console-mcp"
 ```
@@ -279,9 +283,11 @@ codex mcp add service-console -- \
 {
   "version": 1,
   "project": "example-project",
+  "groups": ["backend"],
   "services": [
     {
       "name": "example-backend",
+      "group": "backend",
       "command": "uv run backend/run.py",
       "cwd": ".",
       "env": {"PYTHONUNBUFFERED": "1"},
@@ -297,12 +303,13 @@ Windows 工作目录可以包含空格。在应用表单中直接填写 `D:\Prog
 `"D:\\Programs\\Clash for Windows"`，使用正斜杠则不需要转义。若启动命令以带空格的绝对 `.exe`、
 `.com`、`.bat` 或 `.cmd` 路径开头，Service Console 会在 Windows 启动时自动保护可执行文件路径。
 
-AI 调用 `project_apply_config` 后会创建、更新或跳过未变化的服务，但不会删除文件中未声明的现有服务。
-随后可通过 `service_restart`、`service_status` 和 `service_logs` 完成代码修改后的重启验收。建议在项目的
+AI 调用 `project_apply_config` 后会创建或更新服务，但不会删除文件中未声明的现有服务；相对工作目录会
+基于配置文件所在目录解析。随后可通过 `service_restart`、`service_status` 和 `service_logs` 完成代码修改后的重启验收。建议在项目的
 `AGENTS.md` 中记录：修改后端后重启 backend，修改 Celery 任务后重启 worker，修改定时调度配置时再
 额外重启 beat；每次重启后检查状态并读取最近日志。
 
-Bridge 还提供 `service_list/status/upsert/start/stop/restart/logs`、`port_list`、
+Bridge 还提供 `service_list/status/upsert/start/stop/restart/logs`、
+`service_group_list/create/delete/assign/start/stop`、`port_list`、
 `process_list/import/terminate`。其中停止、重启和终止进程会改变本机进程状态，AI 客户端可根据 MCP
 annotations 显示确认提示。
 

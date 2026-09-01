@@ -181,7 +181,7 @@ export function McpIntegrationCard({
             {status?.last_test?.ok ? (
               <p className="mt-3 inline-flex items-center gap-1.5 text-[10px] text-success">
                 <CheckCircle2 className="size-3.5" aria-hidden="true" />
-                最近一次 MCP 握手成功
+                最近一次 MCP 核心工具调用验证成功
               </p>
             ) : null}
 

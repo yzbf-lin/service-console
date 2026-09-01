@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { Moon, RefreshCw, Sun } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
@@ -42,12 +43,14 @@ function ConnectionItem({ kind, state }: { kind: "api" | "socket"; state: Connec
       data-state={state}
       title={connectionCopy[state][kind]}
     >
-      <span
+      <motion.span
         className={cn(
           "size-1.5 rounded-full bg-warning",
           state === "ok" && "bg-success",
           state === "error" && "bg-destructive",
         )}
+        animate={{ scale: state === "pending" ? [1, 1.35, 1] : 1, opacity: state === "pending" ? [0.65, 1, 0.65] : 1 }}
+        transition={state === "pending" ? { duration: 1.5, repeat: Infinity, ease: "easeInOut" } : { duration: 0.16 }}
         aria-hidden="true"
       />
       {label}
@@ -105,7 +108,18 @@ export function Topbar({
           title={resolvedTheme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
           onClick={onToggleTheme}
         >
-          {resolvedTheme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          <AnimatePresence initial={false} mode="wait">
+            <motion.span
+              key={resolvedTheme}
+              className="grid place-items-center"
+              initial={{ opacity: 0, rotate: -35, scale: 0.72 }}
+              animate={{ opacity: 1, rotate: 0, scale: 1 }}
+              exit={{ opacity: 0, rotate: 35, scale: 0.72 }}
+              transition={{ duration: 0.16 }}
+            >
+              {resolvedTheme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
+            </motion.span>
+          </AnimatePresence>
         </Button>
 
         {activeView !== "settings" ? (

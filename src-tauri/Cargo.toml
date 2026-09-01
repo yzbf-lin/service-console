@@ -1,6 +1,6 @@
 [package]
 name = "service-console"
-version = "0.4.0"
+version = "0.5.0"
 description = "Native process supervisor with web, terminal, and MCP interfaces"
 authors = ["Service Console contributors"]
 edition = "2024"

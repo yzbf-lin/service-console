@@ -14,6 +14,7 @@ import type {
   NormalizedLogEntry,
   NormalizedService,
   ServiceCreateInput,
+  ServiceGroupAction,
   ServiceLifecycleAction,
   ServiceUpdateInput,
   WsEvent,
@@ -46,10 +47,12 @@ export function useServices({ token, enabled, onError }: UseServicesOptions) {
   const reconnectAttemptRef = useRef(0);
 
   const [services, setServices] = useState<NormalizedService[]>([]);
+  const [groups, setGroups] = useState<string[]>([]);
   const [selectedName, setSelectedNameState] = useState<string | null>(null);
   const [selectedLogs, setSelectedLogs] = useState<NormalizedLogEntry[]>([]);
   const [logRevision, setLogRevision] = useState(0);
   const [busyServices, setBusyServices] = useState<Set<string>>(new Set());
+  const [busyGroups, setBusyGroups] = useState<Set<string>>(new Set());
   const [apiStatus, setApiStatus] = useState<ConnectionState>("pending");
   const [socketStatus, setSocketStatus] = useState<ConnectionState>("pending");
   const [loading, setLoading] = useState(true);
@@ -117,8 +120,12 @@ export function useServices({ token, enabled, onError }: UseServicesOptions) {
 
   const loadServices = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
     try {
-      const nextServices = await api.listServices();
+      const [nextServices, nextGroups] = await Promise.all([
+        api.listServices(),
+        api.listServiceGroups(),
+      ]);
       commitServices(new Map(nextServices.map((service) => [service.name, service])));
+      setGroups(nextGroups.sort((left, right) => left.localeCompare(right)));
       setApiStatus("ok");
     } catch (error) {
       setApiStatus("error");
@@ -236,6 +243,53 @@ export function useServices({ token, enabled, onError }: UseServicesOptions) {
     return service;
   }, [api, mergeService, withBusyService]);
 
+  const createGroup = useCallback(async (name: string) => {
+    const group = await api.createServiceGroup(name);
+    setGroups((current) => (
+      current.includes(group)
+        ? current
+        : [...current, group].sort((left, right) => left.localeCompare(right))
+    ));
+    return group;
+  }, [api]);
+
+  const deleteGroup = useCallback(async (name: string) => {
+    const changed = await api.deleteServiceGroup(name);
+    setGroups((current) => current.filter((group) => group !== name));
+    changed.forEach(mergeService);
+    return changed;
+  }, [api, mergeService]);
+
+  const assignGroup = useCallback(async (name: string, group: string | null) => {
+    const service = await withBusyService(name, () => api.assignServiceGroup(name, group));
+    mergeService(service);
+    return service;
+  }, [api, mergeService, withBusyService]);
+
+  const runGroupAction = useCallback(async (group: string, action: ServiceGroupAction) => {
+    const names = [...servicesRef.current.values()]
+      .filter((service) => service.group === group)
+      .map((service) => service.name);
+    setBusyGroups((current) => new Set(current).add(group));
+    setBusyServices((current) => new Set([...current, ...names]));
+    try {
+      const result = await api.runServiceGroupAction(group, action);
+      result.services.forEach(mergeService);
+      return result;
+    } finally {
+      setBusyGroups((current) => {
+        const next = new Set(current);
+        next.delete(group);
+        return next;
+      });
+      setBusyServices((current) => {
+        const next = new Set(current);
+        names.forEach((name) => next.delete(name));
+        return next;
+      });
+    }
+  }, [api, mergeService]);
+
   const createService = useCallback(async (input: ServiceCreateInput) => {
     const service = await withBusyService(input.name, () => api.createService(input));
     mergeService(service);
@@ -281,11 +335,13 @@ export function useServices({ token, enabled, onError }: UseServicesOptions) {
   return {
     api,
     services,
+    groups,
     selectedName,
     selectedService,
     selectedLogs,
     logRevision,
     busyServices,
+    busyGroups,
     apiStatus,
     socketStatus,
     loading,
@@ -294,6 +350,10 @@ export function useServices({ token, enabled, onError }: UseServicesOptions) {
     checkHealth,
     loadLogs,
     runAction,
+    createGroup,
+    deleteGroup,
+    assignGroup,
+    runGroupAction,
     createService,
     updateService,
     deleteService,

@@ -3,6 +3,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use axum::{
@@ -14,7 +15,7 @@ use axum::{
     http::StatusCode,
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
@@ -31,9 +32,11 @@ use crate::{
     mcp_integration::McpIntegration,
     models::ServiceDefinition,
     preferences::UiPreferencesStore,
-    system,
+    runtime_log, system,
     update::UpdateManager,
 };
+
+const CONTROLLER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -49,6 +52,8 @@ pub struct AppState {
 
 #[derive(Debug, Deserialize)]
 struct ServiceUpdateRequest {
+    #[serde(default)]
+    group: Option<String>,
     command: String,
     cwd: String,
     #[serde(default)]
@@ -57,6 +62,16 @@ struct ServiceUpdateRequest {
     auto_start: bool,
     #[serde(default = "default_stop_timeout")]
     stop_timeout: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ServiceGroupRequest {
+    group: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupCreateRequest {
+    name: String,
 }
 
 fn default_stop_timeout() -> f64 {
@@ -155,6 +170,8 @@ pub struct Controller {
     pub address: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
+    update: Arc<UpdateManager>,
+    shutdown_timeout: Duration,
 }
 
 impl Controller {
@@ -162,11 +179,26 @@ impl Controller {
         format!("http://{}/", self.address)
     }
 
+    pub fn request_shutdown(&self) {
+        self.update.request_shutdown();
+    }
+
     pub async fn shutdown(mut self) {
+        self.request_shutdown();
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
-        let _ = self.task.await;
+        if tokio::time::timeout(self.shutdown_timeout, &mut self.task)
+            .await
+            .is_err()
+        {
+            runtime_log::warn(
+                "controller.shutdown_timeout",
+                "aborting local controller after graceful shutdown timeout",
+            );
+            self.task.abort();
+            let _ = self.task.await;
+        }
     }
 }
 
@@ -202,6 +234,7 @@ pub async fn start_controller_with_update_exit(
         .unwrap_or_else(|| Path::new("."))
         .join("update_public_key.pem");
     let update = UpdateManager::new(manager.data_dir(), public_key);
+    let controller_update = Arc::clone(&update);
     let state = AppState {
         preferences: UiPreferencesStore::new(manager.data_dir()),
         manager,
@@ -215,6 +248,7 @@ pub async fn start_controller_with_update_exit(
     let app = router(state);
     let listener = TcpListener::bind(SocketAddr::new(host, port)).await?;
     let address = listener.local_addr()?;
+    runtime_log::info("controller.started", format_args!("listening on {address}"));
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
         let result = axum::serve(listener, app)
@@ -223,13 +257,15 @@ pub async fn start_controller_with_update_exit(
             })
             .await;
         if let Err(error) = result {
-            eprintln!("controller error: {error}");
+            runtime_log::error("controller.failed", error);
         }
     });
     Ok(Controller {
         address,
         shutdown: Some(shutdown_tx),
         task,
+        update: controller_update,
+        shutdown_timeout: CONTROLLER_SHUTDOWN_TIMEOUT,
     })
 }
 
@@ -289,9 +325,17 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/services", get(list_services).post(add_service))
         .route(
+            "/service-groups",
+            get(list_service_groups).post(create_service_group),
+        )
+        .route("/service-groups/{name}", delete(delete_service_group))
+        .route("/service-groups/{name}/start", post(start_service_group))
+        .route("/service-groups/{name}/stop", post(stop_service_group))
+        .route(
             "/services/{name}",
             put(update_service).delete(delete_service),
         )
+        .route("/services/{name}/group", put(assign_service_group))
         .route("/services/{name}/start", post(start_service))
         .route("/services/{name}/stop", post(stop_service))
         .route("/services/{name}/restart", post(restart_service))
@@ -581,6 +625,44 @@ async fn list_services(State(state): State<AppState>) -> Json<Value> {
     Json(json!({"services": state.manager.list_services().await}))
 }
 
+async fn list_service_groups(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({"groups": state.manager.list_groups().await}))
+}
+
+async fn create_service_group(
+    State(state): State<AppState>,
+    Json(body): Json<GroupCreateRequest>,
+) -> AppResult<(StatusCode, Json<Value>)> {
+    let group = state.manager.create_group(&body.name).await?;
+    Ok((StatusCode::CREATED, Json(json!({"group": group}))))
+}
+
+async fn delete_service_group(
+    State(state): State<AppState>,
+    AxumPath(name): AxumPath<String>,
+) -> AppResult<Json<Value>> {
+    let services = state.manager.delete_group(&name).await?;
+    Ok(Json(json!({"deleted": name, "services": services})))
+}
+
+async fn start_service_group(
+    State(state): State<AppState>,
+    AxumPath(name): AxumPath<String>,
+) -> AppResult<Json<Value>> {
+    Ok(Json(
+        json!({"result": state.manager.start_group(&name).await?}),
+    ))
+}
+
+async fn stop_service_group(
+    State(state): State<AppState>,
+    AxumPath(name): AxumPath<String>,
+) -> AppResult<Json<Value>> {
+    Ok(Json(
+        json!({"result": state.manager.stop_group(&name).await?}),
+    ))
+}
+
 async fn add_service(
     State(state): State<AppState>,
     Json(body): Json<ServiceDefinition>,
@@ -596,6 +678,7 @@ async fn update_service(
 ) -> AppResult<Json<Value>> {
     let definition = ServiceDefinition {
         name: name.clone(),
+        group: body.group,
         command: body.command,
         cwd: body.cwd,
         env: body.env,
@@ -603,6 +686,15 @@ async fn update_service(
         stop_timeout: body.stop_timeout,
     };
     let service = state.manager.update_service(&name, definition).await?;
+    Ok(Json(json!({"service": service})))
+}
+
+async fn assign_service_group(
+    State(state): State<AppState>,
+    AxumPath(name): AxumPath<String>,
+    Json(body): Json<ServiceGroupRequest>,
+) -> AppResult<Json<Value>> {
+    let service = state.manager.assign_group(&name, body.group).await?;
     Ok(Json(json!({"service": service})))
 }
 
@@ -808,5 +900,27 @@ async fn handle_socket_command(manager: &Arc<ServiceManager>, text: &str) -> Val
         Err(error) => {
             json!({"type":"command_result","id":id,"action":action,"service":service,"ok":false,"error":error.to_string()})
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn controller_shutdown_aborts_a_stuck_server_after_the_deadline() {
+        let directory = tempdir().unwrap();
+        let controller = Controller {
+            address: SocketAddr::from(([127, 0, 0, 1], 0)),
+            shutdown: None,
+            task: tokio::spawn(std::future::pending()),
+            update: UpdateManager::new(directory.path(), directory.path().join("key.pem")),
+            shutdown_timeout: Duration::from_millis(20),
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), controller.shutdown())
+            .await
+            .expect("controller shutdown must have a hard deadline");
     }
 }

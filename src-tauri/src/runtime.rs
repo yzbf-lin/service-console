@@ -82,12 +82,14 @@ pub fn write_runtime(path: impl AsRef<Path>, connection: &RuntimeConnection) -> 
         .parent()
         .ok_or_else(|| AppError::bad_request("invalid runtime path"))?;
     fs::create_dir_all(parent)?;
-    if let Some(current) = load_runtime(&path)?
-        && current.instance_id != connection.instance_id
-    {
-        return Err(AppError::conflict(
-            "another desktop controller is already active",
-        ));
+    match load_runtime(&path)? {
+        Some(current) if current.instance_id != connection.instance_id => {
+            return Err(AppError::conflict(
+                "another desktop controller is already active",
+            ));
+        }
+        None if path.exists() => fs::remove_file(&path)?,
+        _ => {}
     }
     let temporary = parent.join(format!(".controller-{}.tmp", Uuid::new_v4()));
     let mut encoded = serde_json::to_vec_pretty(connection)?;
@@ -176,5 +178,30 @@ mod tests {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         }
         assert!(load_runtime(path).unwrap().is_none());
+    }
+
+    #[test]
+    fn replaces_a_descriptor_owned_by_a_dead_process() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("controller.json");
+        let stale = RuntimeConnection {
+            instance_id: "dead".into(),
+            pid: u32::MAX,
+            base_url: "http://127.0.0.1:9876/".into(),
+            token: "stale-token".into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+            version: 1,
+        };
+        fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let current =
+            RuntimeConnection::new("http://127.0.0.1:9877/".into(), "current-token".into());
+        write_runtime(&path, &current).unwrap();
+        assert_eq!(load_runtime(path).unwrap(), Some(current));
     }
 }

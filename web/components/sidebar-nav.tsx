@@ -1,6 +1,7 @@
 "use client";
 
 import { Network, ServerCog, Settings, Workflow } from "lucide-react";
+import { motion } from "motion/react";
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
@@ -44,22 +45,33 @@ function NavigationButton({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button
+        <motion.button
           className={cn(
-            "group relative flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors",
+            "group relative flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none",
             "hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/80",
             "max-[767px]:h-full max-[767px]:w-auto max-[767px]:min-h-0 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:basis-0 max-[767px]:flex-col max-[767px]:gap-1 max-[767px]:rounded-lg max-[767px]:px-1 max-[767px]:py-1.5 max-[767px]:text-[10px]",
-            active && "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 hover:text-primary-foreground",
+            active && "text-primary-foreground hover:bg-transparent hover:text-primary-foreground",
           )}
           type="button"
           data-view={id}
           aria-controls={`${id}View`}
           aria-current={active ? "page" : undefined}
           aria-label={accessibleLabel}
+          whileHover={{ y: -1 }}
+          whileTap={{ scale: 0.96 }}
+          transition={{ type: "spring", stiffness: 520, damping: 34 }}
           onClick={() => onViewChange(id)}
         >
-          <Icon className="size-[18px] shrink-0" strokeWidth={1.8} aria-hidden="true" />
-          <span className="hidden leading-none max-[767px]:block">{label}</span>
+          {active ? (
+            <motion.span
+              className="absolute inset-0 rounded-md bg-primary shadow-[0_6px_18px_color-mix(in_srgb,var(--primary)_24%,transparent)] max-[767px]:rounded-lg"
+              layoutId="active-navigation-surface"
+              transition={{ type: "spring", stiffness: 480, damping: 38 }}
+              aria-hidden="true"
+            />
+          ) : null}
+          <Icon className="relative z-[1] size-[18px] shrink-0" strokeWidth={1.8} aria-hidden="true" />
+          <span className="relative z-[1] hidden leading-none max-[767px]:block">{label}</span>
           {showUpdateIndicator ? (
             <span
               className="absolute top-1 right-1 size-1.5 rounded-full bg-destructive shadow-[0_0_0_2px_var(--sidebar)] max-[767px]:shadow-[0_0_0_2px_var(--card)]"
@@ -67,7 +79,7 @@ function NavigationButton({
               aria-hidden="true"
             />
           ) : null}
-        </button>
+        </motion.button>
       </TooltipTrigger>
       <TooltipContent side="right" sideOffset={8} className="hidden min-[768px]:block">
         {label}

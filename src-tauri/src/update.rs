@@ -13,12 +13,13 @@ use sha2::{Digest, Sha256};
 use tokio::{
     fs::File,
     io::AsyncWriteExt,
-    sync::{Mutex, RwLock},
+    sync::{Mutex, MutexGuard, RwLock, watch},
 };
 
 use crate::{
     error::{AppError, AppResult},
     models::expand_home,
+    runtime_log,
     update_helper::{installed_application, launch_helper, prepare_archive},
 };
 
@@ -77,17 +78,20 @@ pub struct UpdateManager {
     http: reqwest::Client,
     status: RwLock<UpdateStatus>,
     operation: Mutex<()>,
+    shutdown: watch::Sender<bool>,
 }
 
 impl UpdateManager {
     pub fn new(data_dir: impl AsRef<Path>, public_key: impl AsRef<Path>) -> Arc<Self> {
         let platform = detect_platform();
+        let (shutdown, _) = watch::channel(false);
         Arc::new(Self {
             data_dir: expand_home(data_dir),
             manifest_url: MANIFEST_URL.into(),
             public_key: public_key.as_ref().to_path_buf(),
             http: reqwest::Client::new(),
             operation: Mutex::new(()),
+            shutdown,
             status: RwLock::new(UpdateStatus {
                 state: "idle".into(),
                 current_version: env!("CARGO_PKG_VERSION").into(),
@@ -111,22 +115,66 @@ impl UpdateManager {
         })
     }
 
+    pub fn request_shutdown(&self) {
+        self.shutdown.send_replace(true);
+    }
+
+    async fn operation_guard(&self) -> AppResult<MutexGuard<'_, ()>> {
+        tokio::select! {
+            biased;
+            _ = self.cancelled() => Err(shutdown_error()),
+            guard = self.operation.lock() => Ok(guard),
+        }
+    }
+
+    async fn cancelled(&self) {
+        let mut shutdown = self.shutdown.subscribe();
+        if *shutdown.borrow() {
+            return;
+        }
+        let _ = shutdown.changed().await;
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        *self.shutdown.borrow()
+    }
+
     pub async fn status(&self) -> UpdateStatus {
         self.status.read().await.clone()
     }
 
     pub async fn check(&self) -> AppResult<UpdateStatus> {
-        let _operation = self.operation.lock().await;
+        let _operation = self.operation_guard().await?;
+        runtime_log::info("update.check_started", "checking signed update manifest");
         {
             let mut status = self.status.write().await;
             status.state = "checking".into();
             status.error = None;
         }
-        let result = self.check_inner().await;
+        let result = tokio::select! {
+            biased;
+            _ = self.cancelled() => Err(shutdown_error()),
+            result = self.check_inner() => result,
+        };
         if let Err(error) = &result {
             let mut status = self.status.write().await;
             status.state = "error".into();
             status.error = Some(error.to_string());
+            if self.shutdown_requested() {
+                runtime_log::info("update.check_cancelled", "application is closing");
+            } else {
+                runtime_log::warn("update.check_failed", error);
+            }
+        } else if let Ok(status) = &result {
+            runtime_log::info(
+                "update.check_completed",
+                format_args!(
+                    "state={} current={} latest={}",
+                    status.state,
+                    status.current_version,
+                    status.latest_version.as_deref().unwrap_or("unknown")
+                ),
+            );
         }
         result
     }
@@ -188,12 +236,30 @@ impl UpdateManager {
     }
 
     pub async fn download(&self) -> AppResult<UpdateStatus> {
-        let _operation = self.operation.lock().await;
-        let result = self.download_inner().await;
+        let _operation = self.operation_guard().await?;
+        let result = tokio::select! {
+            biased;
+            _ = self.cancelled() => Err(shutdown_error()),
+            result = self.download_inner() => result,
+        };
         if let Err(error) = &result {
-            let mut status = self.status.write().await;
-            status.state = "error".into();
-            status.error = Some(error.to_string());
+            if self.shutdown_requested() {
+                self.remove_partial_download().await;
+                let mut status = self.status.write().await;
+                status.state = "idle".into();
+                status.error = None;
+                status.downloaded_bytes = 0;
+                status.download_progress = Some(0.0);
+                runtime_log::info(
+                    "update.download_cancelled",
+                    "partial package removed because the application is closing",
+                );
+            } else {
+                let mut status = self.status.write().await;
+                status.state = "error".into();
+                status.error = Some(error.to_string());
+                runtime_log::warn("update.download_failed", error);
+            }
         }
         result
     }
@@ -212,17 +278,17 @@ impl UpdateManager {
             status.error = None;
             (asset, version)
         };
+        runtime_log::info(
+            "update.download_started",
+            format_args!(
+                "version={version} package={} bytes={}",
+                asset.filename, asset.size
+            ),
+        );
         let directory = self.data_dir.join("updates").join(format!("v{version}"));
         tokio::fs::create_dir_all(&directory).await?;
         let package = directory.join(&asset.filename);
-        let part = package.with_extension(format!(
-            "{}part",
-            package
-                .extension()
-                .and_then(|value| value.to_str())
-                .map(|value| format!("{value}."))
-                .unwrap_or_default()
-        ));
+        let part = partial_package_path(&package);
         let response = self
             .http
             .get(&asset.url)
@@ -277,16 +343,48 @@ impl UpdateManager {
         status.downloaded = true;
         status.download_progress = Some(100.0);
         status.package_path = Some(package);
+        runtime_log::info(
+            "update.download_completed",
+            format_args!("version={version} bytes={downloaded}"),
+        );
         Ok(status.clone())
     }
 
+    async fn remove_partial_download(&self) {
+        let (version, filename) = {
+            let status = self.status.read().await;
+            (
+                status.latest_version.clone(),
+                status.asset.as_ref().map(|asset| asset.filename.clone()),
+            )
+        };
+        let (Some(version), Some(filename)) = (version, filename) else {
+            return;
+        };
+        let package = self
+            .data_dir
+            .join("updates")
+            .join(format!("v{version}"))
+            .join(filename);
+        let _ = tokio::fs::remove_file(partial_package_path(&package)).await;
+    }
+
     pub async fn install(&self) -> AppResult<UpdateStatus> {
-        let _operation = self.operation.lock().await;
-        let result = self.install_inner().await;
+        let _operation = self.operation_guard().await?;
+        let result = tokio::select! {
+            biased;
+            _ = self.cancelled() => Err(shutdown_error()),
+            result = self.install_inner() => result,
+        };
         if let Err(error) = &result {
             let mut status = self.status.write().await;
             status.state = "error".into();
             status.error = Some(error.to_string());
+            if self.shutdown_requested() {
+                runtime_log::info("update.install_cancelled", "application is closing");
+            } else {
+                runtime_log::warn("update.install_failed", error);
+            }
         }
         result
     }
@@ -311,6 +409,10 @@ impl UpdateManager {
             status.error = None;
             (package, version, status.platform.clone(), asset)
         };
+        runtime_log::info(
+            "update.install_started",
+            format_args!("version={version} platform={platform}"),
+        );
         let installed = installed_application()?;
         let prepared_dir = package
             .parent()
@@ -344,6 +446,10 @@ impl UpdateManager {
         status.restart_required = true;
         status.can_install = false;
         status.reason = Some("The desktop application is restarting to finish the update".into());
+        runtime_log::info(
+            "update.install_ready",
+            format_args!("version={version}; update helper launched"),
+        );
         Ok(status.clone())
     }
 
@@ -382,6 +488,21 @@ impl UpdateManager {
         }
         Ok(bytes.to_vec())
     }
+}
+
+fn shutdown_error() -> AppError {
+    AppError::conflict("Update operation cancelled because the application is closing")
+}
+
+fn partial_package_path(package: &Path) -> PathBuf {
+    package.with_extension(format!(
+        "{}part",
+        package
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| format!("{value}."))
+            .unwrap_or_default()
+    ))
 }
 
 fn verify_downloaded_package(path: &Path, asset: &ReleaseAsset) -> AppResult<()> {
@@ -509,7 +630,9 @@ fn validate_asset(version: &str, platform: &str, asset: &ReleaseAsset) -> AppRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Router, body::Body, response::Response, routing::get};
     use ed25519_dalek::{Signer, SigningKey, pkcs8::EncodePublicKey};
+    use futures_util::stream;
     use spki::der::pem::LineEnding;
     use tempfile::tempdir;
 
@@ -537,5 +660,82 @@ mod tests {
         let signature = STANDARD.encode(key.sign(manifest).to_bytes());
         verify_signature(manifest, signature.as_bytes(), &public_key).unwrap();
         assert!(verify_signature(b"changed", signature.as_bytes(), &public_key).is_err());
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_a_download_waiting_for_the_operation_lock() {
+        let directory = tempdir().unwrap();
+        let manager = UpdateManager::new(directory.path(), directory.path().join("key.pem"));
+        let locked_manager = Arc::clone(&manager);
+        let operation = locked_manager.operation.lock().await;
+        let download = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move { manager.download().await }
+        });
+        tokio::task::yield_now().await;
+
+        manager.request_shutdown();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), download)
+            .await
+            .expect("download should stop promptly")
+            .unwrap()
+            .unwrap_err();
+
+        assert!(result.to_string().contains("application is closing"));
+        drop(operation);
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_an_active_download_and_removes_the_partial_file() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/package",
+            get(|| async {
+                let chunks = stream::iter([Ok::<_, std::io::Error>(
+                    axum::body::Bytes::from_static(b"partial"),
+                )])
+                .chain(stream::pending());
+                Response::new(Body::from_stream(chunks))
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let directory = tempdir().unwrap();
+        let manager = UpdateManager::new(directory.path(), directory.path().join("key.pem"));
+        let filename = "Service-Console-v9.9.9-test.zip";
+        {
+            let mut status = manager.status.write().await;
+            status.latest_version = Some("9.9.9".into());
+            status.asset = Some(ReleaseAsset {
+                url: format!("http://{address}/package"),
+                sha256: "0".repeat(64),
+                size: 1_024,
+                filename: filename.into(),
+            });
+        }
+        let download = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move { manager.download().await }
+        });
+        for _ in 0..200 {
+            if manager.status().await.downloaded_bytes > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(manager.status().await.downloaded_bytes > 0);
+
+        manager.request_shutdown();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), download)
+            .await
+            .expect("active download should stop promptly")
+            .unwrap()
+            .unwrap_err();
+        assert!(result.to_string().contains("application is closing"));
+
+        let package = directory.path().join("updates/v9.9.9").join(filename);
+        assert!(!partial_package_path(&package).exists());
+        server.abort();
     }
 }

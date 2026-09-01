@@ -1,13 +1,17 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ServiceListPanel } from "@/components/service-list-panel";
 import type { NormalizedService, ServiceStatus } from "@/lib/types";
 
-function serviceFixture(status: ServiceStatus): NormalizedService {
+function serviceFixture(
+  status: ServiceStatus,
+  overrides: Partial<NormalizedService> = {},
+): NormalizedService {
   return {
     name: `service-${status.toLowerCase()}`,
+    group: null,
     command: `run ${status.toLowerCase()}`,
     cwd: "/workspace",
     env: {},
@@ -25,6 +29,7 @@ function serviceFixture(status: ServiceStatus): NormalizedService {
     restartCount: 0,
     lastError: null,
     raw: {},
+    ...overrides,
   };
 }
 
@@ -42,8 +47,13 @@ function renderPanel() {
   return render(
     <ServiceListPanel
       services={services}
+      groups={[]}
       selectedName={null}
       busyServices={new Set()}
+      busyGroups={new Set()}
+      onDeleteGroup={vi.fn()}
+      onMoveService={vi.fn()}
+      onGroupAction={vi.fn()}
       onSelect={vi.fn()}
       onAction={vi.fn()}
     />,
@@ -98,8 +108,13 @@ describe("ServiceListPanel", () => {
     render(
       <ServiceListPanel
         services={services}
+        groups={[]}
         selectedName={null}
         busyServices={new Set()}
+        busyGroups={new Set()}
+        onDeleteGroup={vi.fn()}
+        onMoveService={vi.fn()}
+        onGroupAction={vi.fn()}
         onSelect={vi.fn()}
         onAction={vi.fn()}
         onAddService={onAddService}
@@ -108,5 +123,68 @@ describe("ServiceListPanel", () => {
 
     await user.click(screen.getByRole("button", { name: "添加服务" }));
     expect(onAddService).toHaveBeenCalledOnce();
+  });
+
+  it("runs one-click start and stop actions for a group", async () => {
+    const user = userEvent.setup();
+    const onGroupAction = vi.fn();
+    render(
+      <ServiceListPanel
+        services={[
+          serviceFixture("STOPPED", { name: "api", group: "后端" }),
+          serviceFixture("RUNNING", { name: "worker", group: "后端" }),
+        ]}
+        groups={["后端"]}
+        selectedName={null}
+        busyServices={new Set()}
+        busyGroups={new Set()}
+        onDeleteGroup={vi.fn()}
+        onMoveService={vi.fn()}
+        onGroupAction={onGroupAction}
+        onSelect={vi.fn()}
+        onAction={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "启动分组 后端" }));
+    await user.click(screen.getByRole("button", { name: "停止分组 后端" }));
+    expect(onGroupAction).toHaveBeenNthCalledWith(1, "后端", "start");
+    expect(onGroupAction).toHaveBeenNthCalledWith(2, "后端", "stop");
+  });
+
+  it("moves a service into a group by drag and drop", () => {
+    const onMoveService = vi.fn();
+    const { container } = render(
+      <ServiceListPanel
+        services={[serviceFixture("STOPPED", { name: "api", group: null })]}
+        groups={["后端"]}
+        selectedName={null}
+        busyServices={new Set()}
+        busyGroups={new Set()}
+        onDeleteGroup={vi.fn()}
+        onMoveService={onMoveService}
+        onGroupAction={vi.fn()}
+        onSelect={vi.fn()}
+        onAction={vi.fn()}
+      />,
+    );
+    const card = container.querySelector<HTMLElement>('[data-service="api"]');
+    const draggable = card?.parentElement;
+    const target = screen.getByRole("region", { name: "后端" });
+    const values = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: "none",
+      dropEffect: "none",
+      setData: (type: string, value: string) => values.set(type, value),
+      getData: (type: string) => values.get(type) ?? "",
+    };
+
+    expect(draggable?.getAttribute("draggable")).toBe("true");
+    fireEvent.dragStart(draggable as HTMLElement, { dataTransfer });
+    fireEvent.dragEnter(target, { dataTransfer });
+    fireEvent.dragOver(target, { dataTransfer });
+    fireEvent.drop(target, { dataTransfer });
+
+    expect(onMoveService).toHaveBeenCalledWith("api", "后端");
   });
 });

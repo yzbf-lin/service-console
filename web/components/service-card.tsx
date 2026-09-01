@@ -1,5 +1,7 @@
 "use client";
 
+import { motion } from "motion/react";
+
 import { ServiceActionsMenu } from "@/components/service-actions";
 import {
   formatBytes,
@@ -34,18 +36,28 @@ function statusTextClass(status: NormalizedService["status"]) {
   return "text-muted-foreground";
 }
 
-export function ServiceCard({ service, selected, busy, onSelect, onAction }: ServiceCardProps) {
+export function ServiceCard({
+  service,
+  selected,
+  busy,
+  onSelect,
+  onAction,
+}: ServiceCardProps) {
   const memory = service.memoryBytes !== null
     ? formatBytes(service.memoryBytes)
     : formatPercent(service.memoryPercent);
 
   return (
-    <article
+    <motion.article
       className={cn(
-        "group relative border-b border-border/70",
+        "service-card group relative border-b border-border/70",
         selected && "bg-accent/75",
       )}
       data-service={service.name}
+      layout="position"
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
     >
       <button
         className={cn(
@@ -84,6 +96,6 @@ export function ServiceCard({ service, selected, busy, onSelect, onAction }: Ser
       <div className="absolute top-1.5 right-1.5 opacity-65 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <ServiceActionsMenu service={service} busy={busy} onAction={onAction} />
       </div>
-    </article>
+    </motion.article>
   );
 }

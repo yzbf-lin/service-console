@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     error::{AppError, AppResult},
-    models::{LogEntry, ServiceDefinition, expand_home},
+    models::{LogEntry, ServiceDefinition, expand_home, normalize_group_name},
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -21,6 +21,14 @@ struct DefinitionFile {
     services: Vec<ServiceDefinition>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct GroupFile {
+    #[serde(default = "definition_version")]
+    version: u32,
+    #[serde(default)]
+    groups: Vec<String>,
+}
+
 fn definition_version() -> u32 {
     1
 }
@@ -29,6 +37,7 @@ fn definition_version() -> u32 {
 pub struct DefinitionStore {
     data_dir: PathBuf,
     definitions_path: PathBuf,
+    groups_path: PathBuf,
     logs_dir: PathBuf,
 }
 
@@ -39,6 +48,7 @@ impl DefinitionStore {
         fs::create_dir_all(&logs_dir)?;
         Ok(Self {
             definitions_path: data_dir.join("services.json"),
+            groups_path: data_dir.join("service-groups.json"),
             data_dir,
             logs_dir,
         })
@@ -107,6 +117,49 @@ impl DefinitionStore {
         write_result
     }
 
+    pub fn load_groups(&self) -> AppResult<BTreeSet<String>> {
+        if !self.groups_path.exists() {
+            return Ok(BTreeSet::new());
+        }
+        let file: GroupFile =
+            serde_json::from_slice(&fs::read(&self.groups_path)?).map_err(|error| {
+                AppError::bad_request(format!("failed to load service groups: {error}"))
+            })?;
+        file.groups
+            .into_iter()
+            .map(|group| normalize_group_name(&group))
+            .collect()
+    }
+
+    pub fn save_groups(&self, groups: &BTreeSet<String>) -> AppResult<()> {
+        let payload = GroupFile {
+            version: 1,
+            groups: groups.iter().cloned().collect(),
+        };
+        let mut encoded = serde_json::to_vec_pretty(&payload)?;
+        encoded.push(b'\n');
+        let temporary = self.data_dir.join(format!(
+            ".service-groups-{}-{}.tmp",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let write_result = (|| -> AppResult<()> {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)?;
+            file.write_all(&encoded)?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, &self.groups_path)?;
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        write_result
+    }
+
     pub fn append_log(&self, service: &str, entry: &LogEntry) -> AppResult<()> {
         let mut file = OpenOptions::new()
             .create(true)
@@ -161,6 +214,7 @@ mod tests {
     fn definition(name: &str) -> ServiceDefinition {
         ServiceDefinition {
             name: name.into(),
+            group: None,
             command: "echo ok".into(),
             cwd: ".".into(),
             env: BTreeMap::new(),
@@ -176,6 +230,14 @@ mod tests {
         let definitions = [definition("api"), definition("web")];
         store.save(definitions.iter()).unwrap();
         assert_eq!(store.load().unwrap().len(), 2);
+
+        store
+            .save_groups(&BTreeSet::from(["Backend".into(), "Workers".into()]))
+            .unwrap();
+        assert_eq!(
+            store.load_groups().unwrap(),
+            BTreeSet::from(["Backend".into(), "Workers".into()])
+        );
 
         store
             .append_log("api/name", &LogEntry::new("stdout", "one"))

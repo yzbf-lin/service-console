@@ -19,16 +19,22 @@ describe("ServiceControlView layout", () => {
     render(
       <ServiceControlView
         services={[]}
+        groups={[]}
         selectedName={null}
         selectedService={null}
         logs={[]}
         logRevision={0}
         busyServices={new Set()}
+        busyGroups={new Set()}
         theme="dark"
         active
         onSelect={vi.fn()}
         onAction={vi.fn()}
         onAddService={onAddService}
+        onCreateGroup={vi.fn()}
+        onDeleteGroup={vi.fn()}
+        onMoveService={vi.fn()}
+        onGroupAction={vi.fn()}
         onClearLogs={vi.fn()}
       />,
     );

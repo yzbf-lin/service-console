@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::{
     error::{AppError, AppResult},
     models::expand_home,
+    runtime_log,
 };
 
 const KEYRING_SERVICE: &str = "service-console.jenkins";
@@ -1088,7 +1089,10 @@ impl JenkinsService {
                     .write()
                     .await
                     .insert(id.into(), token.into());
-                eprintln!("Jenkins token is available for this session only: {error}");
+                runtime_log::warn(
+                    "jenkins.credential_not_persisted",
+                    format_args!("token is available for this session only: {error}"),
+                );
                 Ok(())
             }
         }
