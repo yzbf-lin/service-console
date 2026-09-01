@@ -135,8 +135,9 @@ jobs:
             '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
           ) -join "`n"
           $response = $requests | & "target/release/service-console-mcp.exe"
-          if ($LASTEXITCODE -ne 0 -or $response -notmatch '"name":"service-console"' -or
-              $response -notmatch 'service_group_start') {
+          $responseText = $response -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $responseText -notmatch '"name":"service-console"' -or
+              $responseText -notmatch 'service_group_start') {
             throw "Rust MCP handshake failed"
           }
           if (-not (Test-Path "target/release/service-console-guardian.exe" -PathType Leaf)) {
