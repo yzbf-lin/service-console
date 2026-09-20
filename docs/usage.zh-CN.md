@@ -91,9 +91,18 @@ open "target/debug/bundle/macos/Service Console.app"
 3. 填写显示名称、Jenkins 地址、用户名和 API Token。
 4. 保存前执行连接测试。
 5. 选择实例后浏览 Folder、Job、构建历史、队列和日志。
+6. 选中 Pipeline Job 的一条构建；宽窗口会在右侧日志上方显示 Stage，窄窗口会自动进入
+   **详情 / 日志**，也可以手动点击该 tab 查看当前 Stage、步骤位置、单阶段耗时和总耗时。
 
 客户端支持普通构建和常见参数化构建，可触发构建、停止运行中的构建或取消队列项。API Token 由操作系统
-凭据后端保存，不会出现在浏览器或 MCP 工具结果中。建议使用 HTTPS 和最小权限的专用 Token。
+凭据后端保存，不会出现在浏览器或 MCP 工具结果中。Stage 面板只适用于 Jenkins 类型为 Pipeline
+（`WorkflowJob`）的任务；Freestyle Job 不会提供结构化 Stage。Stage 预览依赖 Jenkins 的
+Pipeline REST API；未启用对应插件时客户端会显示提示，构建历史与日志仍可正常使用。日志终端会保留
+ANSI 颜色，并自动高亮 Pipeline、成功、警告和失败行。建议使用 HTTPS 和最小权限的专用 Token。
+
+构建总耗时来自 Jenkins 构建详情接口，Stage 列表来自独立的 `/wfapi/describe` 接口。因此，即使界面已经
+显示总耗时，Stage API 未开放时仍只显示可用性提示；在 Jenkins 启用 **Pipeline: REST API** 插件后即可
+显示各阶段明细。
 
 ## 7. 客户端更新
 

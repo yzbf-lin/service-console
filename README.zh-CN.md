@@ -75,14 +75,19 @@ Service Console 是面向开发工作流的原生进程管理器。服务命令�
 到该实例，并在本机恢复最近一次选择。窗口较窄时，同一工作区会切换为单面板 tab，避免同时渲染多个
 重内容区域。
 
-Jenkins 工作区支持 Job 搜索、Folder 导航、普通或参数化构建、构建状态与历史、停止构建、取消排队，
-以及 progressiveText 增量日志。这些记录由本地 Service Console 控制器按需查询 Jenkins，不会额外复制
+Jenkins 工作区支持 Job 搜索、Folder 导航、普通或参数化构建、构建状态与历史、Pipeline 阶段预览、停止
+构建、取消排队，以及 progressiveText 增量日志。选中 Pipeline 构建后会在日志上方显示当前 Stage、所在步骤、
+各阶段耗时和总耗时；窄窗口下选择构建后在 **详情 / 日志** tab 查看。运行中的数据随构建轮询持续更新。
+阶段面板只适用于 Jenkins 类型为 Pipeline（`WorkflowJob`）的任务，Freestyle Job 不提供结构化 Stage。
+阶段数据使用 Jenkins 可选的 Pipeline REST API，接口未启用时会显示可用性提示。这些记录由本地 Service
+Console 控制器按需查询 Jenkins，不会额外复制
 一套本地 Jenkins 数据库。切换 UI item 不会改变已经发起的 MCP 操作，因为每个 Jenkins API 与 MCP
 调用都会显式携带实例 ID。
 
 构建链接始终通过当前实例配置的 Web 地址打开，即使 Jenkins API 返回了内部主机或默认端口。控制台支持
 Cmd/Ctrl+F 搜索及上一项/下一项导航，可使用原生选择复制、复制选中按钮和一键复制全部纯文本；日志持续
-追加时会保留当前搜索与选择状态。
+追加时会保留当前搜索与选择状态。已有 ANSI 颜色会原样保留；纯文本中的 Pipeline、成功、警告和失败行
+会自动高亮，同时过滤不应执行的终端控制序列。
 
 普通参数化构建中，密码参数留空时不会随 `buildWithParameters` 提交，而是交由 Jenkins 使用已配置的
 默认值。真正的 Jenkins 文件上传参数仍暂不支持，并会禁用本地触发。File System List 插件并不是上传

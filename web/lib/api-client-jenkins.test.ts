@@ -116,6 +116,8 @@ describe("Jenkins API client", () => {
       { job: rawJob },
       { job: "folder/job", builds: [{ ...rawBuild, number: 0 }, rawBuild] },
       { build: rawBuild },
+  { stages: { available: true, stages: [{ id: "4", name: "Deploy", status: "SUCCESS", duration: 8_000 }] } },
+      { available: true, nodes: [{ id: "5", name: "Shell Script", status: "SUCCESS", duration: 2_000 }] },
       { queue: { id: 10, url: "queue/10", location: "queue/10" } },
       { build: { job: "folder/job", number: 42, stopped: true } },
       { queue: [
@@ -149,6 +151,14 @@ describe("Jenkins API client", () => {
       expect.objectContaining({ number: 42 }),
     ]);
     await client.getJenkinsBuild(rawInstance.id, "folder/job", 42);
+    await expect(client.getJenkinsBuildStages(rawInstance.id, "folder/job", 42)).resolves.toEqual({
+      available: true,
+      stages: [expect.objectContaining({ id: "4", name: "Deploy", duration: 8_000 })],
+    });
+    await expect(client.getJenkinsStageNodes(rawInstance.id, "folder/job", 42, "4")).resolves.toEqual({
+      available: true,
+      nodes: [expect.objectContaining({ id: "5", name: "Shell Script", duration: 2_000 })],
+    });
     await client.triggerJenkinsBuild(rawInstance.id, "folder/job", {
       DRY_RUN: true,
       GROUP: ["server-a", "server-b"],
@@ -171,6 +181,8 @@ describe("Jenkins API client", () => {
       ["/api/jenkins/instances/prod%2Fid/job/parameters?job=folder%2Fjob", "POST"],
       ["/api/jenkins/instances/prod%2Fid/builds?job=folder%2Fjob&limit=25", undefined],
       ["/api/jenkins/instances/prod%2Fid/builds/42?job=folder%2Fjob", undefined],
+      ["/api/jenkins/instances/prod%2Fid/builds/42/stages?job=folder%2Fjob", undefined],
+      ["/api/jenkins/instances/prod%2Fid/builds/42/stages/4/nodes?job=folder%2Fjob", undefined],
       ["/api/jenkins/instances/prod%2Fid/builds?job=folder%2Fjob", "POST"],
       ["/api/jenkins/instances/prod%2Fid/builds/42/stop?job=folder%2Fjob", "POST"],
       ["/api/jenkins/instances/prod%2Fid/queue", undefined],
@@ -180,7 +192,7 @@ describe("Jenkins API client", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
       parameters: { ENV: "prod" },
     });
-    expect(JSON.parse(String(fetchMock.mock.calls[6]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchMock.mock.calls[8]?.[1]?.body))).toEqual({
       parameters: { DRY_RUN: true, GROUP: ["server-a", "server-b"] },
     });
   });

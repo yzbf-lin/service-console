@@ -3,6 +3,7 @@
 import {
   ChevronDown,
   ChevronLeft,
+  Check,
   CircleAlert,
   Copy,
   Ellipsis,
@@ -10,8 +11,6 @@ import {
   FileText,
   FlaskConical,
   Folder,
-  History,
-  ListTree,
   LoaderCircle,
   Pencil,
   Play,
@@ -23,7 +22,9 @@ import {
   Trash2,
   Workflow,
 } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { motion, useReducedMotion } from "motion/react";
+import { createPortal } from "react-dom";
+import { type CSSProperties, type FormEvent, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -65,11 +66,14 @@ import { resolveJenkinsBuildUrl } from "@/lib/jenkins";
 import type {
   JenkinsBuild,
   JenkinsBuildParameterValue,
+  JenkinsBuildStages,
   JenkinsInstance,
   JenkinsInstanceInput,
   JenkinsJob,
   JenkinsJobParameter,
+  JenkinsPipelineStage,
   JenkinsQueueItem,
+  JenkinsStageNodes,
   ResolvedTheme,
 } from "@/lib/types";
 
@@ -80,7 +84,6 @@ const LOG_MAX_CHARS = 2_000_000;
 const LOG_TRUNCATION_NOTICE = "\r\n[Service Console 已省略较早的 Jenkins 日志]\r\n";
 
 type ConnectionStatus = "unknown" | "checking" | "ok" | "error";
-type ActivityTab = "builds" | "queue";
 type MobilePane = "jobs" | "activity" | "logs";
 
 interface JenkinsViewProps {
@@ -118,10 +121,14 @@ function isFolder(job: JenkinsJob): boolean {
   return /folder/i.test(job.kind);
 }
 
+function isPipelineJob(job: JenkinsJob): boolean {
+  return /pipeline|workflowjob/i.test(job.kind);
+}
+
 function resultVariant(status: string): "success" | "warning" | "destructive" | "muted" {
   const value = status.toUpperCase();
   if (["SUCCESS", "STABLE"].includes(value)) return "success";
-  if (["RUNNING", "BUILDING", "QUEUED", "UNSTABLE"].includes(value)) return "warning";
+  if (["RUNNING", "BUILDING", "IN_PROGRESS", "QUEUED", "UNSTABLE", "PAUSED_PENDING_INPUT"].includes(value)) return "warning";
   if (["FAILURE", "FAILED", "ABORTED", "ERROR"].includes(value)) return "destructive";
   return "muted";
 }
@@ -142,7 +149,387 @@ function formatDuration(milliseconds: number): string {
   if (!milliseconds) return "—";
   const seconds = Math.round(milliseconds / 1_000);
   if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${seconds % 60}s`;
+}
+
+function timestampMilliseconds(timestamp: number | null): number | null {
+  if (timestamp === null || !Number.isFinite(timestamp)) return null;
+  return timestamp < 10_000_000_000 ? timestamp * 1_000 : timestamp;
+}
+
+function liveBuildDuration(build: JenkinsBuild): number {
+  const startedAt = timestampMilliseconds(build.timestamp);
+  if (!build.building || startedAt === null) return build.duration;
+  return Math.max(build.duration, Date.now() - startedAt);
+}
+
+function formatElapsed(milliseconds: number | null): string {
+  if (milliseconds === null || !Number.isFinite(milliseconds) || milliseconds < 0) return "—";
+  if (milliseconds < 1_000) return "0s";
+  return formatDuration(milliseconds);
+}
+
+function statusIsRunning(status: string): boolean {
+  return ["RUNNING", "BUILDING", "IN_PROGRESS", "PAUSED_PENDING_INPUT"].includes(status.toUpperCase());
+}
+
+function stageIsRunning(stage: JenkinsPipelineStage): boolean {
+  return statusIsRunning(stage.status);
+}
+
+function stageStatusLabel(status: string): string {
+  switch (status.toUpperCase()) {
+    case "SUCCESS": return "已完成";
+    case "RUNNING":
+    case "BUILDING":
+    case "IN_PROGRESS": return "进行中";
+    case "PAUSED_PENDING_INPUT": return "等待输入";
+    case "FAILED":
+    case "FAILURE": return "失败";
+    case "ABORTED": return "已中止";
+    case "UNSTABLE": return "不稳定";
+    case "SKIPPED_FOR_CONDITIONAL":
+    case "NOT_EXECUTED": return "已跳过";
+    case "QUEUED": return "排队中";
+    default: return status || "未知";
+  }
+}
+
+function stageElapsed(stage: JenkinsPipelineStage): number | null {
+  if (!stageIsRunning(stage)) return stage.duration;
+  const startedAt = timestampMilliseconds(stage.startTime);
+  return startedAt === null ? stage.duration : Math.max(stage.duration, Date.now() - startedAt);
+}
+
+function pipelineStatusClasses(status: string): { dot: string; line: string; text: string } {
+  switch (resultVariant(status)) {
+    case "success": return { dot: "border-success bg-success/15 text-success", line: "bg-success/60", text: "text-success" };
+    case "warning": return { dot: "border-warning bg-warning/15 text-warning", line: "bg-warning/60", text: "text-warning" };
+    case "destructive": return { dot: "border-destructive bg-destructive/15 text-destructive", line: "bg-destructive/60", text: "text-destructive" };
+    default: return { dot: "border-border bg-muted text-muted-foreground", line: "bg-border", text: "text-muted-foreground" };
+  }
+}
+
+function PipelineStageMarker({ status, endpoint }: { status?: string; endpoint?: boolean }) {
+  if (endpoint) {
+    return <span className="size-2.5 rounded-full border border-muted-foreground/30 bg-muted-foreground/60" aria-hidden="true" />;
+  }
+  const value = status ?? "UNKNOWN";
+  const variant = resultVariant(value);
+  const tone = pipelineStatusClasses(value);
+  return (
+    <span className={cn("relative z-[1] grid size-4 place-items-center rounded-full border", tone.dot)} aria-label={stageStatusLabel(value)}>
+      {variant === "success" ? <Check className="size-2.5" aria-hidden="true" /> : statusIsRunning(value) ? <LoaderCircle className="size-2.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : variant === "destructive" ? <CircleAlert className="size-2.5" aria-hidden="true" /> : <span className="size-1 rounded-full bg-current" aria-hidden="true" />}
+    </span>
+  );
+}
+
+function JenkinsPipelineStageOverview({ stages }: { stages: JenkinsPipelineStage[] }) {
+  const points: Array<{ label: string; status?: string; endpoint?: boolean }> = [
+    { label: "Start", endpoint: true },
+    ...stages.map((stage) => ({ label: stage.name, status: stage.status })),
+    { label: "End", endpoint: true },
+  ];
+  return (
+    <div className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain rounded focus-visible:ring-2 focus-visible:ring-ring [scrollbar-width:thin]" role="list" aria-label="Pipeline Stage 概览" tabIndex={0}>
+      <div className="flex w-max min-w-full items-start py-1">
+        {points.map((point, index) => {
+          const incomingTone = pipelineStatusClasses(points[index - 1]?.status ?? point.status ?? "UNKNOWN").line;
+          const outgoingTone = pipelineStatusClasses(point.status ?? points[index + 1]?.status ?? "UNKNOWN").line;
+          return (
+            <div key={`${point.label}-${index}`} className={cn("shrink-0", point.endpoint ? "w-8" : "w-[76px] flex-1")} role="listitem" aria-label={point.status ? `Stage ${point.label}：${stageStatusLabel(point.status)}` : point.label}>
+              <span className="block h-3 truncate px-1 text-center text-[9px] leading-3 text-muted-foreground" title={point.label}>{point.label}</span>
+              <div className="relative mt-1 flex h-4 items-center justify-center">
+                {index > 0 ? <span className={cn("absolute top-1/2 left-0 h-px", point.endpoint ? "right-[calc(50%+5px)]" : "right-[calc(50%+8px)]", incomingTone)} aria-hidden="true" /> : null}
+                {index < points.length - 1 ? <span className={cn("absolute top-1/2 right-0 h-px", point.endpoint ? "left-[calc(50%+5px)]" : "left-[calc(50%+8px)]", outgoingTone)} aria-hidden="true" /> : null}
+                <PipelineStageMarker status={point.status} endpoint={point.endpoint} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function JenkinsStageNodeList({
+  active, api, instanceId, jobName, buildNumber, stageId, stageName, stageStatus, building, expanded, id, panelRef, position, onMouseEnter, onMouseLeave, onResize,
+}: {
+  active: boolean;
+  api: ServiceConsoleApiClient;
+  instanceId: string;
+  jobName: string;
+  buildNumber: number;
+  stageId: string;
+  stageName: string;
+  stageStatus: string;
+  building: boolean;
+  expanded: boolean;
+  id: string;
+  panelRef: { current: HTMLDivElement | null };
+  position: CSSProperties | null;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+  onResize: () => void;
+}) {
+  const reducedMotion = useReducedMotion();
+  const [snapshot, setSnapshot] = useState<JenkinsStageNodes | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [retry, setRetry] = useState(0);
+  useLayoutEffect(() => {
+    if (!expanded) return;
+    const panel = panelRef.current;
+    if (!panel || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(onResize);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [expanded, onResize, panelRef]);
+
+  useEffect(() => {
+    if (!active || !expanded) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const poll = async () => {
+      setLoading(true);
+      try {
+        const result = await api.getJenkinsStageNodes(instanceId, jobName, buildNumber, stageId);
+        if (cancelled) return;
+        setSnapshot(result);
+        setError("");
+      } catch (cause) {
+        if (!cancelled) setError(errorText(cause));
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+          if (building) timer = window.setTimeout(() => void poll(), 4_000);
+        }
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [active, api, instanceId, jobName, buildNumber, stageId, stageStatus, building, expanded, retry]);
+
+  return (
+    <motion.div
+      id={id}
+      ref={panelRef}
+      role="dialog"
+      aria-label={`${stageName} 的 Node 执行步骤`}
+      className="fixed z-50 w-[min(320px,calc(100vw-16px))] max-h-[min(380px,calc(100vh-16px))] overflow-y-auto overscroll-contain rounded-md border border-border/80 bg-popover p-2 text-popover-foreground shadow-xl ring-1 ring-black/10 [scrollbar-width:thin]"
+      initial={false}
+      animate={{ opacity: expanded ? 1 : 0, scale: expanded ? 1 : 0.98, y: expanded ? 0 : -4 }}
+      transition={{ duration: reducedMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}
+      aria-hidden={!expanded}
+      inert={!expanded}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      style={{ ...(position ?? {}), pointerEvents: expanded ? "auto" : "none", visibility: position ? "visible" : "hidden" }}
+    >
+    <div className="min-w-0">
+      <div className="mb-1 flex items-center justify-between gap-2 border-b pb-1.5 text-[9px] text-muted-foreground">
+        <span>执行步骤 · Node{snapshot ? ` (${snapshot.nodes.length})` : ""}</span>
+        {loading ? <LoaderCircle className="size-2.5 animate-spin motion-reduce:animate-none" aria-label="正在读取 Node" /> : null}
+      </div>
+      {error ? (
+        <div className="mb-1.5 text-[9px] text-destructive" role="alert">
+          <p className="[overflow-wrap:anywhere]">节点读取失败：{error}</p>
+          <button type="button" className="mt-0.5 cursor-pointer rounded underline focus-visible:ring-2 focus-visible:ring-ring" disabled={loading} onClick={() => setRetry((value) => value + 1)}>重试节点</button>
+        </div>
+      ) : null}
+      {!snapshot && loading ? <p className="text-[9px] text-muted-foreground">正在读取执行步骤…</p> : null}
+      {snapshot?.nodes.length ? (
+        <ol className="relative min-w-0" aria-label="Node 执行步骤">
+          {snapshot.nodes.map((node, index) => {
+            const tone = pipelineStatusClasses(node.status);
+            const running = stageIsRunning(node);
+            const variant = resultVariant(node.status);
+            return (
+              <li key={`${node.id}-${index}`} className="relative flex min-w-0 gap-1.5 py-0.5">
+                {index < snapshot.nodes.length - 1 ? <span className={cn("absolute left-1.5 top-2.5 bottom-[-10px] z-0 w-px", tone.line)} data-node-connector="true" aria-hidden="true" /> : null}
+                <span className={cn("relative z-[1] mt-1 grid size-3 shrink-0 place-items-center rounded-full border", tone.dot)} aria-label={`Node ${node.id}：${stageStatusLabel(node.status)}`}>
+                  {variant === "success" ? <Check className="size-2" aria-hidden="true" /> : running ? <LoaderCircle className="size-2 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : variant === "destructive" ? <CircleAlert className="size-2" aria-hidden="true" /> : <span className="size-1 rounded-full bg-current" aria-hidden="true" />}
+                </span>
+                <div className="min-w-0 flex-1 rounded px-1 py-0.5">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <p className="min-w-0 flex-1 truncate text-[10px] leading-tight" title={node.name}>{node.name}</p>
+                    <span className={cn("shrink-0 text-[8px] font-medium", tone.text)}>{stageStatusLabel(node.status)}</span>
+                  </div>
+                  <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[8px] text-muted-foreground">
+                    <span className="font-mono tabular-nums">{formatElapsed(stageElapsed(node))}</span>
+                    <span className="ml-auto truncate" title={`Node #${node.id}`}>#{node.id}</span>
+                  </div>
+                  {node.error ? <p className="mt-0.5 text-[9px] leading-relaxed whitespace-pre-wrap text-destructive [overflow-wrap:anywhere]">{node.error}</p> : null}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      ) : snapshot && !error ? (
+        <p className="text-[9px] text-muted-foreground">{snapshot.available ? "该阶段尚未提供 Node 执行步骤。" : "该阶段的 Node API 未开放；阶段状态与耗时仍可查看。"}</p>
+      ) : null}
+    </div>
+    </motion.div>
+  );
+}
+
+function JenkinsStageCard({ stage, index, ...context }: {
+  stage: JenkinsPipelineStage;
+  index: number;
+  active: boolean;
+  api: ServiceConsoleApiClient;
+  instanceId: string;
+  jobName: string;
+  buildNumber: number;
+  building: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [nodesMounted, setNodesMounted] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const [position, setPosition] = useState<CSSProperties | null>(null);
+  const nodesId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const closeTimerRef = useRef<number | null>(null);
+  const variant = resultVariant(stage.status);
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+  const updatePosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    const panel = panelRef.current;
+    if (!trigger || !panel) return;
+    const triggerRect = trigger.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const padding = 8;
+    const panelWidth = panelRect.width || Math.min(320, Math.max(0, window.innerWidth - padding * 2));
+    const panelHeight = panelRect.height || 260;
+    const left = Math.min(Math.max(padding, triggerRect.left), Math.max(padding, window.innerWidth - panelWidth - padding));
+    const below = triggerRect.bottom + 6;
+    const above = triggerRect.top - panelHeight - 6;
+    const top = below + panelHeight <= window.innerHeight - padding || above < padding ? Math.max(padding, below) : above;
+    setPosition({ left, top });
+  }, []);
+  const openNodes = useCallback((pin = false) => {
+    clearCloseTimer();
+    setNodesMounted(true);
+    setExpanded(true);
+    if (pin) setPinned(true);
+  }, [clearCloseTimer]);
+  const scheduleClose = useCallback(() => {
+    clearCloseTimer();
+    if (pinned) return;
+    closeTimerRef.current = window.setTimeout(() => {
+      setExpanded(false);
+      setPinned(false);
+      closeTimerRef.current = null;
+    }, 140);
+  }, [clearCloseTimer, pinned]);
+  const toggleNodes = useCallback(() => {
+    clearCloseTimer();
+    if (expanded && pinned) {
+      setExpanded(false);
+      setPinned(false);
+      return;
+    }
+    openNodes(true);
+  }, [clearCloseTimer, expanded, openNodes, pinned]);
+  useLayoutEffect(() => {
+    if (!nodesMounted) return;
+    updatePosition();
+  }, [expanded, nodesMounted, updatePosition]);
+  useEffect(() => {
+    if (!expanded) return;
+    const closeIfOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (triggerRef.current?.contains(target) || panelRef.current?.contains(target))) return;
+      clearCloseTimer();
+      setExpanded(false);
+      setPinned(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setExpanded(false);
+      setPinned(false);
+    };
+    const reposition = () => updatePosition();
+    document.addEventListener("pointerdown", closeIfOutside, true);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeIfOutside, true);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [clearCloseTimer, expanded, updatePosition]);
+  useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
+  return (
+    <motion.div
+      layout="position"
+      transition={{ layout: { duration: 0.18, ease: [0.22, 1, 0.36, 1] } }}
+      className={cn("min-w-0 rounded border bg-card", stageIsRunning(stage) && "border-warning/50", variant === "destructive" && "border-destructive/40")}
+      role="listitem"
+    >
+      <button
+        type="button"
+        ref={triggerRef}
+        className="block min-h-12 w-full min-w-0 cursor-pointer rounded px-2 py-1.5 text-left transition-colors hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        aria-expanded={expanded}
+        aria-controls={nodesId}
+        aria-haspopup="dialog"
+        aria-label={`${expanded ? "收起" : "查看"} ${stage.name} 的 Node`}
+        onClick={toggleNodes}
+        onFocus={() => openNodes()}
+        onMouseEnter={() => openNodes()}
+        onMouseLeave={scheduleClose}
+      >
+        <span className="flex min-w-0 items-start gap-2">
+          <span className={cn(
+            "mt-0.5 grid size-3.5 shrink-0 place-items-center rounded-full border",
+            variant === "success" && "border-success/40 bg-success/15 text-success",
+            variant === "warning" && "border-warning/40 bg-warning/15 text-warning",
+            variant === "destructive" && "border-destructive/40 bg-destructive/15 text-destructive",
+            variant === "muted" && "border-border bg-muted text-muted-foreground",
+          )}>
+            {variant === "success" ? <Check className="size-2" aria-hidden="true" /> : stageIsRunning(stage) ? <LoaderCircle className="size-2 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <span className="text-[7px]">{index + 1}</span>}
+          </span>
+          <span className="min-w-0 flex-1 text-[10px] font-medium leading-tight [overflow-wrap:anywhere]">{stage.name}</span>
+        </span>
+        <span className="mt-1 flex flex-wrap items-center gap-1 text-[8px] text-muted-foreground">
+          <span>{index + 1}.</span>
+          <Badge className="px-1 py-0 text-[8px]" variant={variant}>{stageStatusLabel(stage.status)}</Badge>
+          <span className="font-mono tabular-nums">{formatElapsed(stageElapsed(stage))}</span>
+          <span className="ml-auto inline-flex items-center gap-0.5">Node<ChevronDown className={cn("size-2.5 transition-transform motion-reduce:transition-none", expanded && "rotate-180")} aria-hidden="true" /></span>
+        </span>
+      </button>
+      {nodesMounted && typeof document !== "undefined" ? createPortal(
+        <JenkinsStageNodeList
+          {...context}
+          id={nodesId}
+          expanded={expanded}
+          stageId={stage.id}
+          stageName={stage.name}
+          stageStatus={stage.status}
+          panelRef={panelRef}
+          position={position}
+          onMouseEnter={clearCloseTimer}
+          onMouseLeave={scheduleClose}
+          onResize={updatePosition}
+        />,
+        document.body,
+      ) : null}
+    </motion.div>
+  );
 }
 
 function useNarrowJenkinsLayout(): boolean {
@@ -300,7 +687,7 @@ function ParameterChoiceSelect({
         if (selected !== undefined) onValueChange(selected);
       }}
     >
-      <SelectTrigger className="h-8 text-xs" aria-label={`参数 ${name}`}>
+      <SelectTrigger className="h-8 min-w-0 text-xs" aria-label={`参数 ${name}`}>
         <SelectValue placeholder="请选择" />
       </SelectTrigger>
       <SelectContent>
@@ -337,9 +724,12 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const [buildsLoading, setBuildsLoading] = useState(false);
   const [selectedBuildNumber, setSelectedBuildNumber] = useState<number | null>(null);
   const [selectedBuild, setSelectedBuild] = useState<JenkinsBuild | null>(null);
+  const [buildStages, setBuildStages] = useState<JenkinsBuildStages>({ available: false, stages: [] });
+  const [buildStagesLoading, setBuildStagesLoading] = useState(false);
+  const [buildStagesError, setBuildStagesError] = useState("");
+  const [stagesCollapsed, setStagesCollapsed] = useState(true);
   const [queue, setQueue] = useState<JenkinsQueueItem[]>([]);
   const [queueLoading, setQueueLoading] = useState(false);
-  const [activityTab, setActivityTab] = useState<ActivityTab>("builds");
   const [operationRevision, setOperationRevision] = useState(0);
   const [busyAction, setBusyAction] = useState("");
   const [preparingBuild, setPreparingBuild] = useState(false);
@@ -366,6 +756,9 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const jobRequestRef = useRef(0);
   const buildRequestRef = useRef(0);
   const queueRequestRef = useRef(0);
+  const stageRequestRef = useRef(0);
+  const stageSelectionRef = useRef("");
+  const pendingBuildRef = useRef<{ instanceId: string; jobName: string; queueId: number } | null>(null);
   const prepareRequestRef = useRef(0);
   const reactiveRequestRef = useRef(0);
   const parameterValuesRef = useRef(parameterValues);
@@ -422,6 +815,43 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       : null,
     [activeInstance, selectedBuild],
   );
+  const runningStages = useMemo(
+    () => buildStages.stages.filter(stageIsRunning),
+    [buildStages.stages],
+  );
+  const pipelineStageSummary = buildStagesError
+    ? "阶段数据读取失败"
+    : buildStagesLoading && !buildStages.stages.length
+      ? "正在读取阶段数据"
+      : !buildStages.available
+        ? "阶段数据不可用"
+        : runningStages.length
+          ? runningStages.length === 1
+            ? `当前 ${buildStages.stages.indexOf(runningStages[0]!) + 1}/${buildStages.stages.length}：${runningStages[0]!.name}`
+            : `进行中：${runningStages.map((stage) => stage.name).join("、")}`
+          : buildStages.stages.length && selectedBuild?.building
+            ? "当前：等待下一阶段"
+            : buildStages.stages.length
+              ? "流程已结束"
+              : selectedBuild?.building
+                ? "等待首个 Stage"
+                : "流程无 Stage";
+  const pipelineJob = jobDetail ? isPipelineJob(jobDetail) : false;
+  const activityQueue = useMemo(() => {
+    const currentJobName = jobDetail?.fullName || selectedJobName;
+    const currentShortName = jobDetail?.name || currentJobName.split("/").at(-1) || currentJobName;
+    if (!currentJobName) return [];
+    return queue.filter((item) => item.taskFullName
+      ? item.taskFullName === currentJobName
+      : item.taskName === currentShortName);
+  }, [jobDetail?.fullName, jobDetail?.name, queue, selectedJobName]);
+  const activityQueueItems = useMemo(() => (
+    activityQueue.filter((item) => (
+      item.executableNumber === null
+      || !builds.some((build) => build.number === item.executableNumber)
+    ))
+  ), [activityQueue, builds]);
+  const activityCount = builds.length + activityQueueItems.length;
 
   const reportPollingError = useCallback((key: string, title: string, error: unknown) => {
     if (pollingErrorsRef.current.has(key)) return;
@@ -481,7 +911,11 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     setBuilds([]);
     setSelectedBuildNumber(null);
     setSelectedBuild(null);
+    stageRequestRef.current += 1;
+    setBuildStages({ available: false, stages: [] });
+    setBuildStagesError("");
     setQueue([]);
+    pendingBuildRef.current = null;
     setLogText("");
     setLogError("");
     setMobilePane("jobs");
@@ -570,6 +1004,9 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         setBuilds([]);
         setSelectedBuildNumber(null);
         setSelectedBuild(null);
+        stageRequestRef.current += 1;
+        setBuildStages({ available: false, stages: [] });
+        setBuildStagesError("");
         selectedJobNameRef.current = nextName;
         setSelectedJobName(nextName);
       }
@@ -606,11 +1043,15 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     const instanceId = activeInstance?.id;
     const jobName = selectedJobName;
     if (!active || !instanceId || !jobName) {
+      pendingBuildRef.current = null;
       setJobDetail(null);
       setTriggerJob(null);
       setTriggerOpen(false);
       setBuilds([]);
       setSelectedBuildNumber(null);
+      stageRequestRef.current += 1;
+      setBuildStages({ available: false, stages: [] });
+      setBuildStagesError("");
       return;
     }
     const requestId = ++jobRequestRef.current;
@@ -628,8 +1069,17 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       setJobDetail(detail);
       setBuilds(nextBuilds);
       recoverPollingError(errorKey);
+      const pendingBuild = pendingBuildRef.current;
+      const trackedBuild = pendingBuild
+        && pendingBuild.instanceId === instanceId
+        && pendingBuild.jobName === jobName
+        ? nextBuilds.find((build) => build.queueId === pendingBuild.queueId)
+        : undefined;
+      if (trackedBuild) pendingBuildRef.current = null;
       setSelectedBuildNumber((current) => (
-        current !== null && nextBuilds.some((build) => build.number === current)
+        trackedBuild
+          ? trackedBuild.number
+          : current !== null && nextBuilds.some((build) => build.number === current)
           ? current
           : nextBuilds[0]?.number ?? null
       ));
@@ -671,10 +1121,55 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   }, [active, activeInstance?.id, api, operationRevision, recoverPollingError, refreshSignal, reportPollingError, selectedBuildNumber, selectedJobName]);
 
   useEffect(() => {
-    if (!active || (!builds.some((build) => build.building) && !queue.length)) return;
+    const instanceId = activeInstance?.id;
+    const jobName = selectedJobName;
+    const buildNumber = selectedBuildNumber;
+    setBuildStagesError("");
+    if (!active || !instanceId || !jobName || buildNumber === null || !pipelineJob) {
+      stageRequestRef.current += 1;
+      stageSelectionRef.current = "";
+      setBuildStagesLoading(false);
+      setBuildStages({ available: false, stages: [] });
+      return;
+    }
+    const selectionKey = `${instanceId}:${jobName}:${buildNumber}`;
+    if (stageSelectionRef.current !== selectionKey) {
+      stageSelectionRef.current = selectionKey;
+      setBuildStages({ available: false, stages: [] });
+    }
+    const requestId = ++stageRequestRef.current;
+    const errorKey = `stages:${instanceId}:${jobName}:${buildNumber}`;
+    setBuildStagesLoading(true);
+    void api.getJenkinsBuildStages(instanceId, jobName, buildNumber).then((nextStages) => {
+      if (
+        requestId !== stageRequestRef.current
+        || activeInstanceIdRef.current !== instanceId
+        || selectedJobNameRef.current !== jobName
+        || selectedBuildNumber !== buildNumber
+      ) return;
+      setBuildStages(nextStages);
+      setBuildStagesError("");
+      recoverPollingError(errorKey);
+    }).catch((error: unknown) => {
+      if (
+        requestId === stageRequestRef.current
+        && activeInstanceIdRef.current === instanceId
+        && selectedJobNameRef.current === jobName
+        && selectedBuildNumber === buildNumber
+      ) {
+        setBuildStagesError(errorText(error));
+        reportPollingError(errorKey, "读取 Jenkins Pipeline 阶段失败", error);
+      }
+    }).finally(() => {
+      if (requestId === stageRequestRef.current) setBuildStagesLoading(false);
+    });
+  }, [active, activeInstance?.id, api, operationRevision, pipelineJob, recoverPollingError, refreshSignal, reportPollingError, selectedBuildNumber, selectedJobName]);
+
+  useEffect(() => {
+    if (!active || (!builds.some((build) => build.building) && !queue.length && pendingBuildRef.current === null)) return;
     const timer = window.setInterval(() => setOperationRevision((value) => value + 1), 4_000);
     return () => window.clearInterval(timer);
-  }, [active, builds, queue.length]);
+  }, [active, builds, operationRevision, queue.length]);
 
   useEffect(() => {
     const instanceId = activeInstance?.id;
@@ -785,6 +1280,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
 
   const selectJob = useCallback((job: JenkinsJob) => {
     if (isFolder(job)) {
+      pendingBuildRef.current = null;
       jobsRequestRef.current += 1;
       prepareRequestRef.current += 1;
       setPreparingBuild(false);
@@ -796,6 +1292,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       return;
     }
     if (job.fullName !== selectedJobNameRef.current) {
+      pendingBuildRef.current = null;
       jobRequestRef.current += 1;
       buildRequestRef.current += 1;
       prepareRequestRef.current += 1;
@@ -806,6 +1303,9 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       setBuilds([]);
       setSelectedBuildNumber(null);
       setSelectedBuild(null);
+      stageRequestRef.current += 1;
+      setBuildStages({ available: false, stages: [] });
+      setBuildStagesError("");
       setLogText("");
       setLogError("");
     }
@@ -936,9 +1436,11 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     setBusyAction("trigger");
     try {
       const queued = await api.triggerJenkinsBuild(instanceId, job.fullName, parameters);
+      if (queued.id !== null) {
+        pendingBuildRef.current = { instanceId, jobName: job.fullName, queueId: queued.id };
+      }
       setTriggerOpen(false);
       setTriggerJob(null);
-      setActivityTab("queue");
       setMobilePane("activity");
       onSuccess("Jenkins 构建已提交", queued.id === null ? job.fullName : `${job.fullName} · 队列 #${queued.id}`);
       setOperationRevision((value) => value + 1);
@@ -972,6 +1474,9 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
     const item = cancelTarget;
     setCancelTarget(null);
     if (!instanceId || !item) return;
+    if (pendingBuildRef.current?.instanceId === instanceId && pendingBuildRef.current.queueId === item.id) {
+      pendingBuildRef.current = null;
+    }
     setBusyAction(`cancel:${item.id}`);
     try {
       await api.cancelJenkinsQueueItem(instanceId, item.id);
@@ -1077,11 +1582,11 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   );
 
   const activityPanel = (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r bg-card" aria-label="Jenkins 构建与队列">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r bg-card" aria-label="Jenkins 活动任务">
       <header className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b px-3 py-1.5">
         <div className="min-w-0">
           <h2 className="truncate text-[12px] font-semibold">{jobDetail?.fullName || selectedJobName || "选择一个任务"}</h2>
-          <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{jobDetail ? `${jobDetail.status} · ${editableJobParameters.length ? `${editableJobParameters.length} 个参数` : "无可填写参数"}` : "查看构建历史和队列"}</p>
+          <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{jobDetail ? `${pipelineJob ? "Pipeline · 选择构建查看 Stage · " : jobDetail.kind === "freestyle" ? "Freestyle · 无结构化 Stage · " : ""}${jobDetail.status} · ${editableJobParameters.length ? `${editableJobParameters.length} 个参数` : "无可填写参数"}` : "查看当前构建状态、排队任务和构建日志"}</p>
         </div>
         <Button
           className="h-7 px-2 text-[10px]"
@@ -1097,13 +1602,26 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
           {unsupportedJobMessage}，请在 Jenkins 页面运行该任务。
         </div>
       ) : null}
-      <div className="flex h-9 shrink-0 items-end gap-1 border-b px-2" role="tablist" aria-label="Jenkins 活动">
-        <button className={cn("h-8 border-b-2 border-transparent px-2 text-[10px] text-muted-foreground", activityTab === "builds" && "border-primary font-semibold text-foreground")} type="button" role="tab" aria-selected={activityTab === "builds"} onClick={() => setActivityTab("builds")}><History className="mr-1 inline size-3" />构建 {builds.length}</button>
-        <button className={cn("h-8 border-b-2 border-transparent px-2 text-[10px] text-muted-foreground", activityTab === "queue" && "border-primary font-semibold text-foreground")} type="button" role="tab" aria-selected={activityTab === "queue"} onClick={() => setActivityTab("queue")}><ListTree className="mr-1 inline size-3" />队列 {queue.length}</button>
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b px-3" aria-label="Jenkins 活动统计">
+        <Workflow className="size-3 text-primary" aria-hidden="true" />
+        <span className="text-[10px] font-semibold">活动任务 {activityCount}</span>
+        {activityQueueItems.length ? <Badge className="h-4 px-1 text-[8px]" variant="warning">排队 {activityQueueItems.length}</Badge> : null}
       </div>
-      {activityTab === "builds" ? (
-        <div className="no-visible-scrollbar min-h-0 flex-1 overflow-auto" role="tabpanel" aria-label="构建历史" aria-busy={buildsLoading}>
-          {builds.map((build) => (
+      <div className="no-visible-scrollbar min-h-0 flex-1 overflow-auto" role="list" aria-label="Jenkins 活动任务列表" aria-busy={buildsLoading || queueLoading}>
+        {activityQueueItems.map((item) => (
+          <div key={`queue-${item.id}`} className="flex min-h-12 items-center gap-2 border-b px-3 py-1.5">
+            <span className={cn("size-2 shrink-0 rounded-full bg-warning", item.stuck && "bg-destructive")} />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2">
+                <strong className="truncate text-[10px]">{item.taskFullName || item.taskName || `队列 #${item.id}`}</strong>
+                <Badge className="h-4 shrink-0 px-1 text-[8px]" variant={item.executableNumber === null ? "warning" : "muted"}>{item.executableNumber === null ? "排队中" : "准备执行"}</Badge>
+              </span>
+              <span className="mt-0.5 block truncate text-[9px] text-muted-foreground">队列 #{item.id} · {item.executableNumber === null ? (item.why || (item.blocked ? "等待资源" : "等待执行")) : `即将构建 #${item.executableNumber}`}</span>
+            </span>
+            {item.executableNumber === null ? <Button className="h-6 px-1.5 text-[9px] text-destructive hover:text-destructive" variant="ghost" size="sm" disabled={Boolean(busyAction)} onClick={() => setCancelTarget(item)}>取消</Button> : null}
+          </div>
+        ))}
+        {builds.map((build) => (
             <div key={build.number} className={cn("flex min-h-12 w-full items-center border-b hover:bg-accent/40", selectedBuildNumber === build.number && "bg-accent/60")}>
               <button className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/80" type="button" onClick={() => {
                 if (build.number !== selectedBuildNumber) {
@@ -1116,31 +1634,15 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
                 <span className={cn("size-2 shrink-0 rounded-full bg-muted-foreground", resultVariant(build.status) === "success" && "bg-success", resultVariant(build.status) === "warning" && "animate-pulse bg-warning", resultVariant(build.status) === "destructive" && "bg-destructive")} />
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2"><strong className="text-[11px]">#{build.number}</strong><Badge className="h-4 px-1 text-[8px]" variant={resultVariant(build.status)}>{build.status}</Badge></span>
-                  <span className="mt-0.5 block truncate text-[9px] text-muted-foreground">{formatTimestamp(build.timestamp)} · {formatDuration(build.duration)}</span>
+                  <span className="mt-0.5 block truncate text-[9px] text-muted-foreground">{formatTimestamp(build.timestamp)} · {formatElapsed(liveBuildDuration(build))}</span>
                 </span>
               </button>
               {build.building ? <Button className="mr-2 size-6 p-0 text-destructive hover:text-destructive" variant="ghost" size="icon-sm" aria-label={`停止构建 #${build.number}`} disabled={Boolean(busyAction)} onClick={() => setStopTarget(build)}><Square className="size-3 fill-current" /></Button> : null}
             </div>
           ))}
-          {buildsLoading ? <p className="flex items-center justify-center gap-2 py-8 text-[10px] text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />读取构建历史</p> : null}
-          {!buildsLoading && selectedJobName && !builds.length ? <p className="px-3 py-8 text-center text-[10px] text-muted-foreground">暂无构建记录</p> : null}
-        </div>
-      ) : (
-        <div className="no-visible-scrollbar min-h-0 flex-1 overflow-auto" role="tabpanel" aria-label="构建队列" aria-busy={queueLoading}>
-          {queue.map((item) => (
-            <div key={item.id} className="flex min-h-12 items-center gap-2 border-b px-3 py-1.5">
-              <span className={cn("size-2 shrink-0 rounded-full bg-warning", item.stuck && "bg-destructive")} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[10px] font-semibold">{item.taskFullName || item.taskName || `队列 #${item.id}`}</span>
-                <span className="mt-0.5 block truncate text-[9px] text-muted-foreground">#{item.id} · {item.why || (item.blocked ? "等待资源" : "等待执行")}</span>
-              </span>
-              {!item.executableNumber ? <Button className="h-6 px-1.5 text-[9px] text-destructive hover:text-destructive" variant="ghost" size="sm" disabled={Boolean(busyAction)} onClick={() => setCancelTarget(item)}>取消</Button> : null}
-            </div>
-          ))}
-          {queueLoading ? <p className="flex items-center justify-center gap-2 py-8 text-[10px] text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />读取队列</p> : null}
-          {!queueLoading && !queue.length ? <p className="px-3 py-8 text-center text-[10px] text-muted-foreground">队列为空</p> : null}
-        </div>
-      )}
+        {buildsLoading || queueLoading ? <p className="flex items-center justify-center gap-2 py-8 text-[10px] text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />正在同步活动任务</p> : null}
+        {!buildsLoading && !queueLoading && selectedJobName && !activityQueueItems.length && !builds.length ? <p className="px-3 py-8 text-center text-[10px] text-muted-foreground">暂无构建或排队任务</p> : null}
+      </div>
     </section>
   );
 
@@ -1149,7 +1651,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       <header className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b px-3 py-1.5">
         <div className="min-w-0">
           <h2 className="truncate text-[12px] font-semibold">{selectedBuild ? selectedBuild.fullDisplayName || `${selectedJobName} #${selectedBuild.number}` : "构建日志"}</h2>
-          <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{selectedBuild ? `${selectedBuild.status} · ${formatTimestamp(selectedBuild.timestamp)} · ${formatDuration(selectedBuild.duration)}` : "从构建历史选择一条记录"}</p>
+          <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{selectedBuild ? `${selectedBuild.status} · ${formatTimestamp(selectedBuild.timestamp)} · ${formatElapsed(liveBuildDuration(selectedBuild))}` : "从构建历史选择一条记录"}</p>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {logTruncated ? <Badge className="h-4 px-1 text-[8px]" variant="warning">已截断</Badge> : null}
@@ -1158,6 +1660,46 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         </div>
       </header>
       {logError ? <div className="flex h-8 shrink-0 items-center gap-1.5 border-b border-destructive/20 bg-destructive/5 px-3 text-[9px] text-destructive" role="alert"><CircleAlert className="size-3" />{logError}</div> : null}
+      {selectedBuildNumber !== null && pipelineJob ? (
+        <section className="flex max-h-[45%] min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-b bg-muted/10" aria-label="Jenkins Pipeline 阶段" aria-busy={buildStagesLoading}>
+          <div className={cn("flex min-w-0 shrink-0 items-center gap-x-2 px-3 text-[10px]", stagesCollapsed ? "flex-nowrap py-1" : "flex-wrap gap-y-1 py-2")}>
+            <button type="button" className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded py-1 font-semibold whitespace-nowrap focus-visible:ring-2 focus-visible:ring-ring" aria-label={stagesCollapsed ? "展开 Pipeline 阶段" : "收起 Pipeline 阶段"} aria-expanded={!stagesCollapsed} title={stagesCollapsed ? pipelineStageSummary : undefined} onClick={() => setStagesCollapsed((value) => !value)}>
+              <Workflow className="size-3 text-primary" aria-hidden="true" />Pipeline 阶段
+              <ChevronDown className={cn("size-3 transition-transform motion-reduce:transition-none", stagesCollapsed && "-rotate-90")} aria-hidden="true" />
+            </button>
+            {stagesCollapsed && buildStages.stages.length > 0 ? <JenkinsPipelineStageOverview stages={buildStages.stages} /> : null}
+            {!stagesCollapsed && selectedBuild ? <span className="ml-auto text-muted-foreground">总耗时 {formatElapsed(liveBuildDuration(selectedBuild))}</span> : null}
+            {!stagesCollapsed || !buildStages.stages.length ? <p className={cn("text-muted-foreground", stagesCollapsed ? "min-w-0 flex-1 truncate" : "basis-full [overflow-wrap:anywhere]")}>{pipelineStageSummary}</p> : null}
+          </div>
+          {!stagesCollapsed ? <div className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain px-3 pb-2 [scrollbar-width:thin]">
+            {buildStagesError ? (
+              <p className="flex items-center gap-1.5 text-[9px] text-destructive" role="alert"><CircleAlert className="size-3" />{buildStagesError}</p>
+            ) : buildStagesLoading && !buildStages.stages.length ? (
+              <p className="flex items-center gap-1.5 text-[9px] text-muted-foreground"><LoaderCircle className="size-3 animate-spin" />正在读取阶段进度</p>
+            ) : buildStages.stages.length ? (
+              <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,220px),1fr))] items-start gap-1.5" role="list" aria-label="Pipeline 阶段列表">
+                {buildStages.stages.map((stage, index) => (
+                  <JenkinsStageCard
+                    key={`${activeInstanceId}:${selectedJobName}:${selectedBuildNumber}:${stage.id}:${index}`}
+                    stage={stage}
+                    index={index}
+                    active={active}
+                    api={api}
+                    instanceId={activeInstanceId}
+                    jobName={selectedJobName}
+                    buildNumber={selectedBuildNumber}
+                    building={selectedBuild?.building ?? false}
+                  />
+                ))}
+              </div>
+            ) : !buildStages.available ? (
+              <p className="flex items-center gap-1.5 text-[9px] text-muted-foreground"><CircleAlert className="size-3 shrink-0" />总耗时已由构建接口读取；Jenkins Stage API（/wfapi/describe）未开放，请启用 Pipeline: REST API 插件。</p>
+            ) : (
+              <p className="text-[9px] text-muted-foreground">该 Pipeline 尚未生成可显示的 Stage。</p>
+            )}
+          </div> : null}
+        </section>
+      ) : null}
       {selectedBuildNumber !== null ? (
         <XtermLogViewer active={active && (!narrow || mobilePane === "logs")} appendRevision={logAppend.revision} appendText={logAppend.text} ariaLabel={`Jenkins 构建 #${selectedBuildNumber} 日志`} onCopyError={(message) => onError("复制 Jenkins 日志失败", message)} onCopySuccess={(message) => onSuccess("Jenkins 日志已复制", message)} resetKey={`${activeInstanceId}:${selectedJobName}:${selectedBuildNumber}`} text={logText} theme={theme} />
       ) : (
@@ -1172,7 +1714,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         <nav className="grid h-9 shrink-0 grid-cols-3 border-b bg-card p-1" aria-label="Jenkins 移动面板">
           {([
             ["jobs", "实例 / Job"],
-            ["activity", "构建 / 队列"],
+            ["activity", "活动任务"],
             ["logs", "详情 / 日志"],
           ] as const).map(([id, label]) => <button key={id} type="button" className={cn("rounded-md text-[10px] text-muted-foreground", mobilePane === id && "bg-accent font-semibold text-foreground")} aria-current={mobilePane === id ? "page" : undefined} onClick={() => setMobilePane(id)}>{label}</button>)}
         </nav>
@@ -1210,21 +1752,25 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
         setTriggerOpen(open);
         if (!open) setTriggerJob(null);
       }}>
-        <DialogContent className="max-w-md gap-3 p-5">
-          <DialogHeader><DialogTitle className="text-base">运行“{triggerJob?.fullName}”</DialogTitle><DialogDescription className="text-xs">提交后任务会进入当前 Jenkins 实例的构建队列。</DialogDescription></DialogHeader>
-          <div className="grid max-h-[50vh] gap-3 overflow-auto">
+        <DialogContent className="flex max-h-[calc(100dvh-1rem)] w-[calc(100%-1rem)] max-w-xl min-w-0 flex-col gap-3 overflow-hidden p-5">
+          <DialogHeader className="min-w-0 shrink-0 pr-7"><DialogTitle className="truncate text-base" title={`运行“${triggerJob?.fullName ?? ""}”`}>运行“{triggerJob?.fullName}”</DialogTitle><DialogDescription className="text-xs">提交后任务会进入当前 Jenkins 实例的构建队列。</DialogDescription></DialogHeader>
+          <div
+            className="no-visible-scrollbar grid min-h-0 min-w-0 max-h-[calc(100dvh-10rem)] gap-3 overflow-x-hidden overflow-y-auto overscroll-contain"
+            role="region"
+            aria-label="构建参数"
+          >
             {triggerJob?.parameters.map((parameter) => {
               if (parameter.type === "hidden") return null;
               if (parameter.type === "separator") return (
-                <div key={parameter.name} className="grid gap-1 pt-1" role="group" aria-label={parameter.header || parameter.description || "参数分隔"}>
-                  {parameter.header || parameter.description ? <span className="text-[10px] font-semibold text-muted-foreground">{parameter.header || parameter.description}</span> : null}
+                <div key={parameter.name} className="grid min-w-0 gap-1 pt-1" role="group" aria-label={parameter.header || parameter.description || "参数分隔"}>
+                  {parameter.header || parameter.description ? <span className="min-w-0 break-words text-[10px] font-semibold text-muted-foreground">{parameter.header || parameter.description}</span> : null}
                   <Separator />
                 </div>
               );
               const passwordRequired = parameter.type === "password" && Boolean(triggerJob?.requiresExplicitPassword);
               return (
-                <label key={parameter.name} className="grid gap-1 text-[11px] font-medium">
-                  <span>{parameter.name}<span className="ml-1 font-normal text-muted-foreground">{parameter.description}</span></span>
+                <label key={parameter.name} className="grid min-w-0 gap-1 text-[11px] font-medium">
+                  <span className="min-w-0 break-words">{parameter.name}<span className="ml-1 font-normal text-muted-foreground">{parameter.description}</span></span>
                   {parameter.type === "choice" && parameter.multiple && parameterOptionsState(parameter) === "ready" && parameter.choices.length ? (
                     <ParameterMultiSelect
                       choices={parameter.choices}
@@ -1255,7 +1801,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
                       {parameter.choices.length ? parameter.choices.join("、") : (resolvingParameters ? "正在刷新…" : "暂无响应式内容")}
                     </span>
                   ) : parameter.type === "boolean" ? (
-                    <span className="flex h-8 items-center gap-2 rounded-md border px-2"><Switch checked={Boolean(parameterValues[parameter.name])} onCheckedChange={(checked) => setParameterValues((current) => ({ ...current, [parameter.name]: checked }))} aria-label={`参数 ${parameter.name}`} /><span className="text-[10px] text-muted-foreground">{parameterValues[parameter.name] ? "true" : "false"}</span></span>
+                    <span className="flex h-8 min-w-0 items-center gap-2 rounded-md border px-2"><Switch checked={Boolean(parameterValues[parameter.name])} onCheckedChange={(checked) => setParameterValues((current) => ({ ...current, [parameter.name]: checked }))} aria-label={`参数 ${parameter.name}`} /><span className="text-[10px] text-muted-foreground">{parameterValues[parameter.name] ? "true" : "false"}</span></span>
                   ) : parameter.type === "file" ? (
                     <span className="rounded-md border border-warning/25 bg-warning/5 px-2 py-2 text-[10px] font-normal text-warning">文件上传参数暂不支持，请在 Jenkins 页面运行。</span>
                   ) : parameter.type === "unsupported" ? (
@@ -1278,7 +1824,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
             })}
             {!editableTriggerParameters.length ? <p className="rounded-lg border bg-muted/25 p-3 text-xs text-muted-foreground">该任务没有需要填写的参数，将使用 Jenkins 中保存的配置运行。</p> : null}
           </div>
-          <DialogFooter><Button variant="outline" size="sm" disabled={Boolean(busyAction)} onClick={() => { reactiveRequestRef.current += 1; setResolvingParameters(false); setTriggerOpen(false); setTriggerJob(null); }}>取消</Button><Button size="sm" disabled={Boolean(busyAction) || resolvingParameters || Boolean(triggerUnsupportedMessage) || triggerInvalidChoiceParameters.length > 0 || triggerMissingPasswordParameters.length > 0} onClick={() => void confirmBuild()}>{busyAction === "trigger" || resolvingParameters ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}确认运行</Button></DialogFooter>
+          <DialogFooter className="shrink-0"><Button variant="outline" size="sm" disabled={Boolean(busyAction)} onClick={() => { reactiveRequestRef.current += 1; setResolvingParameters(false); setTriggerOpen(false); setTriggerJob(null); }}>取消</Button><Button size="sm" disabled={Boolean(busyAction) || resolvingParameters || Boolean(triggerUnsupportedMessage) || triggerInvalidChoiceParameters.length > 0 || triggerMissingPasswordParameters.length > 0} onClick={() => void confirmBuild()}>{busyAction === "trigger" || resolvingParameters ? <LoaderCircle className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}确认运行</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

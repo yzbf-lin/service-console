@@ -1,2 +1,2 @@
-:HL["/static/_next/static/css/1000939d40e3bb3d.css","style"]
+:HL["/static/_next/static/css/11241ae6ed32200b.css","style"]
 0:{"tree":{"name":"","param":null,"prefetchHints":4176,"slots":{"children":{"name":"_not-found","param":null,"prefetchHints":4192,"slots":{"children":{"name":"__PAGE__","param":null,"prefetchHints":4256,"slots":null}}}}},"staleTime":300,"buildId":"service-console-static"}

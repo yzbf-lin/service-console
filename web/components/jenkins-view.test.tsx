@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { JenkinsView } from "@/components/jenkins-view";
 import type { ServiceConsoleApiClient } from "@/lib/api-client";
-import type { JenkinsBuild, JenkinsInstance, JenkinsJob, JenkinsJobParameter, JenkinsQueueItem } from "@/lib/types";
+import type { JenkinsBuild, JenkinsInstance, JenkinsJob, JenkinsJobParameter, JenkinsQueueItem, JenkinsStageNodes } from "@/lib/types";
 
 vi.mock("@/components/xterm-log-viewer", () => ({
   XtermLogViewer: ({ appendRevision, appendText, text, resetKey }: { appendRevision?: number; appendText?: string; text: string; resetKey: string }) => (
@@ -109,6 +109,8 @@ const mocks = {
   resolveJenkinsJobParameters: vi.fn(),
   listJenkinsBuilds: vi.fn(),
   getJenkinsBuild: vi.fn(),
+  getJenkinsBuildStages: vi.fn(),
+  getJenkinsStageNodes: vi.fn(),
   triggerJenkinsBuild: vi.fn(),
   stopJenkinsBuild: vi.fn(),
   listJenkinsQueue: vi.fn(),
@@ -178,6 +180,8 @@ describe("JenkinsView", () => {
     mocks.resolveJenkinsJobParameters.mockImplementation(async (_id: string, job: string) => jobFixture(job));
     mocks.listJenkinsBuilds.mockResolvedValue([buildFixture()]);
     mocks.getJenkinsBuild.mockResolvedValue(buildFixture());
+    mocks.getJenkinsBuildStages.mockResolvedValue({ available: false, stages: [] });
+    mocks.getJenkinsStageNodes.mockResolvedValue({ available: false, nodes: [] });
     mocks.listJenkinsQueue.mockResolvedValue([]);
     mocks.getJenkinsBuildLog.mockResolvedValue({ job: "Job A", number: 42, offset: 0, nextOffset: 4, text: "done", more: false, complete: true });
     mocks.testJenkinsInstance.mockResolvedValue({ ok: true, version: "2.492", url: instanceA.baseUrl });
@@ -217,6 +221,154 @@ describe("JenkinsView", () => {
     expect(link.getAttribute("href")).toBe(
       "https://public.example.com/jenkins/job/folder/job/app/42/?view=plain#console",
     );
+  });
+
+  it("shows Pipeline stage progress and timing for the selected build", async () => {
+    mocks.listJenkinsBuilds.mockResolvedValue([buildFixture(true)]);
+    mocks.getJenkinsBuild.mockResolvedValue(buildFixture(true));
+    mocks.getJenkinsBuildStages.mockResolvedValue({
+      available: true,
+      stages: [
+        { id: "1", name: "Checkout", status: "SUCCESS", startTime: 1_700_000_000_000, duration: 4_000, pauseDuration: 0 },
+        {
+          id: "2",
+          name: "Build",
+          status: "IN_PROGRESS",
+          startTime: Date.now() - 8_000,
+          duration: 8_000,
+          pauseDuration: 0,
+          nodes: [{ id: "2-1", name: "Shell Script", status: "IN_PROGRESS", startTime: Date.now() - 7_000, duration: 7_000, pauseDuration: 0, error: null }],
+        },
+        { id: "3", name: "Deploy", status: "NOT_EXECUTED", startTime: null, duration: 0, pauseDuration: 0 },
+      ],
+    });
+    mocks.getJenkinsStageNodes.mockResolvedValue({
+      available: true,
+      nodes: [
+        { id: "2-1", name: "Shell Script", status: "IN_PROGRESS", startTime: Date.now() - 7_000, duration: 7_000, pauseDuration: 0, error: null },
+        { id: "2-2", name: "Publish", status: "SUCCESS", startTime: Date.now() - 2_000, duration: 2_000, pauseDuration: 0, error: null },
+      ],
+    });
+    renderView();
+
+    expect(await screen.findByText(/Pipeline · 选择构建查看 Stage/)).toBeTruthy();
+    const panel = await screen.findByRole("region", { name: "Jenkins Pipeline 阶段" });
+    const overview = await within(panel).findByRole("list", { name: "Pipeline Stage 概览" });
+    expect(within(overview).getByText("Start")).toBeTruthy();
+    expect(within(overview).getByText("Checkout")).toBeTruthy();
+    expect(within(overview).getByText("End")).toBeTruthy();
+    const expandButton = within(panel).getByRole("button", { name: "展开 Pipeline 阶段" });
+    expect(overview.parentElement).toBe(expandButton.parentElement);
+    expect(expandButton.nextElementSibling).toBe(overview);
+    expect(overview.parentElement?.classList.contains("flex-nowrap")).toBe(true);
+
+    fireEvent.click(expandButton);
+    await waitFor(() => expect(within(panel).getByText("当前 2/3：Build")).toBeTruthy());
+    expect(within(panel).getByText("Checkout")).toBeTruthy();
+    expect(within(panel).getAllByText("已完成").length).toBeGreaterThan(0);
+    expect(within(panel).getByText("Build")).toBeTruthy();
+    expect(within(panel).getAllByText("进行中").length).toBeGreaterThan(0);
+    fireEvent.click(within(panel).getByRole("button", { name: "查看 Build 的 Node" }));
+    expect(await screen.findByText("执行步骤 · Node (2)")).toBeTruthy();
+    expect(screen.getByText("Shell Script")).toBeTruthy();
+    expect(screen.getByText("Publish")).toBeTruthy();
+    const nodeList = screen.getByLabelText("Node 执行步骤");
+    expect(nodeList.querySelectorAll('[data-node-connector="true"]')).toHaveLength(1);
+    const connector = nodeList.querySelector('[data-node-connector="true"]');
+    expect(connector).toBeTruthy();
+    expect(connector?.className).toContain("bg-warning/60");
+    expect(mocks.getJenkinsStageNodes).toHaveBeenCalledWith("a", "Job A", 42, "2");
+    expect(within(panel).getByText("Deploy")).toBeTruthy();
+    expect(within(panel).getByText("已跳过")).toBeTruthy();
+    expect(mocks.getJenkinsBuildStages).toHaveBeenCalledWith("a", "Job A", 42);
+    expect(nodeList.closest('[aria-label="Jenkins Pipeline 阶段"]')).toBeNull();
+    expect(nodeList.parentElement?.parentElement?.className).toContain("fixed");
+
+    fireEvent.click(within(panel).getByRole("button", { name: "收起 Pipeline 阶段" }));
+    expect(within(panel).getByRole("list", { name: "Pipeline Stage 概览" })).toBeTruthy();
+    expect(within(panel).queryByText("执行步骤 · Node (2)")).toBeNull();
+    expect(within(panel).queryByText("当前 2/3：Build")).toBeNull();
+
+    fireEvent.click(within(panel).getByRole("button", { name: "展开 Pipeline 阶段" }));
+    expect(within(panel).queryByRole("list", { name: "Pipeline Stage 概览" })).toBeNull();
+    fireEvent.click(within(panel).getByRole("button", { name: "查看 Build 的 Node" }));
+    expect(await screen.findByRole("list", { name: "Node 执行步骤" })).toBeTruthy();
+  });
+
+  it("lazily loads Node details and keeps them cached through animated collapse and reopen", async () => {
+    mocks.getJenkinsBuildStages.mockResolvedValue({
+      available: true,
+      stages: [{ id: "1", name: "Checkout", status: "SUCCESS", startTime: null, duration: 4_000, pauseDuration: 0 }],
+    });
+    const nodes: JenkinsStageNodes = {
+      available: true,
+      nodes: [{ id: "2", name: "Git checkout", status: "SUCCESS", startTime: null, duration: 3_000, pauseDuration: 0, error: null }],
+    };
+    mocks.getJenkinsStageNodes.mockResolvedValue(nodes);
+    renderView();
+
+    const panel = await screen.findByRole("region", { name: "Jenkins Pipeline 阶段" });
+    fireEvent.click(within(panel).getByRole("button", { name: "展开 Pipeline 阶段" }));
+    const open = await within(panel).findByRole("button", { name: "查看 Checkout 的 Node" });
+    expect(mocks.getJenkinsStageNodes).not.toHaveBeenCalled();
+    fireEvent.click(open);
+    const nodeList = await screen.findByRole("list", { name: "Node 执行步骤" });
+    expect(within(nodeList).getByText("Git checkout")).toBeTruthy();
+    const disclosure = document.getElementById(open.getAttribute("aria-controls")!);
+    expect(disclosure?.getAttribute("aria-hidden")).toBe("false");
+
+    fireEvent.click(screen.getByRole("button", { name: "收起 Checkout 的 Node" }));
+    expect(disclosure?.getAttribute("aria-hidden")).toBe("true");
+    expect(disclosure?.hasAttribute("inert")).toBe(true);
+    expect(disclosure?.contains(nodeList)).toBe(true);
+    expect(screen.queryByRole("list", { name: "Node 执行步骤" })).toBeNull();
+
+    fireEvent.mouseEnter(open);
+    expect(await screen.findByRole("list", { name: "Node 执行步骤" })).toBe(nodeList);
+    fireEvent.mouseLeave(open);
+    await waitFor(() => expect(disclosure?.getAttribute("aria-hidden")).toBe("true"));
+
+    const refresh = deferred<JenkinsStageNodes>();
+    mocks.getJenkinsStageNodes.mockReturnValueOnce(refresh.promise);
+    fireEvent.click(screen.getByRole("button", { name: "查看 Checkout 的 Node" }));
+    expect(screen.getByRole("list", { name: "Node 执行步骤" })).toBe(nodeList);
+    expect(screen.queryByText("正在读取执行步骤…")).toBeNull();
+    expect(disclosure?.hasAttribute("inert")).toBe(false);
+    await waitFor(() => expect(mocks.getJenkinsStageNodes).toHaveBeenCalledTimes(3));
+    await act(async () => refresh.resolve({
+      ...nodes,
+      nodes: [...nodes.nodes, { ...nodes.nodes[0]!, id: "3", name: "Checkout done" }],
+    }));
+    expect(within(nodeList).getByText("Checkout done")).toBeTruthy();
+
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(disclosure?.getAttribute("aria-hidden")).toBe("true"));
+  });
+
+  it("distinguishes an unavailable Stage API from a pending stage request", async () => {
+    mocks.getJenkinsBuildStages.mockResolvedValue({ available: false, stages: [] });
+    renderView();
+
+    const panel = await screen.findByRole("region", { name: "Jenkins Pipeline 阶段" });
+    await waitFor(() => expect(within(panel).getByText("阶段数据不可用")).toBeTruthy());
+    await waitFor(() => expect(panel.getAttribute("aria-busy")).toBe("false"));
+    fireEvent.click(within(panel).getByRole("button", { name: "展开 Pipeline 阶段" }));
+    expect(within(panel).getByText(/总耗时已由构建接口读取/)).toBeTruthy();
+    expect(within(panel).getByText(/\/wfapi\/describe/)).toBeTruthy();
+    expect(within(panel).queryByText("等待阶段数据")).toBeNull();
+  });
+
+  it("keeps Freestyle build details without requesting Pipeline stages", async () => {
+    const freestyleJob = { ...jobFixture(), kind: "freestyle" };
+    mocks.listJenkinsJobs.mockResolvedValue([freestyleJob]);
+    mocks.getJenkinsJob.mockResolvedValue(freestyleJob);
+    renderView();
+
+    await waitFor(() => expect(mocks.getJenkinsBuild).toHaveBeenCalledWith("a", "Job A", 42));
+    expect(await screen.findByText(/Freestyle · 无结构化 Stage/)).toBeTruthy();
+    expect(mocks.getJenkinsBuildStages).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: "Jenkins Pipeline 阶段" })).toBeNull();
+    expect(await screen.findByTestId("jenkins-log")).toBeTruthy();
   });
 
   it("creates an instance with a non-echoed token and selects the returned item", async () => {
@@ -259,12 +411,18 @@ describe("JenkinsView", () => {
     fireEvent.click(screen.getByRole("button", { name: "停止构建" }));
     await waitFor(() => expect(mocks.stopJenkinsBuild).toHaveBeenCalledWith("a", "Job A", 42));
 
-    fireEvent.click(screen.getByRole("tab", { name: /队列/ }));
+    expect(screen.getByRole("list", { name: "Jenkins 活动任务列表" })).toBeTruthy();
+    expect(screen.getByText(/等待执行器/)).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "取消" }));
     fireEvent.click(screen.getByRole("button", { name: "取消排队" }));
     await waitFor(() => expect(mocks.cancelJenkinsQueueItem).toHaveBeenCalledWith("a", 10));
 
     fireEvent.click(screen.getByRole("button", { name: "运行" }));
+    const triggerDialog = await screen.findByRole("dialog", { name: /运行/ });
+    expect(triggerDialog.className).toContain("overflow-hidden");
+    const parameterRegion = within(triggerDialog).getByRole("region", { name: "构建参数" });
+    expect(parameterRegion.className).toContain("no-visible-scrollbar");
+    expect(parameterRegion.className).toContain("overflow-x-hidden");
     expect(await screen.findByPlaceholderText("留空使用 Jenkins 默认值")).toBeTruthy();
     expect(mocks.getJenkinsJob).toHaveBeenCalledWith("a", "Job A", true);
     fireEvent.change(screen.getByLabelText(/RETRIES/), { target: { value: "3" } });
@@ -274,6 +432,35 @@ describe("JenkinsView", () => {
       RETRIES: 3,
     }));
     expect(mocks.triggerJenkinsBuild.mock.calls[0]?.[2]).not.toHaveProperty("SECRET");
+  });
+
+  it("follows a submitted queue item to its new build instead of keeping the previous build selected", async () => {
+    let submitted = false;
+    const nextBuild: JenkinsBuild = {
+      ...buildFixture(true),
+      number: 43,
+      displayName: "#43",
+      fullDisplayName: "Job A #43",
+      queueId: 10,
+    };
+    mocks.listJenkinsBuilds.mockImplementation(async () => (submitted ? [nextBuild, buildFixture()] : [buildFixture()]));
+    mocks.getJenkinsBuild.mockImplementation(async (_id: string, _job: string, number: number) => (
+      number === 43 ? nextBuild : buildFixture()
+    ));
+    mocks.triggerJenkinsBuild.mockImplementation(async () => {
+      submitted = true;
+      return { id: 10, url: "queue/10", location: "queue/10" };
+    });
+    renderView();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /#42/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "运行" }));
+    await screen.findByRole("dialog", { name: /运行/ });
+    fireEvent.click(screen.getByRole("button", { name: "确认运行" }));
+
+    await waitFor(() => expect(mocks.triggerJenkinsBuild).toHaveBeenCalledWith("a", "Job A", {}));
+    await waitFor(() => expect(mocks.getJenkinsBuild).toHaveBeenCalledWith("a", "Job A", 43));
+    expect(screen.getByText("#43")).toBeTruthy();
   });
 
   it("loads Git parameter options on demand and submits the selected branch", async () => {
@@ -617,7 +804,6 @@ describe("JenkinsView", () => {
     await waitFor(() => expect(screen.getByText("temporary Jenkins failure")).toBeTruthy());
     expect(screen.getAllByText("Job A").length).toBeGreaterThan(0);
     expect(screen.getByText("#42")).toBeTruthy();
-    fireEvent.click(screen.getByRole("tab", { name: /队列/ }));
     expect(screen.getByText(/等待执行器/)).toBeTruthy();
 
     rerenderSignal(2);
@@ -671,10 +857,10 @@ describe("JenkinsView", () => {
       renderView();
       await waitFor(() => expect(screen.getByRole("navigation", { name: "Jenkins 移动面板" })).toBeTruthy());
       expect(screen.getByRole("region", { name: "Jenkins 实例与任务" })).toBeTruthy();
-      expect(screen.queryByRole("region", { name: "Jenkins 构建与队列" })).toBeNull();
-      fireEvent.click(screen.getByRole("button", { name: "构建 / 队列" }));
+      expect(screen.queryByRole("region", { name: "Jenkins 活动任务" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "活动任务" }));
       expect(screen.queryByRole("region", { name: "Jenkins 实例与任务" })).toBeNull();
-      expect(screen.getByRole("region", { name: "Jenkins 构建与队列" })).toBeTruthy();
+      expect(screen.getByRole("region", { name: "Jenkins 活动任务" })).toBeTruthy();
     } finally {
       Object.defineProperty(window, "matchMedia", { configurable: true, value: original });
     }

@@ -12,15 +12,18 @@ import {
   extractJenkinsJobs,
   extractJenkinsQueue,
   normalizeJenkinsBuild,
+  normalizeJenkinsBuildStages,
   normalizeJenkinsConnection,
   normalizeJenkinsInstance,
   normalizeJenkinsJob,
   normalizeJenkinsLog,
+  normalizeJenkinsStageNodes,
   normalizeJenkinsTrigger,
 } from "./jenkins";
 import type {
   AppUpdateStatus,
   JenkinsBuild,
+  JenkinsBuildStages,
   JenkinsBuildParameterValue,
   JenkinsBuildTriggerResult,
   JenkinsConnectionResult,
@@ -29,6 +32,7 @@ import type {
   JenkinsJob,
   JenkinsLogChunk,
   JenkinsQueueItem,
+  JenkinsStageNodes,
   McpIntegrationStatus,
   NormalizedLogEntry,
   NormalizedPortRow,
@@ -115,6 +119,8 @@ export interface ServiceConsoleApiClient {
   ): Promise<JenkinsJob>;
   listJenkinsBuilds(id: string, job: string, limit?: number): Promise<JenkinsBuild[]>;
   getJenkinsBuild(id: string, job: string, number: number): Promise<JenkinsBuild>;
+  getJenkinsBuildStages(id: string, job: string, number: number): Promise<JenkinsBuildStages>;
+  getJenkinsStageNodes(id: string, job: string, number: number, stageId: string): Promise<JenkinsStageNodes>;
   triggerJenkinsBuild(
     id: string,
     job: string,
@@ -401,6 +407,18 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
     async getJenkinsBuild(id, job, number) {
       return normalizeJenkinsBuild(await request<unknown>(withQuery(
         jenkinsPath(id, `/builds/${number}`),
+        { job },
+      )));
+    },
+    async getJenkinsBuildStages(id, job, number) {
+      return normalizeJenkinsBuildStages(await request<unknown>(withQuery(
+        jenkinsPath(id, `/builds/${number}/stages`),
+        { job },
+      )));
+    },
+    async getJenkinsStageNodes(id, job, number, stageId) {
+      return normalizeJenkinsStageNodes(await request<unknown>(withQuery(
+        jenkinsPath(id, `/builds/${number}/stages/${encodeURIComponent(stageId)}/nodes`),
         { job },
       )));
     },

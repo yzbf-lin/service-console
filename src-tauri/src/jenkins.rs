@@ -442,6 +442,79 @@ impl JenkinsService {
             .ok_or_else(|| AppError::Internal("Jenkins returned an invalid build".into()))
     }
 
+    /// Reads Pipeline stage timing from the Pipeline Stage View `wfapi` endpoint.
+    ///
+    /// The endpoint is optional in Jenkins. A 404 therefore means this build does
+    /// not expose stage data (for example a Freestyle job or an installation
+    /// without Pipeline: REST API), rather than a failed Jenkins connection.
+    pub async fn get_build_stages(&self, id: &str, job: &str, number: u64) -> AppResult<Value> {
+        let (instance, token) = self.connection(id).await?;
+        let job = clean_required_job(job)?;
+        let response = match self
+            .send(
+                &instance,
+                &token,
+                Method::GET,
+                &format!("{}/{number}/wfapi/describe", job_path(&job)),
+                None,
+                false,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(AppError::Conflict(message)) if message.contains("HTTP 404") => {
+                return Ok(json!({"available": false, "stages": []}));
+            }
+            Err(error) => return Err(error),
+        };
+        let payload = response_json(response).await?;
+        let stages = payload["stages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(normalize_stage)
+            .take(500)
+            .collect::<Vec<_>>();
+        Ok(json!({"available": true, "stages": stages}))
+    }
+
+    /// Fetch flow nodes only for an expanded stage, keeping stage polling cheap.
+    pub async fn get_build_stage_nodes(
+        &self,
+        id: &str,
+        job: &str,
+        number: u64,
+        stage_id: &str,
+    ) -> AppResult<Value> {
+        let valid_stage_id = stage_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+        if stage_id.is_empty() || stage_id.len() > 128 || !valid_stage_id {
+            return Err(AppError::bad_request(
+                "Pipeline stage id contains invalid characters",
+            ));
+        }
+        let (instance, token) = self.connection(id).await?;
+        let job = clean_required_job(job)?;
+        let node_path = format!(
+            "{}/{number}/execution/node/{}/wfapi/describe",
+            job_path(&job),
+            utf8_percent_encode(stage_id, NON_ALPHANUMERIC),
+        );
+        let response = match self
+            .send(&instance, &token, Method::GET, &node_path, None, false)
+            .await
+        {
+            Ok(response) => response,
+            Err(AppError::Conflict(message)) if message.contains("HTTP 404") => {
+                return Ok(json!({"available": false, "nodes": []}));
+            }
+            Err(error) => return Err(error),
+        };
+        let payload = response_json(response).await?;
+        Ok(json!({"available": true, "nodes": normalize_pipeline_nodes(&payload)}))
+    }
+
     pub async fn trigger_build(
         &self,
         id: &str,
@@ -2278,6 +2351,60 @@ fn normalize_build(value: &Value) -> Option<Value> {
     }))
 }
 
+fn normalize_pipeline_node(value: &Value) -> Option<Value> {
+    let name = value["name"].as_str().unwrap_or_default().trim();
+    if name.is_empty() {
+        return None;
+    }
+    let id = value.get("id").map(scalar).unwrap_or_default();
+    let error = value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str);
+    Some(json!({
+        "id": if id.is_empty() { name } else { &id },
+        "name": name,
+        "status": value["status"].as_str().unwrap_or("UNKNOWN"),
+        "start_time": value.get("startTimeMillis").filter(|value| value.is_number()).cloned(),
+        "duration": value.get("durationMillis").filter(|value| value.is_number()).cloned(),
+        "pause_duration": value.get("pauseDurationMillis").filter(|value| value.is_number()).cloned(),
+        "error": error
+    }))
+}
+
+fn normalize_pipeline_nodes(value: &Value) -> Vec<Value> {
+    value
+        .get("stageFlowNodes")
+        .or_else(|| value.get("stage_flow_nodes"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(normalize_pipeline_node)
+        .take(500)
+        .collect()
+}
+
+fn normalize_stage(value: &Value) -> Option<Value> {
+    let name = value["name"].as_str().unwrap_or_default().trim();
+    if name.is_empty() {
+        return None;
+    }
+    let id = value.get("id").map(scalar).unwrap_or_default();
+    let nodes = normalize_pipeline_nodes(value);
+    let mut normalized = json!({
+        "id": if id.is_empty() { name } else { &id },
+        "name": name,
+        "status": value["status"].as_str().unwrap_or("UNKNOWN"),
+        "start_time": value.get("startTimeMillis").filter(|value| value.is_number()).cloned(),
+        "duration": value.get("durationMillis").filter(|value| value.is_number()).cloned(),
+        "pause_duration": value.get("pauseDurationMillis").filter(|value| value.is_number()).cloned()
+    });
+    if !nodes.is_empty() {
+        normalized["nodes"] = json!(nodes);
+    }
+    Some(normalized)
+}
+
 fn normalize_queue(value: &Value) -> Option<Value> {
     let id = value["id"].as_u64()?;
     let task = value["task"].as_object().map(|task| {
@@ -2341,6 +2468,46 @@ mod tests {
     fn base_url_rejects_credentials_and_job_path_encodes_segments() {
         assert!(normalize_base_url("https://user:secret@example.com").is_err());
         assert_eq!(job_path("folder/job name"), "/job/folder/job/job%20name");
+    }
+
+    #[test]
+    fn normalizes_pipeline_stage_status_and_timings() {
+        assert_eq!(
+            normalize_stage(&json!({
+                "id": "12",
+                "name": "Deploy",
+                "status": "IN_PROGRESS",
+                "startTimeMillis": 1_700_000_000_000_u64,
+                "durationMillis": 12_500,
+                "pauseDurationMillis": 300,
+                "stageFlowNodes": [{
+                    "id": "13",
+                    "name": "Shell Script",
+                    "status": "IN_PROGRESS",
+                    "startTimeMillis": 1_700_000_000_100_u64,
+                    "durationMillis": 12_000,
+                    "pauseDurationMillis": 0
+                }]
+            })),
+            Some(json!({
+                "id": "12",
+                "name": "Deploy",
+                "status": "IN_PROGRESS",
+                "start_time": 1_700_000_000_000_u64,
+                "duration": 12_500,
+                "pause_duration": 300,
+                "nodes": [{
+                    "id": "13",
+                    "name": "Shell Script",
+                    "status": "IN_PROGRESS",
+                    "start_time": 1_700_000_000_100_u64,
+                    "duration": 12_000,
+                    "pause_duration": 0,
+                    "error": null
+                }]
+            }))
+        );
+        assert!(normalize_stage(&json!({"id": "13", "name": ""})).is_none());
     }
 
     #[test]
@@ -2603,6 +2770,26 @@ mod tests {
                 HttpStatus::OK,
                 json!({"crumbRequestField":"Jenkins-Crumb", "crumb":"classic-crumb"}),
             ),
+            ("GET", "/job/api/42/wfapi/describe") => json_response(
+                HttpStatus::OK,
+                json!({"stages":[
+                    {
+                        "id":"3", "name":"Deploy", "status":"IN_PROGRESS",
+                        "startTimeMillis":1_700_000_000_000_u64,
+                        "durationMillis":12_500, "pauseDurationMillis":300
+                    }
+                ]}),
+            ),
+            ("GET", "/job/api/42/execution/node/3/wfapi/describe") => json_response(
+                HttpStatus::OK,
+                json!({"stageFlowNodes":[
+                    {
+                        "id":"4", "name":"Shell Script", "status":"IN_PROGRESS",
+                        "startTimeMillis":1_700_000_000_100_u64,
+                        "durationMillis":12_000, "pauseDurationMillis":0
+                    }
+                ]}),
+            ),
             ("POST", "/job/api/build") => {
                 assert_eq!(headers.get("jenkins-crumb").unwrap(), "classic-crumb");
                 let form: BTreeMap<String, String> =
@@ -2657,6 +2844,12 @@ mod tests {
             .await
             .insert("mock".into(), "secret-token".into());
 
+        let stages = service.get_build_stages("mock", "api", 42).await.unwrap();
+        let nodes = service
+            .get_build_stage_nodes("mock", "api", 42, "3")
+            .await
+            .unwrap();
+        let unavailable_stages = service.get_build_stages("mock", "api", 43).await.unwrap();
         let prepared = service.get_job("mock", "api", true, None).await.unwrap();
         let refreshed_values = BTreeMap::from([("ENV".into(), json!("prod"))]);
         let refreshed = service
@@ -2675,6 +2868,23 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(
+            stages,
+            json!({"available":true,"stages":[{
+                "id":"3", "name":"Deploy", "status":"IN_PROGRESS",
+                "start_time":1_700_000_000_000_u64,
+                "duration":12_500, "pause_duration":300
+            }]})
+        );
+        assert_eq!(
+            nodes,
+            json!({"available":true,"nodes":[{
+                "id":"4", "name":"Shell Script", "status":"IN_PROGRESS",
+                "start_time":1_700_000_000_100_u64,
+                "duration":12_000, "pause_duration":0, "error":null
+            }]})
+        );
+        assert_eq!(unavailable_stages, json!({"available":false,"stages":[]}));
         assert_eq!(
             prepared["parameters"][1]["choices"],
             json!(["dev-a", "dev-b"])

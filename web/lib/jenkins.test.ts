@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeJenkinsJob, resolveJenkinsBuildUrl } from "@/lib/jenkins";
+import { formatJenkinsConsoleText, normalizeJenkinsBuildStages, normalizeJenkinsJob, resolveJenkinsBuildUrl } from "@/lib/jenkins";
+
+describe("formatJenkinsConsoleText", () => {
+  it("highlights Jenkins structure and result lines while preserving existing ANSI", () => {
+    expect(formatJenkinsConsoleText([
+      "[Pipeline] stage",
+      "ERROR deployment failed",
+      "Finished: SUCCESS",
+      "\u001b[35malready colored\u001b[0m",
+    ].join("\n"))).toBe([
+      "\u001b[36m[Pipeline] stage\u001b[0m",
+      "\u001b[1;31mERROR deployment failed\u001b[0m",
+      "\u001b[32mFinished: SUCCESS\u001b[0m",
+      "\u001b[35malready colored\u001b[0m",
+    ].join("\n"));
+  });
+
+  it("removes terminal control sequences that Jenkins logs must not execute", () => {
+    expect(formatJenkinsConsoleText("safe\u001b]52;c;clipboard\u0007\u001b[2J"))
+      .toBe("safe");
+  });
+});
 
 describe("resolveJenkinsBuildUrl", () => {
   it("uses the configured origin and preserves the Jenkins Job URL suffix", () => {
@@ -71,6 +92,52 @@ describe("normalizeJenkinsJob", () => {
       name: "GROUP",
       defaultValue: ["server-a", "server-b"],
       multiple: true,
+    });
+  });
+});
+
+describe("normalizeJenkinsBuildStages", () => {
+  it("normalizes the controller stage envelope and timing fields", () => {
+    expect(normalizeJenkinsBuildStages({
+      stages: {
+        available: true,
+        stages: [{
+          id: 7,
+          name: "Deploy",
+          status: "IN_PROGRESS",
+          start_time: 1_700_000_000_000,
+          duration: 12_500,
+          pause_duration: 300,
+          nodes: [{
+            id: "8",
+            name: "Shell Script",
+            status: "IN_PROGRESS",
+            start_time: 1_700_000_000_100,
+            duration: 12_000,
+            pause_duration: 0,
+            error: null,
+          }],
+        }],
+      },
+    })).toEqual({
+      available: true,
+      stages: [{
+        id: "7",
+        name: "Deploy",
+        status: "IN_PROGRESS",
+        startTime: 1_700_000_000_000,
+        duration: 12_500,
+        pauseDuration: 300,
+        nodes: [{
+          id: "8",
+          name: "Shell Script",
+          status: "IN_PROGRESS",
+          startTime: 1_700_000_000_100,
+          duration: 12_000,
+          pauseDuration: 0,
+          error: null,
+        }],
+      }],
     });
   });
 });

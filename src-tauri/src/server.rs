@@ -313,6 +313,14 @@ pub fn router(state: AppState) -> Router {
             get(jenkins_build),
         )
         .route(
+            "/jenkins/instances/{id}/builds/{number}/stages",
+            get(jenkins_build_stages),
+        )
+        .route(
+            "/jenkins/instances/{id}/builds/{number}/stages/{stage_id}/nodes",
+            get(jenkins_build_stage_nodes),
+        )
+        .route(
             "/jenkins/instances/{id}/builds/{number}/stop",
             post(stop_jenkins_build),
         )
@@ -557,6 +565,35 @@ async fn jenkins_build(
     }
     Ok(Json(
         json!({"build": state.jenkins.get_build(&id, &query.job, number).await?}),
+    ))
+}
+
+async fn jenkins_build_stages(
+    State(state): State<AppState>,
+    AxumPath((id, number)): AxumPath<(String, u64)>,
+    Query(query): Query<JenkinsBuildQuery>,
+) -> AppResult<Json<Value>> {
+    if number == 0 {
+        return Err(AppError::bad_request("build number must be positive"));
+    }
+    Ok(Json(
+        json!({"stages": state.jenkins.get_build_stages(&id, &query.job, number).await?}),
+    ))
+}
+
+async fn jenkins_build_stage_nodes(
+    State(state): State<AppState>,
+    AxumPath((id, number, stage_id)): AxumPath<(String, u64, String)>,
+    Query(query): Query<JenkinsBuildQuery>,
+) -> AppResult<Json<Value>> {
+    if number == 0 {
+        return Err(AppError::bad_request("build number must be positive"));
+    }
+    Ok(Json(
+        state
+            .jenkins
+            .get_build_stage_nodes(&id, &query.job, number, &stage_id)
+            .await?,
     ))
 }
 

@@ -310,6 +310,36 @@ export interface JenkinsBuild {
   description: string;
 }
 
+export interface JenkinsPipelineNode {
+  id: string;
+  name: string;
+  status: string;
+  startTime: number | null;
+  duration: number;
+  pauseDuration: number;
+  error: string | null;
+}
+
+export interface JenkinsPipelineStage {
+  id: string;
+  name: string;
+  status: string;
+  startTime: number | null;
+  duration: number;
+  pauseDuration: number;
+  nodes?: JenkinsPipelineNode[];
+}
+
+export interface JenkinsBuildStages {
+  available: boolean;
+  stages: JenkinsPipelineStage[];
+}
+
+export interface JenkinsStageNodes {
+  available: boolean;
+  nodes: JenkinsPipelineNode[];
+}
+
 export interface JenkinsQueueItem {
   id: number;
   url: string;

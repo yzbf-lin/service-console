@@ -1,5 +1,6 @@
 import type {
   JenkinsBuild,
+  JenkinsBuildStages,
   JenkinsBuildTriggerResult,
   JenkinsConnectionResult,
   JenkinsInstance,
@@ -7,9 +8,27 @@ import type {
   JenkinsJobParameter,
   JenkinsLastBuild,
   JenkinsLogChunk,
+  JenkinsPipelineNode,
+  JenkinsPipelineStage,
   JenkinsQueueItem,
+  JenkinsStageNodes,
 } from "./types";
+import { sanitizeTerminalMessage } from "./service-logic";
 import { isRecord } from "./utils";
+
+const ANSI_SGR_PATTERN = /\u001b\[[0-9;:]*m/;
+
+export function formatJenkinsConsoleText(value: string): string {
+  const sanitized = sanitizeTerminalMessage(value);
+  return sanitized.split(/(\r\n|\n)/).map((line) => {
+    if (!line || line === "\n" || line === "\r\n" || ANSI_SGR_PATTERN.test(line)) return line;
+    if (/\b(?:error|failed|failure|exception|traceback|fatal)\b/i.test(line)) return `\u001b[1;31m${line}\u001b[0m`;
+    if (/\b(?:warn(?:ing)?|unstable)\b/i.test(line)) return `\u001b[33m${line}\u001b[0m`;
+    if (/\b(?:success|succeeded|passed)\b/i.test(line)) return `\u001b[32m${line}\u001b[0m`;
+    if (/^\s*\[Pipeline\]/i.test(line)) return `\u001b[36m${line}\u001b[0m`;
+    return line;
+  }).join("");
+}
 
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : value === null || value === undefined ? fallback : String(value);
@@ -230,6 +249,55 @@ export function extractJenkinsBuilds(payload: unknown): JenkinsBuild[] {
 
 export function normalizeJenkinsBuild(payload: unknown): JenkinsBuild {
   return normalizeBuild(envelope(payload, "build"));
+}
+
+function normalizePipelineNode(value: unknown, index: number): JenkinsPipelineNode {
+  const source = record(value);
+  const error = record(source.error);
+  return {
+    id: text(source.id, String(index + 1)),
+    name: text(source.name, `Node ${index + 1}`),
+    status: text(source.status, "UNKNOWN"),
+    startTime: nullableNumber(source.start_time ?? source.startTime ?? source.start_time_millis ?? source.startTimeMillis),
+    duration: number(source.duration ?? source.duration_millis ?? source.durationMillis),
+    pauseDuration: number(source.pause_duration ?? source.pauseDuration ?? source.pause_duration_millis ?? source.pauseDurationMillis),
+    error: source.error === null || source.error === undefined
+      ? null
+      : text(error.message ?? source.error),
+  };
+}
+
+function normalizeStage(value: unknown, index: number): JenkinsPipelineStage {
+  const source = record(value);
+  const rawNodes = source.nodes ?? source.stage_flow_nodes ?? source.stageFlowNodes;
+  const nodes = records(rawNodes).map(normalizePipelineNode).filter((node) => node.name);
+  return {
+    id: text(source.id, String(index + 1)),
+    name: text(source.name, `Stage ${index + 1}`),
+    status: text(source.status, "UNKNOWN"),
+    startTime: nullableNumber(source.start_time ?? source.startTime ?? source.start_time_millis ?? source.startTimeMillis),
+    duration: number(source.duration ?? source.duration_millis ?? source.durationMillis),
+    pauseDuration: number(source.pause_duration ?? source.pauseDuration ?? source.pause_duration_millis ?? source.pauseDurationMillis),
+    ...(nodes.length ? { nodes } : {}),
+  };
+}
+
+export function normalizeJenkinsBuildStages(payload: unknown): JenkinsBuildStages {
+  const wrapped = record(payload).stages;
+  const source = record(isRecord(wrapped) ? wrapped : payload);
+  const values = Array.isArray(source.stages) ? source.stages : [];
+  return {
+    available: bool(source.available, values.length > 0),
+    stages: values.map(normalizeStage).filter((stage) => stage.name),
+  };
+}
+
+export function normalizeJenkinsStageNodes(payload: unknown): JenkinsStageNodes {
+  const source = record(payload);
+  return {
+    available: bool(source.available, Array.isArray(source.nodes)),
+    nodes: records(source.nodes).map(normalizePipelineNode).filter((node) => node.name),
+  };
 }
 
 export function extractJenkinsQueue(payload: unknown): JenkinsQueueItem[] {

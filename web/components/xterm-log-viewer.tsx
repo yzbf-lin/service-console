@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useAutoScrollPreference } from "@/hooks/use-auto-scroll-preference";
+import { formatJenkinsConsoleText } from "@/lib/jenkins";
 import { sanitizeTerminalMessage } from "@/lib/service-logic";
 import { terminalThemes } from "@/lib/terminal-theme";
 import type { ResolvedTheme } from "@/lib/types";
@@ -144,7 +145,7 @@ export function XtermLogViewer({
     const terminal = terminalRef.current;
     if (!ready || !terminal) return;
     const generation = terminalGenerationRef.current;
-    const write = (value: string) => new Promise<void>((resolve) => terminal.write(value, resolve));
+    const write = (value: string) => new Promise<void>((resolve) => terminal.write(formatJenkinsConsoleText(value), resolve));
 
     renderQueueRef.current = renderQueueRef.current.then(async () => {
       if (generation !== terminalGenerationRef.current || terminalRef.current !== terminal) return;

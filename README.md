@@ -96,7 +96,10 @@ the most recently selected instance is restored on the same computer. On narrow 
 workspace uses single-panel tabs instead of rendering several heavy panels at once.
 
 The Jenkins workspace supports job search, Folder navigation, ordinary and parameterized builds,
-build status/history, stop, queue cancellation, and progressive console output. These records are
+build status/history, Pipeline stage progress and timing, stop, queue cancellation, and progressive
+console output. Selecting a Pipeline build shows its current stage, position, per-stage elapsed time,
+and total elapsed time; running values refresh with the build poll. Stage data uses Jenkins' optional
+Pipeline REST API and degrades to an availability hint when that endpoint is absent. These records are
 queried on demand through the local Service Console controller; they are not copied into a second
 local Jenkins database. Switching the UI item never changes an in-flight MCP operation because every
 Jenkins API and MCP call carries an explicit instance ID.
@@ -104,7 +107,9 @@ Jenkins API and MCP call carries an explicit instance ID.
 Build links are opened through the selected instance's configured Web address, even when Jenkins
 reports an internal host or default port. The console viewer supports Cmd/Ctrl+F search with
 previous/next navigation, native selection copy, a copy-selection button, and one-click copy-all as
-plain text. Progressive updates preserve the active search and selection.
+plain text. It preserves Jenkins-provided ANSI colors, highlights Pipeline, success, warning, and
+failure lines when plain text has no color, and strips unsafe terminal controls. Progressive updates
+preserve the active search and selection.
 
 For ordinary parameterized builds, leaving a password blank omits it from `buildWithParameters` so
 Jenkins can apply its configured default. A true Jenkins file-upload parameter remains unsupported
