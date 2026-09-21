@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MotionConfig, motion } from "motion/react";
+import { MotionConfig } from "motion/react";
 
 import {
   AlertDialog,
@@ -31,6 +31,7 @@ import { SettingsView } from "@/components/settings-view";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { ToastProvider, useToast } from "@/components/toast-provider";
 import { Topbar } from "@/components/topbar";
+import { WorkspaceTransition } from "@/components/workspace-transition";
 import { useAppUpdate } from "@/hooks/use-app-update";
 import { useHashView } from "@/hooks/use-hash-view";
 import { useMcpIntegration } from "@/hooks/use-mcp-integration";
@@ -439,15 +440,9 @@ function ServiceConsoleContent() {
             updateAvailable={updateAvailable}
             onViewChange={changeView}
           />
-          <motion.div
-            key={activeView}
-            className="service-console-stage"
-            initial={{ opacity: 0, y: 5, filter: "blur(3px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-          >
+          <WorkspaceTransition view={activeView}>
             {content}
-          </motion.div>
+          </WorkspaceTransition>
         </div>
 
         {formOpen ? (

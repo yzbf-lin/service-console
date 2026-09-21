@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { Moon, RefreshCw, Sun } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
@@ -37,6 +37,8 @@ const viewCopy: Record<ViewId, { title: string; description: string }> = {
 
 function ConnectionItem({ kind, state }: { kind: "api" | "socket"; state: ConnectionState }) {
   const label = kind === "api" ? "API" : "实时";
+  const reducedMotion = useReducedMotion();
+  const pulse = state === "pending" && !reducedMotion;
   return (
     <span
       className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground"
@@ -49,8 +51,8 @@ function ConnectionItem({ kind, state }: { kind: "api" | "socket"; state: Connec
           state === "ok" && "bg-success",
           state === "error" && "bg-destructive",
         )}
-        animate={{ scale: state === "pending" ? [1, 1.35, 1] : 1, opacity: state === "pending" ? [0.65, 1, 0.65] : 1 }}
-        transition={state === "pending" ? { duration: 1.5, repeat: Infinity, ease: "easeInOut" } : { duration: 0.16 }}
+        animate={{ scale: pulse ? [1, 1.35, 1] : 1, opacity: pulse ? [0.65, 1, 0.65] : 1 }}
+        transition={pulse ? { duration: 1.5, repeat: Infinity, ease: "easeInOut" } : { duration: 0 }}
         aria-hidden="true"
       />
       {label}
@@ -71,6 +73,7 @@ export function Topbar({
   onRefresh,
   onToggleTheme,
 }: TopbarProps) {
+  const reducedMotion = useReducedMotion();
   const context = viewCopy[activeView];
   const detail = activeView === "services"
     ? selectedServiceName ?? `${runningCount}/${serviceCount} 运行中`
@@ -89,9 +92,17 @@ export function Topbar({
       </div>
 
       <div className="flex min-w-0 items-center gap-2 px-3 max-[767px]:hidden">
-        <h2 className="shrink-0 text-[12px] font-semibold">{context.title}</h2>
-        <span className="text-border" aria-hidden="true">/</span>
-        <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">{detail}</span>
+        <motion.div
+          key={activeView}
+          className="flex min-w-0 flex-1 items-center gap-2"
+          initial={reducedMotion ? false : { opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: reducedMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <h2 className="shrink-0 text-[12px] font-semibold">{context.title}</h2>
+          <span className="text-border" aria-hidden="true">/</span>
+          <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground">{detail}</span>
+        </motion.div>
         <div className="flex shrink-0 items-center gap-3 border-l pl-3" aria-label="连接状态" aria-live="polite">
           <ConnectionItem kind="api" state={apiStatus} />
           <ConnectionItem kind="socket" state={socketStatus} />
@@ -112,10 +123,10 @@ export function Topbar({
             <motion.span
               key={resolvedTheme}
               className="grid place-items-center"
-              initial={{ opacity: 0, rotate: -35, scale: 0.72 }}
+              initial={reducedMotion ? false : { opacity: 0, rotate: -50, scale: 0.65 }}
               animate={{ opacity: 1, rotate: 0, scale: 1 }}
               exit={{ opacity: 0, rotate: 35, scale: 0.72 }}
-              transition={{ duration: 0.16 }}
+              transition={{ duration: reducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
             >
               {resolvedTheme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
             </motion.span>

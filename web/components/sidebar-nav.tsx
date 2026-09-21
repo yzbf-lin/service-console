@@ -1,7 +1,8 @@
 "use client";
 
 import { Network, ServerCog, Settings, Workflow } from "lucide-react";
-import { motion } from "motion/react";
+import { LayoutGroup, motion, useReducedMotion } from "motion/react";
+import { useId } from "react";
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/cn";
@@ -41,32 +42,33 @@ function NavigationButton({
 }) {
   const active = activeView === id;
   const accessibleLabel = `${label}${showUpdateIndicator ? "，有可用更新" : ""}`;
+  const reducedMotion = useReducedMotion();
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <motion.button
           className={cn(
-            "group relative flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none",
-            "hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/80",
-            "max-[767px]:h-full max-[767px]:w-auto max-[767px]:min-h-0 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:basis-0 max-[767px]:flex-col max-[767px]:gap-1 max-[767px]:rounded-lg max-[767px]:px-1 max-[767px]:py-1.5 max-[767px]:text-[10px]",
-            active && "text-primary-foreground hover:bg-transparent hover:text-primary-foreground",
+            "group relative flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none",
+            "hover:bg-accent/50 hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/80",
+            "max-[767px]:h-full max-[767px]:w-auto max-[767px]:min-h-11 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:basis-0 max-[767px]:flex-col max-[767px]:gap-1 max-[767px]:px-1 max-[767px]:py-1 max-[767px]:text-[10px]",
+            active && "text-primary hover:bg-transparent hover:text-primary",
           )}
           type="button"
           data-view={id}
           aria-controls={`${id}View`}
           aria-current={active ? "page" : undefined}
           aria-label={accessibleLabel}
-          whileHover={{ y: -1 }}
-          whileTap={{ scale: 0.96 }}
+          whileHover={reducedMotion ? undefined : { y: -2 }}
+          whileTap={reducedMotion ? undefined : { scale: 0.94 }}
           transition={{ type: "spring", stiffness: 520, damping: 34 }}
           onClick={() => onViewChange(id)}
         >
           {active ? (
             <motion.span
-              className="absolute inset-0 rounded-md bg-primary shadow-[0_6px_18px_color-mix(in_srgb,var(--primary)_24%,transparent)] max-[767px]:rounded-lg"
+              className="navigation-selection absolute inset-0 rounded-md"
               layoutId="active-navigation-surface"
-              transition={{ type: "spring", stiffness: 480, damping: 38 }}
+              transition={reducedMotion ? { duration: 0 } : { type: "spring", stiffness: 380, damping: 32 }}
               aria-hidden="true"
             />
           ) : null}
@@ -89,43 +91,46 @@ function NavigationButton({
 }
 
 export function SidebarNav({ activeView, updateAvailable = false, onViewChange }: SidebarNavProps) {
+  const navigationId = useId();
   return (
     <TooltipProvider delayDuration={250} skipDelayDuration={100}>
-      <aside
-        className={cn(
-          "flex min-h-0 flex-col border-r bg-[var(--sidebar)]",
-          "max-[767px]:fixed max-[767px]:inset-x-2 max-[767px]:bottom-[max(8px,env(safe-area-inset-bottom))] max-[767px]:z-50",
-          "max-[767px]:h-[58px] max-[767px]:flex-row max-[767px]:rounded-xl max-[767px]:border max-[767px]:bg-card/95 max-[767px]:p-1 max-[767px]:shadow-[var(--shadow-menu)] max-[767px]:backdrop-blur-xl",
-        )}
-        aria-label="主功能"
-        data-rail="icon-only"
-      >
-        <nav className="flex min-h-0 flex-1 flex-col max-[767px]:flex-row" aria-label="功能导航">
-          <div
-            className="flex shrink-0 flex-col items-center gap-1 p-1.5 max-[767px]:min-w-0 max-[767px]:flex-[3] max-[767px]:flex-row max-[767px]:gap-0 max-[767px]:p-0"
-            data-nav-section="primary"
-          >
-            {primaryItems.map((item) => (
-              <NavigationButton key={item.id} {...item} activeView={activeView} onViewChange={onViewChange} />
-            ))}
-          </div>
+      <LayoutGroup id={navigationId}>
+        <aside
+          className={cn(
+            "flex min-h-0 flex-col border-r bg-[var(--sidebar)]",
+            "max-[767px]:fixed max-[767px]:inset-x-1.5 max-[767px]:bottom-[max(6px,env(safe-area-inset-bottom))] max-[767px]:z-50",
+            "max-[767px]:h-[54px] max-[767px]:flex-row max-[767px]:rounded-lg max-[767px]:border max-[767px]:bg-card/95 max-[767px]:p-1 max-[767px]:shadow-[var(--shadow-menu)] max-[767px]:backdrop-blur-xl",
+          )}
+          aria-label="主功能"
+          data-rail="icon-only"
+        >
+          <nav className="flex min-h-0 flex-1 flex-col max-[767px]:flex-row" aria-label="功能导航">
+            <div
+              className="flex shrink-0 flex-col items-center gap-1.5 p-1.5 max-[767px]:min-w-0 max-[767px]:flex-[3] max-[767px]:flex-row max-[767px]:gap-0 max-[767px]:p-0"
+              data-nav-section="primary"
+            >
+              {primaryItems.map((item) => (
+                <NavigationButton key={item.id} {...item} activeView={activeView} onViewChange={onViewChange} />
+              ))}
+            </div>
 
-          <div
-            className="mt-auto flex shrink-0 flex-col items-center gap-1 border-t p-1.5 max-[767px]:mt-0 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:flex-row max-[767px]:gap-0 max-[767px]:border-t-0 max-[767px]:p-0"
-            data-nav-section="secondary"
-          >
-            {secondaryItems.map((item) => (
-              <NavigationButton
-                key={item.id}
-                {...item}
-                activeView={activeView}
-                showUpdateIndicator={item.id === "settings" && updateAvailable}
-                onViewChange={onViewChange}
-              />
-            ))}
-          </div>
-        </nav>
-      </aside>
+            <div
+              className="mt-auto flex shrink-0 flex-col items-center gap-1.5 border-t p-1.5 max-[767px]:mt-0 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:flex-row max-[767px]:gap-0 max-[767px]:border-t-0 max-[767px]:p-0"
+              data-nav-section="secondary"
+            >
+              {secondaryItems.map((item) => (
+                <NavigationButton
+                  key={item.id}
+                  {...item}
+                  activeView={activeView}
+                  showUpdateIndicator={item.id === "settings" && updateAvailable}
+                  onViewChange={onViewChange}
+                />
+              ))}
+            </div>
+          </nav>
+        </aside>
+      </LayoutGroup>
     </TooltipProvider>
   );
 }

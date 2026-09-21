@@ -22,7 +22,10 @@ use rand::RngCore;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
-use tokio::{net::TcpListener, sync::oneshot};
+use tokio::{
+    net::TcpListener,
+    sync::{oneshot, watch},
+};
 use tower_http::services::ServeDir;
 
 use crate::{
@@ -44,6 +47,7 @@ pub struct AppState {
     pub token: Option<String>,
     pub static_dir: PathBuf,
     pub preferences: UiPreferencesStore,
+    pub theme_changes: watch::Sender<String>,
     pub jenkins: Arc<JenkinsService>,
     pub mcp: Arc<McpIntegration>,
     pub update: Arc<UpdateManager>,
@@ -174,11 +178,16 @@ pub struct Controller {
     task: tokio::task::JoinHandle<()>,
     update: Arc<UpdateManager>,
     shutdown_timeout: Duration,
+    theme_changes: watch::Receiver<String>,
 }
 
 impl Controller {
     pub fn base_url(&self) -> String {
         format!("http://{}/", self.address)
+    }
+
+    pub fn subscribe_theme(&self) -> watch::Receiver<String> {
+        self.theme_changes.clone()
     }
 
     pub fn request_shutdown(&self) {
@@ -237,8 +246,11 @@ pub async fn start_controller_with_update_exit(
         .join("update_public_key.pem");
     let update = UpdateManager::new(manager.data_dir(), public_key);
     let controller_update = Arc::clone(&update);
+    let preferences = UiPreferencesStore::new(manager.data_dir());
+    let (theme_sender, theme_changes) = watch::channel(preferences.load_theme());
     let state = AppState {
-        preferences: UiPreferencesStore::new(manager.data_dir()),
+        preferences,
+        theme_changes: theme_sender,
         manager,
         token,
         static_dir,
@@ -268,6 +280,7 @@ pub async fn start_controller_with_update_exit(
         task,
         update: controller_update,
         shutdown_timeout: CONTROLLER_SHUTDOWN_TIMEOUT,
+        theme_changes,
     })
 }
 
@@ -425,6 +438,7 @@ async fn update_preferences(
     Json(body): Json<ThemeRequest>,
 ) -> AppResult<Json<Value>> {
     state.preferences.save_theme(&body.theme)?;
+    state.theme_changes.send_replace(body.theme.clone());
     Ok(Json(json!({"theme": body.theme})))
 }
 
@@ -965,6 +979,7 @@ mod tests {
             task: tokio::spawn(std::future::pending()),
             update: UpdateManager::new(directory.path(), directory.path().join("key.pem")),
             shutdown_timeout: Duration::from_millis(20),
+            theme_changes: watch::channel("system".into()).1,
         };
 
         tokio::time::timeout(Duration::from_secs(1), controller.shutdown())

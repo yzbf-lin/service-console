@@ -1,26 +1,28 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
+@import "./overlay-motion.css";
 
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 :root {
   color-scheme: light;
-  --background: #e9edf3;
-  --foreground: #252a33;
-  --card: rgb(249 251 253 / 84%);
-  --card-foreground: #252a33;
-  --toolbar: rgb(249 251 253 / 76%);
-  --sidebar: rgb(235 239 244 / 72%);
-  --inspector: rgb(242 245 249 / 78%);
-  --popover: rgb(255 255 255 / 92%);
-  --popover-foreground: #252a33;
-  --primary: #1f64c8;
+  --background: #e0e8f0;
+  --chrome-background: #e7eef7;
+  --foreground: #24354b;
+  --card: rgb(255 255 255 / 64%);
+  --card-foreground: #24354b;
+  --toolbar: var(--chrome-background);
+  --sidebar: rgb(243 248 255 / 48%);
+  --inspector: rgb(243 248 255 / 42%);
+  --popover: rgb(249 252 255 / 94%);
+  --popover-foreground: #24354b;
+  --primary: #2c60c4;
   --primary-foreground: #ffffff;
-  --secondary: #e7eaf0;
-  --secondary-foreground: #3e4654;
-  --muted: #e7eaf0;
-  --muted-foreground: #5b6472;
-  --accent: #dfe9f8;
+  --secondary: rgb(207 221 240 / 46%);
+  --secondary-foreground: #40536d;
+  --muted: rgb(207 221 240 / 40%);
+  --muted-foreground: #53667f;
+  --accent: #dbe8fa;
   --accent-foreground: #214f91;
   --destructive: #b73546;
   --destructive-foreground: #ffffff;
@@ -28,37 +30,41 @@
   --success-foreground: #ffffff;
   --warning: #8a540b;
   --warning-foreground: #ffffff;
-  --border: rgb(190 200 213 / 72%);
-  --input: #c8ced8;
-  --ring: #1f64c8;
-  --terminal: #111318;
+  --border: rgb(129 154 188 / 26%);
+  --input: rgb(123 149 183 / 38%);
+  --ring: #2c60c4;
+  --terminal: #111823;
   --terminal-foreground: #d7dbe3;
   --radius: 0.5rem;
-  --glass-surface: rgb(249 251 253 / 68%);
-  --glass-strong: rgb(255 255 255 / 82%);
-  --glass-border: rgb(255 255 255 / 62%);
-  --shadow-panel: 0 18px 46px rgb(42 55 74 / 10%), inset 0 1px 0 rgb(255 255 255 / 68%);
-  --shadow-menu: 0 18px 48px rgb(27 34 45 / 18%), 0 2px 10px rgb(27 34 45 / 8%), inset 0 1px 0 rgb(255 255 255 / 72%);
+  --glass-surface: rgb(249 252 255 / 42%);
+  --glass-strong: rgb(250 253 255 / 88%);
+  --glass-border: rgb(255 255 255 / 78%);
+  --glass-highlight: rgb(255 255 255 / 64%);
+  --glass-selection: rgb(223 236 255 / 78%);
+  --shadow-panel: 0 12px 36px rgb(42 67 102 / 9%), 0 1px 3px rgb(42 67 102 / 6%), inset 0 1px 0 var(--glass-highlight);
+  --shadow-menu: 0 24px 64px rgb(27 49 79 / 18%), 0 4px 16px rgb(27 49 79 / 8%), inset 0 1px 0 var(--glass-highlight);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #12151b;
-  --foreground: #e7e9ee;
-  --card: rgb(29 33 41 / 84%);
-  --card-foreground: #e7e9ee;
-  --toolbar: rgb(27 31 39 / 76%);
-  --sidebar: rgb(24 28 35 / 72%);
-  --inspector: rgb(31 36 45 / 80%);
-  --popover: rgb(36 41 51 / 94%);
-  --popover-foreground: #e7e9ee;
-  --primary: #75aaff;
+  --background: #0c1422;
+  --chrome-background: #1c2b40;
+  --foreground: #e5eef9;
+  --card: rgb(32 48 70 / 58%);
+  --card-foreground: #e5eef9;
+  --toolbar: var(--chrome-background);
+  --sidebar: rgb(22 37 56 / 42%);
+  --inspector: rgb(24 41 62 / 38%);
+  --popover: rgb(28 43 64 / 94%);
+  --popover-foreground: #e5eef9;
+  --primary: #93bdff;
   --primary-foreground: #10223a;
-  --secondary: #292d35;
-  --secondary-foreground: #d1d5dd;
-  --muted: #292d35;
-  --muted-foreground: #9299a5;
-  --accent: #2b3442;
+  --secondary: rgb(71 94 128 / 32%);
+  --secondary-foreground: #c4d4e9;
+  --muted: rgb(71 94 128 / 28%);
+  --muted-foreground: #9eafc7;
+  --accent: #293e5b;
   --accent-foreground: #cfe0ff;
   --destructive: #ff7b86;
   --destructive-foreground: #31070c;
@@ -66,16 +72,18 @@
   --success-foreground: #09251b;
   --warning: #f2b65c;
   --warning-foreground: #251500;
-  --border: rgb(72 80 94 / 62%);
-  --input: #3c414c;
-  --ring: #75aaff;
-  --terminal: #111318;
+  --border: rgb(149 180 220 / 17%);
+  --input: rgb(149 180 220 / 28%);
+  --ring: #93bdff;
+  --terminal: #0e1621;
   --terminal-foreground: #d8dce4;
-  --glass-surface: rgb(25 29 37 / 68%);
-  --glass-strong: rgb(35 40 49 / 82%);
-  --glass-border: rgb(255 255 255 / 9%);
-  --shadow-panel: 0 20px 54px rgb(0 0 0 / 24%), inset 0 1px 0 rgb(255 255 255 / 6%);
-  --shadow-menu: 0 20px 54px rgb(0 0 0 / 42%), 0 2px 12px rgb(0 0 0 / 28%), inset 0 1px 0 rgb(255 255 255 / 8%);
+  --glass-surface: rgb(19 33 51 / 44%);
+  --glass-strong: rgb(28 43 64 / 90%);
+  --glass-border: rgb(194 219 255 / 16%);
+  --glass-highlight: rgb(219 234 255 / 12%);
+  --glass-selection: rgb(53 83 125 / 56%);
+  --shadow-panel: 0 16px 40px rgb(0 6 17 / 24%), 0 1px 3px rgb(0 6 17 / 18%), inset 0 1px 0 var(--glass-highlight);
+  --shadow-menu: 0 24px 64px rgb(0 6 17 / 48%), 0 4px 16px rgb(0 6 17 / 22%), inset 0 1px 0 var(--glass-highlight);
 }
 
 @theme inline {
@@ -128,25 +136,24 @@ body {
 
 body {
   color: var(--foreground);
-  background:
-    radial-gradient(circle at 18% -12%, color-mix(in srgb, var(--primary) 14%, transparent) 0, transparent 36%),
-    radial-gradient(circle at 92% 108%, color-mix(in srgb, var(--success) 9%, transparent) 0, transparent 32%),
-    var(--background);
+  background-color: var(--background);
+  background-image:
+    linear-gradient(to bottom, var(--chrome-background), transparent 140px),
+    radial-gradient(ellipse at 6% 8%, rgb(105 157 238 / 23%), transparent 52%),
+    radial-gradient(ellipse at 97% 86%, rgb(61 185 182 / 15%), transparent 48%),
+    radial-gradient(ellipse at 65% -30%, rgb(180 203 246 / 22%), transparent 48%);
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  transition: background-color 300ms ease, color 240ms ease;
 }
 
 button,
 input,
 textarea {
   font: inherit;
-}
-
-button {
-  color: inherit;
 }
 
 button:disabled,
@@ -172,13 +179,15 @@ button:disabled,
 }
 
 .service-console-shell {
-  --workspace-sidebar-width: 52px;
+  --workspace-sidebar-width: 58px;
   display: flex;
   width: 100%;
   height: 100vh;
   height: 100dvh;
   min-height: 0;
   flex-direction: column;
+  gap: 6px;
+  padding: 6px;
   overflow: hidden;
   isolation: isolate;
   background: transparent;
@@ -186,11 +195,12 @@ button:disabled,
 
 .service-topbar {
   grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr) auto;
-  border-color: var(--glass-border);
-  background: var(--glass-strong);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent), 0 8px 28px rgb(32 43 59 / 7%);
-  backdrop-filter: blur(24px) saturate(1.34);
-  -webkit-backdrop-filter: blur(24px) saturate(1.34);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  background-color: var(--toolbar);
+  box-shadow: var(--shadow-panel);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  backdrop-filter: blur(24px) saturate(1.4);
 }
 
 .service-brand {
@@ -210,60 +220,102 @@ button:disabled,
   min-height: 0;
   flex: 1 1 0;
   grid-template-columns: var(--workspace-sidebar-width) minmax(0, 1fr);
-  overflow: hidden;
+  gap: 6px;
 }
 
 .service-console-stage {
+  position: relative;
   display: flex;
   min-width: 0;
   min-height: 0;
   flex: 1 1 0;
   overflow: hidden;
-  border-top: 1px solid color-mix(in srgb, var(--glass-border) 72%, transparent);
-  background: var(--glass-surface);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  background-color: var(--glass-surface);
   box-shadow: var(--shadow-panel);
-  backdrop-filter: blur(22px) saturate(1.22);
-  -webkit-backdrop-filter: blur(22px) saturate(1.22);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  backdrop-filter: blur(24px) saturate(1.3);
 }
 
-.service-console-body > aside,
-.service-list-glass {
-  border-color: color-mix(in srgb, var(--border) 74%, transparent);
-  background: var(--sidebar);
-  backdrop-filter: blur(24px) saturate(1.25);
+.workspace-view-frame {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
+.service-console-body > aside {
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  background-color: var(--sidebar);
+  box-shadow: var(--shadow-panel);
   -webkit-backdrop-filter: blur(24px) saturate(1.25);
+  backdrop-filter: blur(24px) saturate(1.25);
+}
+
+.service-list-glass {
+  background-color: var(--sidebar);
+}
+
+.service-list-glass[data-service-list-variant="drawer"] > header {
+  padding-right: 3.5rem;
+}
+
+.navigation-selection {
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--glass-border));
+  background-color: var(--glass-selection);
+  background-image: linear-gradient(145deg, var(--glass-highlight), transparent 68%);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 4px 12px color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
 .service-card {
-  background: color-mix(in srgb, var(--card) 32%, transparent);
-  transition: background-color 160ms ease, box-shadow 160ms ease;
+  margin: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background-color: transparent;
+  transition: background-color 220ms ease, border-color 220ms ease, box-shadow 220ms ease;
 }
 
 .service-card:hover {
-  background: color-mix(in srgb, var(--accent) 48%, var(--glass-surface));
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-border) 54%, transparent);
+  background-color: color-mix(in srgb, var(--card) 72%, transparent);
+  border-color: var(--glass-border);
+}
+
+.service-card[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--primary) 23%, var(--glass-border));
+  background-color: var(--glass-selection);
+  background-image: linear-gradient(120deg, var(--glass-highlight), transparent 75%);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--primary) 8%, transparent), inset 0 1px 0 var(--glass-highlight);
 }
 
 [data-slot="dialog-content"],
 [data-slot="alert-dialog-content"],
-[data-slot="card"],
 [data-slot="dropdown-menu-content"],
 [data-slot="dropdown-menu-sub-content"],
+[data-slot="select-content"],
+[data-slot="tooltip-content"],
 .glass-popover {
   border-color: var(--glass-border);
-  background: var(--glass-strong);
+  background-color: var(--glass-strong);
+  background-image: linear-gradient(135deg, color-mix(in srgb, var(--glass-highlight) 28%, transparent), transparent 56%);
   box-shadow: var(--shadow-menu);
-  backdrop-filter: blur(28px) saturate(1.28);
   -webkit-backdrop-filter: blur(28px) saturate(1.28);
+  backdrop-filter: blur(28px) saturate(1.28);
+}
+
+[data-slot="card"] {
+  border-color: var(--glass-border);
+  background-color: var(--card);
+  box-shadow: var(--shadow-panel);
 }
 
 [data-slot="input"],
 [data-slot="textarea"] {
   border-color: color-mix(in srgb, var(--input) 76%, transparent);
-  background: color-mix(in srgb, var(--glass-strong) 62%, transparent);
+  background-color: color-mix(in srgb, var(--card) 80%, transparent);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-border) 44%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
 }
 
 #portsView > section > header,
@@ -271,9 +323,75 @@ button:disabled,
 #jenkinsView header,
 .service-terminal > header,
 .service-inspector > header {
-  background: color-mix(in srgb, var(--glass-strong) 72%, transparent);
-  backdrop-filter: blur(18px) saturate(1.18);
-  -webkit-backdrop-filter: blur(18px) saturate(1.18);
+  background-color: color-mix(in srgb, var(--card) 60%, transparent);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.service-topbar,
+.service-console-stage,
+.service-console-body > aside,
+.service-list-glass,
+.service-inspector,
+[data-slot="card"],
+[data-slot="tabs-list"],
+[data-slot="tabs-trigger"],
+[data-slot="input"],
+[data-slot="textarea"] {
+  transition: background-color 240ms ease, border-color 240ms ease, color 240ms ease, box-shadow 240ms ease;
+}
+
+[data-slot="button"] {
+  transition: background-color 180ms ease, color 180ms ease, box-shadow 180ms ease, scale 180ms var(--ease-out);
+}
+
+[data-slot="button"]:not(:disabled):not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
+[data-slot="button"]:active:not(:disabled):not([aria-disabled="true"]) {
+  scale: 0.96;
+}
+
+[data-slot="tabs-list"] {
+  background-color: var(--sidebar);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 3px rgb(20 42 70 / 5%);
+}
+
+[data-slot="tabs-trigger"][data-state="active"] {
+  background-color: var(--glass-strong);
+  box-shadow: 0 2px 6px rgb(20 42 70 / 10%), inset 0 1px 0 var(--glass-highlight);
+}
+
+[data-slot="tabs-content"][data-state="active"] {
+  animation: tab-content-enter 240ms var(--ease-out);
+}
+
+@keyframes tab-content-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+#settingsView {
+  background-color: transparent;
+}
+
+#settingsView > div > section > [role="radiogroup"],
+#settingsView > div > section > .border {
+  border-color: var(--glass-border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-panel);
+}
+
+.service-terminal {
+  background-color: transparent;
+}
+
+.service-terminal > div:last-child {
+  margin: 6px;
+  border: 1px solid rgb(167 199 239 / 12%);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgb(3 12 28 / 12%), inset 0 1px 0 rgb(255 255 255 / 4%);
 }
 
 .service-management-grid {
@@ -333,6 +451,8 @@ button:disabled,
 @media (max-width: 767px) {
   .service-console-shell {
     --workspace-sidebar-width: 0px;
+    gap: 6px;
+    padding: 6px;
   }
 
   .service-brand {
@@ -353,13 +473,14 @@ button:disabled,
     position: relative;
     height: 100%;
     min-height: 0;
-    padding-bottom: calc(66px + env(safe-area-inset-bottom));
+    padding-bottom: calc(54px + max(6px, env(safe-area-inset-bottom)));
     overflow: hidden;
   }
 
   .service-console-stage {
     width: 100%;
     height: 100%;
+    border-radius: 10px;
   }
 
   .service-management-grid,
@@ -367,6 +488,31 @@ button:disabled,
     display: flex;
     height: 100%;
     flex-direction: column;
+  }
+
+  .service-terminal > header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .service-terminal > header > div:last-child {
+    justify-content: flex-end;
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .service-topbar,
+  .service-console-stage,
+  .service-console-body > aside,
+  .glass-popover,
+  [data-slot="dialog-content"],
+  [data-slot="alert-dialog-content"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="dropdown-menu-sub-content"],
+  [data-slot="select-content"],
+  [data-slot="tooltip-content"] {
+    background-color: var(--popover);
   }
 }
 
@@ -378,5 +524,9 @@ button:disabled,
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  [data-slot="button"]:active:not(:disabled):not([aria-disabled="true"]) {
+    scale: 1;
   }
 }

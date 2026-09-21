@@ -236,6 +236,17 @@ async fn core_http_contract_enforces_statuses_validation_and_theme_persistence()
     assert_eq!(duplicate.status(), StatusCode::CONFLICT);
     assert!(duplicate.json::<Value>().await.unwrap()["detail"].is_string());
 
+    let mut theme_changes = controller.subscribe_theme();
+    assert_eq!(theme_changes.borrow_and_update().as_str(), "system");
+    let unauthorized_theme = client
+        .put(format!("{base}api/ui-preferences"))
+        .json(&json!({"theme": "light"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized_theme.status(), StatusCode::UNAUTHORIZED);
+    assert!(!theme_changes.has_changed().unwrap());
+
     let invalid_theme = client
         .put(format!("{base}api/ui-preferences"))
         .bearer_auth("contract-token")
@@ -244,6 +255,7 @@ async fn core_http_contract_enforces_statuses_validation_and_theme_persistence()
         .await
         .unwrap();
     assert_eq!(invalid_theme.status(), StatusCode::BAD_REQUEST);
+    assert!(!theme_changes.has_changed().unwrap());
 
     let theme = client
         .put(format!("{base}api/ui-preferences"))
@@ -253,6 +265,12 @@ async fn core_http_contract_enforces_statuses_validation_and_theme_persistence()
         .await
         .unwrap();
     assert_eq!(theme.status(), StatusCode::OK);
+    tokio::time::timeout(Duration::from_secs(1), theme_changes.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(theme_changes.borrow_and_update().as_str(), "dark");
+    assert_eq!(controller.subscribe_theme().borrow().as_str(), "dark");
     let index_response = client.get(&base).send().await.unwrap();
     assert_eq!(
         index_response

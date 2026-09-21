@@ -1,3 +1,4 @@
+mod desktop_theme;
 pub mod error;
 pub mod jenkins;
 pub mod manager;
@@ -104,11 +105,40 @@ pub fn run_desktop() {
                     let url = format!("{}?token={}", connection.base_url, connection.token)
                         .parse()
                         .map_err(|error| anyhow::anyhow!("invalid desktop URL: {error}"))?;
-                    WebviewWindowBuilder::new(&handle, "main", WebviewUrl::External(url))
-                        .title("Service Console")
-                        .inner_size(1360.0, 860.0)
-                        .min_inner_size(960.0, 640.0)
-                        .build()?;
+                    let mut theme_changes = controller.subscribe_theme();
+                    let preference = theme_changes.borrow_and_update().clone();
+                    let window_builder =
+                        WebviewWindowBuilder::new(&handle, "main", WebviewUrl::External(url))
+                            .title("Service Console")
+                            .inner_size(1360.0, 860.0)
+                            .min_inner_size(960.0, 640.0)
+                            .theme(desktop_theme::preferred_theme(&preference))
+                            .visible(false);
+                    // Preserve native traffic lights, dragging and window management.
+                    #[cfg(target_os = "macos")]
+                    let window_builder =
+                        window_builder.title_bar_style(tauri::TitleBarStyle::Transparent);
+                    let window = window_builder.build()?;
+                    desktop_theme::apply_preference(&window, &preference)?;
+                    let theme_window = window.clone();
+                    window.on_window_event(move |event| {
+                        if let tauri::WindowEvent::ThemeChanged(theme) = event
+                            && let Err(error) = desktop_theme::apply_chrome(&theme_window, *theme)
+                        {
+                            runtime_log::warn("desktop.theme_failed", error);
+                        }
+                    });
+                    window.show()?;
+                    tauri::async_runtime::spawn(async move {
+                        while theme_changes.changed().await.is_ok() {
+                            let preference = theme_changes.borrow_and_update().clone();
+                            if let Err(error) =
+                                desktop_theme::apply_preference(&window, &preference)
+                            {
+                                runtime_log::warn("desktop.theme_failed", error);
+                            }
+                        }
+                    });
                     crate::update_helper::write_ready_marker_from_env()?;
                     *state.manager.lock().await = Some(manager);
                     *state.controller.lock().await = Some(controller);

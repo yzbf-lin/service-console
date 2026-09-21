@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { CHROME_COLORS } from "@/lib/theme-colors";
 
 import "./globals.css";
 
@@ -15,7 +16,7 @@ const themeBootstrap = `
   document.documentElement.style.colorScheme = theme;
   document.querySelector("#themeColorMeta")?.setAttribute(
     "content",
-    theme === "dark" ? "#0d131d" : "#f4f6f8",
+    (${JSON.stringify(CHROME_COLORS)})[theme],
   );
 })();
 `;
@@ -38,7 +39,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="zh-CN" data-theme-preference="system" suppressHydrationWarning>
       <head>
-        <meta id="themeColorMeta" name="theme-color" content="#f4f6f8" suppressHydrationWarning />
+        <meta id="themeColorMeta" name="theme-color" content={CHROME_COLORS.light} suppressHydrationWarning />
         <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: themeBootstrap }} />
       </head>
       <body>{children}</body>

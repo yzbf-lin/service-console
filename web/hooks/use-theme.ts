@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { ThemePreference } from "@/lib/types";
+import { CHROME_COLORS } from "@/lib/theme-colors";
 
 function resolveTheme(preference: ThemePreference, systemDark: boolean): "light" | "dark" {
   if (preference === "light" || preference === "dark") return preference;
@@ -16,7 +17,7 @@ function applyTheme(preference: ThemePreference, systemDark: boolean) {
   document.documentElement.style.colorScheme = theme;
   document.querySelector<HTMLMetaElement>("#themeColorMeta")?.setAttribute(
     "content",
-    theme === "dark" ? "#0d131d" : "#f4f6f8",
+    CHROME_COLORS[theme],
   );
   return theme;
 }
