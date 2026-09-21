@@ -61,6 +61,7 @@ jobs:
           test -x "$APP/Contents/MacOS/service-console-updater"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = \
             "dev.service-console.desktop"
+          test -n "$(/usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$APP/Contents/Info.plist")"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = \
             "${{ steps.version.outputs.version }}"
           RESPONSE="$(printf '%s\n' \

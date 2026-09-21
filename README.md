@@ -204,6 +204,14 @@ CLI launches keep their existing process environment and do not start another sh
 fails or exceeds eight seconds, the desktop falls back to its process environment; set an explicit
 `PATH` in the service definition when troubleshooting an unusual shell profile.
 
+On macOS 15 and later, the desktop app and its managed services also need Local Network permission.
+A successful connection from Terminal does not establish permission for the app. For `No route to
+host`, check **System Settings → Privacy & Security → Local Network → Service Console**, allow
+access, and restart the failed service. An actual local-network operation triggers the prompt, not
+merely opening the app. The bundled usage description does not grant permission; routing or VPN
+issues can produce the same error. Current ad-hoc signatures may also affect permission identity
+after updates or when multiple app copies are present.
+
 Register and control a native service:
 
 ```bash

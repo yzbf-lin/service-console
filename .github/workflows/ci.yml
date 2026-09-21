@@ -94,6 +94,7 @@ jobs:
           grep -q '"name":"service_group_start"' <<<"$RESPONSE"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = \
             "dev.service-console.desktop"
+          test -n "$(/usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$APP/Contents/Info.plist")"
       - name: Verify Windows transition binaries
         if: runner.os == 'Windows'
         shell: pwsh

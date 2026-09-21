@@ -33,6 +33,11 @@ use crate::{
 };
 
 const LOG_BUFFER_SIZE: usize = 1_000;
+const LOCAL_NETWORK_HINT: &str = "[Service Console] macOS 本地网络排查提示：No route to host / EHOSTUNREACH 也可能由路由或 VPN 引起。若终端连接正常而此服务失败，请检查“系统设置 → 隐私与安全性 → 本地网络 → Service Console”，允许后重启此服务。";
+
+fn is_host_unreachable(message: &str) -> bool {
+    message.contains("No route to host") || message.contains("EHOSTUNREACH")
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GroupActionError {
@@ -766,15 +771,26 @@ impl ServiceManager {
             snapshot
         };
 
+        // Share one hint budget across both streams, renewed for each process launch.
+        let network_hint_emitted = Arc::new(AtomicBool::new(false));
         if let Some(stdout) = stdout {
             let manager = Arc::clone(self);
             let name = name.to_owned();
-            tokio::spawn(async move { manager.read_stream(name, "stdout", stdout).await });
+            let network_hint_emitted = Arc::clone(&network_hint_emitted);
+            tokio::spawn(async move {
+                manager
+                    .read_stream(name, "stdout", stdout, network_hint_emitted)
+                    .await
+            });
         }
         if let Some(stderr) = stderr {
             let manager = Arc::clone(self);
             let name = name.to_owned();
-            tokio::spawn(async move { manager.read_stream(name, "stderr", stderr).await });
+            tokio::spawn(async move {
+                manager
+                    .read_stream(name, "stderr", stderr, network_hint_emitted)
+                    .await
+            });
         }
         let manager = Arc::clone(self);
         let name = name.to_owned();
@@ -880,13 +896,31 @@ impl ServiceManager {
         Ok(service.logs.iter().skip(start).cloned().collect())
     }
 
-    async fn read_stream<R>(self: Arc<Self>, name: String, stream: &'static str, reader: R)
-    where
+    async fn read_stream<R>(
+        self: Arc<Self>,
+        name: String,
+        stream: &'static str,
+        reader: R,
+        network_hint_emitted: Arc<AtomicBool>,
+    ) where
         R: AsyncRead + Unpin,
     {
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            // EHOSTUNREACH is not proof of a privacy denial. Keep the original output
+            // and offer troubleshooting only; do not retry or change service state.
+            let show_network_hint = cfg!(target_os = "macos")
+                && is_host_unreachable(&line)
+                && !network_hint_emitted.swap(true, Ordering::Relaxed);
             self.record_log(&name, stream, line).await;
+            if show_network_hint {
+                self.record_log(&name, "stderr", LOCAL_NETWORK_HINT.into())
+                    .await;
+                runtime_log::warn(
+                    "service.network_unreachable",
+                    format_args!("name={name} {LOCAL_NETWORK_HINT}"),
+                );
+            }
         }
     }
 

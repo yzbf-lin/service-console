@@ -475,6 +475,99 @@ async fn logs_larger_than_the_live_buffer_are_loaded_from_persistent_storage() {
 }
 
 #[tokio::test]
+async fn network_error_hint_is_macos_only_once_per_launch_and_preserves_original_logs() {
+    let directory = tempdir().unwrap();
+    let manager = ServiceManager::new(directory.path()).unwrap();
+    manager.initialize().await.unwrap();
+    let command = if cfg!(windows) {
+        "echo stdout: No route to host& 1>&2 echo stderr: EHOSTUNREACH& 1>&2 echo stderr: No route to host& exit /b 3"
+    } else {
+        "printf '%s\n' 'stdout: No route to host'; printf '%s\n' 'stderr: EHOSTUNREACH' 'stderr: No route to host' >&2; exit 3"
+    };
+    manager
+        .add_service(definition("network-error", command, directory.path()))
+        .await
+        .unwrap();
+
+    for launch in 1..=2 {
+        manager.start("network-error").await.unwrap();
+        let expected_hints = usize::from(cfg!(target_os = "macos")) * launch;
+        let logs = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let logs = manager.get_logs("network-error", 100).await.unwrap();
+                let service = manager.get_service("network-error").await.unwrap();
+                if service.state == ServiceState::Failed
+                    && logs.len() >= 3 * launch + expected_hints
+                {
+                    break logs;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("network-error process should exit and flush its logs");
+
+        for (stream, message) in [
+            ("stdout", "stdout: No route to host"),
+            ("stderr", "stderr: EHOSTUNREACH"),
+            ("stderr", "stderr: No route to host"),
+        ] {
+            assert_eq!(
+                logs.iter()
+                    .filter(|entry| entry.stream == stream && entry.message == message)
+                    .count(),
+                launch,
+                "original output must remain unchanged"
+            );
+        }
+        assert_eq!(
+            logs.iter()
+                .filter(|entry| entry.message.starts_with("[Service Console]"))
+                .count(),
+            expected_hints,
+            "stdout and stderr must share a hint limit that resets on restart"
+        );
+        let service = manager.get_service("network-error").await.unwrap();
+        assert_eq!(service.exit_code, Some(3));
+        assert!(
+            service
+                .last_error
+                .as_deref()
+                .unwrap()
+                .starts_with("process exited with ")
+        );
+    }
+
+    manager.shutdown().await;
+    let restored = ServiceManager::new(directory.path()).unwrap();
+    assert_eq!(
+        restored.get_logs("network-error", 100).await.unwrap(),
+        manager.get_logs("network-error", 100).await.unwrap(),
+        "diagnostic hints and original logs should both be persisted"
+    );
+}
+
+#[tokio::test]
+async fn unrelated_errors_do_not_emit_a_local_network_hint() {
+    let directory = tempdir().unwrap();
+    let manager = ServiceManager::new(directory.path()).unwrap();
+    manager.initialize().await.unwrap();
+    let command = if cfg!(windows) {
+        "echo Connection refused& echo Connection timed out& echo unrelated code 65& exit /b 1"
+    } else {
+        "printf '%s\n' 'Connection refused' 'Connection timed out' 'unrelated code 65'; exit 1"
+    };
+    manager
+        .add_service(definition("other-error", command, directory.path()))
+        .await
+        .unwrap();
+    manager.start("other-error").await.unwrap();
+    wait_for_log(&manager, "other-error", "unrelated code 65").await;
+    assert_eq!(manager.get_logs("other-error", 100).await.unwrap().len(), 3);
+    manager.shutdown().await;
+}
+
+#[tokio::test]
 async fn groups_persist_assignments_and_control_all_members() {
     let directory = tempdir().unwrap();
     let manager = ServiceManager::new(directory.path()).unwrap();
