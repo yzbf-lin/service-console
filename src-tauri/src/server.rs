@@ -3,13 +3,13 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
     Json, Router,
     extract::{
-        Path as AxumPath, Query, Request, State, WebSocketUpgrade,
+        MatchedPath, Path as AxumPath, Query, Request, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
     http::StatusCode,
@@ -29,7 +29,7 @@ use tokio::{
 use tower_http::services::ServeDir;
 
 use crate::{
-    error::{AppError, AppResult},
+    error::{ApiFailureDetail, AppError, AppResult},
     jenkins::{JenkinsInstanceInput, JenkinsService},
     manager::ServiceManager,
     mcp_integration::McpIntegration,
@@ -52,6 +52,7 @@ pub struct AppState {
     pub mcp: Arc<McpIntegration>,
     pub update: Arc<UpdateManager>,
     pub update_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub diagnostics: Arc<runtime_log::DiagnosticLimiter>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,6 +92,22 @@ struct TailQuery {
 }
 fn default_tail() -> usize {
     500
+}
+
+#[derive(Debug, Deserialize)]
+struct AppLogQuery {
+    #[serde(default = "default_app_log_limit")]
+    limit: usize,
+}
+
+fn default_app_log_limit() -> usize {
+    500
+}
+
+#[derive(Debug, Deserialize)]
+struct ClientDiagnostic {
+    event: String,
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,6 +275,7 @@ pub async fn start_controller_with_update_exit(
         mcp,
         update,
         update_exit,
+        diagnostics: Arc::default(),
     };
     let app = router(state);
     let listener = TcpListener::bind(SocketAddr::new(host, port)).await?;
@@ -292,8 +310,10 @@ pub fn random_token() -> String {
 
 pub fn router(state: AppState) -> Router {
     let token_state = state.token.clone();
+    let diagnostics = Arc::clone(&state.diagnostics);
     let api = Router::new()
         .route("/health", get(health))
+        .route("/app-logs", get(app_logs).post(record_client_diagnostic))
         .route("/ui-preferences", put(update_preferences))
         .route("/app-update", get(update_status))
         .route("/app-update/check", post(check_update))
@@ -367,6 +387,10 @@ pub fn router(state: AppState) -> Router {
         .route("/processes", get(list_processes))
         .route("/processes/{pid}", get(get_process))
         .route("/processes/{pid}/terminate", post(terminate_process))
+        .layer(middleware::from_fn_with_state(
+            diagnostics,
+            log_api_operation,
+        ))
         .layer(middleware::from_fn_with_state(token_state, require_token));
 
     let static_service = ServeDir::new(&state.static_dir);
@@ -411,6 +435,109 @@ fn constant_eq(left: &str, right: &str) -> bool {
 
 async fn health() -> Json<Value> {
     Json(json!({"status": "ok"}))
+}
+
+async fn app_logs(
+    State(state): State<AppState>,
+    Query(query): Query<AppLogQuery>,
+) -> AppResult<([(&'static str, &'static str); 1], Json<Value>)> {
+    if query.limit == 0 || query.limit > 1_000 {
+        return Err(AppError::bad_request("limit must be between 1 and 1000"));
+    }
+    let directory = state.manager.data_dir().to_path_buf();
+    let snapshot =
+        tokio::task::spawn_blocking(move || runtime_log::read_recent(&directory, query.limit))
+            .await
+            .map_err(|error| AppError::Internal(error.to_string()))??;
+    Ok((
+        [("cache-control", "no-store")],
+        Json(
+            json!({"logs": snapshot.entries, "path": snapshot.path, "max_file_bytes": snapshot.max_file_bytes, "retained_files": snapshot.retained_files}),
+        ),
+    ))
+}
+
+async fn record_client_diagnostic(
+    State(state): State<AppState>,
+    Json(body): Json<ClientDiagnostic>,
+) -> AppResult<StatusCode> {
+    if !matches!(
+        body.event.as_str(),
+        "ui.error" | "ui.unhandled_error" | "ui.unhandled_rejection"
+    ) || body.message.is_empty()
+        || body.message.len() > 16 * 1024
+    {
+        return Err(AppError::bad_request("invalid client diagnostic"));
+    }
+    let message = if let Some(token) = state.token.as_deref().filter(|token| !token.is_empty()) {
+        body.message.replace(token, "[redacted]")
+    } else {
+        body.message
+    };
+    let message = runtime_log::sanitize(&message);
+    if state
+        .diagnostics
+        .allow(&format!("{}:{message}", body.event))
+    {
+        runtime_log::error(&body.event, message);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn log_api_operation(
+    State(limiter): State<Arc<runtime_log::DiagnosticLimiter>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    // MatchedPath contains route templates, not names, query strings or credentials.
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|path| path.as_str().to_owned())
+        .unwrap_or_default();
+    let method = request.method().clone();
+    let diagnostic_route = route.ends_with("/app-logs");
+    let operation = method != axum::http::Method::GET
+        && method != axum::http::Method::HEAD
+        && !route.ends_with("/job/parameters")
+        && !diagnostic_route;
+    let started = Instant::now();
+    if operation {
+        runtime_log::info("api.started", format_args!("method={method} route={route}"));
+    }
+    let response = next.run(request).await;
+    let status = response.status();
+    if diagnostic_route {
+        return response;
+    }
+    let failed = status.is_client_error() || status.is_server_error();
+    if failed && limiter.allow(&format!("{method}:{route}:{status}")) {
+        let detail = response
+            .extensions()
+            .get::<ApiFailureDetail>()
+            .map(|detail| detail.0.as_str())
+            .unwrap_or_else(|| status.canonical_reason().unwrap_or("request failed"));
+        let message = format!(
+            "method={method} route={route} status={} elapsed_ms={} detail={detail}",
+            status.as_u16(),
+            started.elapsed().as_millis()
+        );
+        if status.is_server_error() {
+            runtime_log::error("api.failed", message);
+        } else {
+            runtime_log::warn("api.rejected", message);
+        }
+    } else if !failed && operation {
+        runtime_log::info(
+            "api.completed",
+            format_args!(
+                "method={method} route={route} status={} elapsed_ms={}",
+                status.as_u16(),
+                started.elapsed().as_millis()
+            ),
+        );
+    }
+    response
 }
 
 async fn index(

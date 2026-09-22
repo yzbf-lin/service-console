@@ -21,7 +21,9 @@ import {
   normalizeJenkinsTrigger,
 } from "./jenkins";
 import type {
+  AppLogSnapshot,
   AppUpdateStatus,
+  ClientDiagnosticEvent,
   JenkinsBuild,
   JenkinsBuildStages,
   JenkinsBuildParameterValue,
@@ -77,6 +79,8 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
 
 export interface ServiceConsoleApiClient {
   request<T>(path: string, options?: RequestOptions): Promise<T>;
+  getAppLogs(signal?: AbortSignal): Promise<AppLogSnapshot>;
+  reportClientError(event: ClientDiagnosticEvent, message: string): Promise<void>;
   checkHealth(): Promise<boolean>;
   listServices(): Promise<NormalizedService[]>;
   listServiceGroups(): Promise<string[]>;
@@ -165,6 +169,7 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
   const token = options.token || "";
   const baseUrl = options.baseUrl || "";
   const fetcher = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const recentDiagnostics = new Map<string, number>();
 
   async function request<T>(path: string, requestOptions: RequestOptions = {}): Promise<T> {
     const headers = new Headers(requestOptions.headers || {});
@@ -222,6 +227,29 @@ export function createApiClient(options: ApiClientOptions = {}): ServiceConsoleA
 
   return {
     request,
+    getAppLogs(signal) {
+      return request<AppLogSnapshot>("/api/app-logs?limit=500", { signal, cache: "no-store" });
+    },
+    async reportClientError(event, message) {
+      // Logging must never delay an operation, recurse on failure or flood the server.
+      const safeMessage = (token ? message.split(token).join("[redacted]") : message).slice(0, 4_000);
+      const key = `${event}:${safeMessage}`;
+      const now = Date.now();
+      for (const [entry, time] of recentDiagnostics) {
+        if (now - time >= 60_000) recentDiagnostics.delete(entry);
+      }
+      if (recentDiagnostics.has(key) || recentDiagnostics.size >= 20) return;
+      recentDiagnostics.set(key, now);
+      try {
+        await request<void>("/api/app-logs", {
+          method: "POST",
+          body: { event, message: safeMessage },
+          signal: AbortSignal.timeout(3_000),
+        });
+      } catch {
+        // The controller may be offline. Do not generate another diagnostic request.
+      }
+    },
     async checkHealth() {
       const payload = await request<unknown>("/api/health");
       if (!isRecord(payload) || payload.status === undefined) return true;

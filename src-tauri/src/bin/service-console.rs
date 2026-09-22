@@ -202,6 +202,7 @@ async fn main() -> Result<()> {
     } = &args.command
     {
         let manager = ServiceManager::new(data_dir)?;
+        service_console::runtime_log::init(manager.data_dir())?;
         let static_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/static");
         let controller =
             start_controller(manager.clone(), *host, *port, token.clone(), static_dir).await?;

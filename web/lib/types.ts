@@ -11,8 +11,25 @@ export type ServiceState = (typeof SERVICE_STATES)[number];
 export type ServiceStatus = ServiceState | "UNKNOWN";
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = Exclude<ThemePreference, "system">;
-export type ViewId = "services" | "ports" | "jenkins" | "settings";
+export type ViewId = "services" | "ports" | "jenkins" | "logs" | "settings";
 export type ConnectionState = "pending" | "ok" | "error";
+
+export interface AppLogEntry {
+  id: string;
+  timestamp: string | null;
+  level: "INFO" | "WARN" | "ERROR";
+  event: string;
+  message: string;
+}
+
+export interface AppLogSnapshot {
+  logs: AppLogEntry[];
+  path: string;
+  max_file_bytes: number;
+  retained_files: number;
+}
+
+export type ClientDiagnosticEvent = "ui.error" | "ui.unhandled_error" | "ui.unhandled_rejection";
 
 export const APP_UPDATE_STATES = [
   "idle",

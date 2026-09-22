@@ -1,6 +1,6 @@
 "use client";
 
-import { Network, ServerCog, Settings, Workflow } from "lucide-react";
+import { FileWarning, Network, ServerCog, Settings, Workflow } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useId } from "react";
 
@@ -27,6 +27,7 @@ const primaryItems: NavigationItem[] = [
 ];
 
 const secondaryItems: NavigationItem[] = [
+  { id: "logs", label: "应用日志", icon: FileWarning },
   { id: "settings", label: "设置", icon: Settings },
 ];
 
@@ -115,7 +116,7 @@ export function SidebarNav({ activeView, updateAvailable = false, onViewChange }
             </div>
 
             <div
-              className="mt-auto flex shrink-0 flex-col items-center gap-1.5 border-t p-1.5 max-[767px]:mt-0 max-[767px]:min-w-0 max-[767px]:flex-1 max-[767px]:flex-row max-[767px]:gap-0 max-[767px]:border-t-0 max-[767px]:p-0"
+              className="mt-auto flex shrink-0 flex-col items-center gap-1.5 border-t p-1.5 max-[767px]:mt-0 max-[767px]:min-w-0 max-[767px]:flex-[2] max-[767px]:flex-row max-[767px]:gap-0 max-[767px]:border-t-0 max-[767px]:p-0"
               data-nav-section="secondary"
             >
               {secondaryItems.map((item) => (

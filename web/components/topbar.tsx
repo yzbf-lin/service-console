@@ -32,6 +32,7 @@ const viewCopy: Record<ViewId, { title: string; description: string }> = {
   services: { title: "服务控制", description: "进程与实时日志" },
   ports: { title: "端口进程", description: "监听端口与占用进程" },
   jenkins: { title: "Jenkins", description: "多实例任务与构建管理" },
+  logs: { title: "应用日志", description: "关键操作、警告与异常诊断" },
   settings: { title: "设置", description: "外观、更新与连接偏好" },
 };
 
@@ -140,8 +141,8 @@ export function Topbar({
             className="size-8 rounded-lg shadow-none"
             type="button"
             disabled={refreshing}
-            aria-label={activeView === "ports" ? "刷新端口列表" : activeView === "jenkins" ? "刷新 Jenkins" : "刷新服务列表"}
-            title={activeView === "ports" ? "刷新端口列表" : activeView === "jenkins" ? "刷新 Jenkins" : "刷新服务列表"}
+            aria-label={activeView === "ports" ? "刷新端口列表" : activeView === "jenkins" ? "刷新 Jenkins" : activeView === "logs" ? "刷新应用日志" : "刷新服务列表"}
+            title={activeView === "ports" ? "刷新端口列表" : activeView === "jenkins" ? "刷新 Jenkins" : activeView === "logs" ? "刷新应用日志" : "刷新服务列表"}
             onClick={onRefresh}
           >
             <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />

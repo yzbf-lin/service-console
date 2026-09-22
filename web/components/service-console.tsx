@@ -24,6 +24,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PortsView, type ProcessImportHint } from "@/components/ports-view";
+import { AppLogsView } from "@/components/app-logs-view";
 import { JenkinsView } from "@/components/jenkins-view";
 import { ServiceControlView } from "@/components/service-control-view";
 import { ServiceFormDialog, type ServiceFormMode } from "@/components/service-form-dialog";
@@ -37,7 +38,7 @@ import { useHashView } from "@/hooks/use-hash-view";
 import { useMcpIntegration } from "@/hooks/use-mcp-integration";
 import { useServices } from "@/hooks/use-services";
 import { useTheme } from "@/hooks/use-theme";
-import { ApiError } from "@/lib/api-client";
+import { ApiError, createApiClient } from "@/lib/api-client";
 import type {
   NormalizedProcessCandidate,
   NormalizedService,
@@ -89,6 +90,7 @@ function ServiceConsoleContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [portRefreshSignal, setPortRefreshSignal] = useState(0);
   const [jenkinsRefreshSignal, setJenkinsRefreshSignal] = useState(0);
+  const [logRefreshSignal, setLogRefreshSignal] = useState(0);
   const [formOpen, setFormOpen] = useState(false);
   const [formMode, setFormMode] = useState<ServiceFormMode>("create");
   const [formSource, setFormSource] = useState<NormalizedService | null>(null);
@@ -102,10 +104,28 @@ function ServiceConsoleContent() {
   const [deleteGroupTarget, setDeleteGroupTarget] = useState<string | null>(null);
   const processImportRequestId = useRef(0);
   const notifiedUpdateVersionsRef = useRef(new Set<string>());
+  const diagnosticApi = useMemo(() => createApiClient({ token }), [token]);
 
   const showError = useCallback((title: string, message: string) => {
     notify(title, message, "error");
-  }, [notify]);
+    void diagnosticApi.reportClientError("ui.error", `${title}：${message}`);
+  }, [diagnosticApi, notify]);
+
+  useEffect(() => {
+    const onError = (event: ErrorEvent) => {
+      void diagnosticApi.reportClientError("ui.unhandled_error", event.error instanceof Error ? `${event.error.message}\n${event.error.stack ?? ""}` : event.message);
+    };
+    const onRejection = (event: PromiseRejectionEvent) => {
+      const reason: unknown = event.reason;
+      void diagnosticApi.reportClientError("ui.unhandled_rejection", reason instanceof Error ? `${reason.message}\n${reason.stack ?? ""}` : String(reason));
+    };
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onRejection);
+    };
+  }, [diagnosticApi]);
 
   const showSuccess = useCallback((title: string, message: string) => {
     notify(title, message, "success");
@@ -329,6 +349,9 @@ function ServiceConsoleContent() {
       } else if (activeView === "jenkins") {
         setJenkinsRefreshSignal((value) => value + 1);
         await serviceState.checkHealth();
+      } else if (activeView === "logs") {
+        setLogRefreshSignal((value) => value + 1);
+        await serviceState.checkHealth();
       } else {
         await Promise.all([serviceState.loadServices(), serviceState.checkHealth()]);
       }
@@ -366,6 +389,8 @@ function ServiceConsoleContent() {
         onSuccess={showSuccess}
       />
     );
+  } else if (activeView === "logs") {
+    content = <AppLogsView api={serviceState.api} refreshSignal={logRefreshSignal} />;
   } else if (activeView === "settings") {
     content = (
       <SettingsView

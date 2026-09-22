@@ -18,6 +18,16 @@ const mocks = vi.hoisted(() => ({
   installMcp: vi.fn(),
   refreshMcp: vi.fn(),
   mcpStatus: null as McpIntegrationStatus | null,
+  reportClientError: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/api-client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/api-client")>(),
+  createApiClient: () => ({ reportClientError: mocks.reportClientError }),
+}));
+
+vi.mock("@/components/app-logs-view", () => ({
+  AppLogsView: () => <div>应用诊断视图</div>,
 }));
 
 vi.mock("@/components/ports-view", () => ({
@@ -86,6 +96,7 @@ vi.mock("@/components/sidebar-nav", () => ({
     <aside data-testid="sidebar" data-update-available={String(Boolean(updateAvailable))}>
       <button type="button" onClick={() => onViewChange("services")}>切换服务页</button>
       <button type="button" onClick={() => onViewChange("settings")}>切换设置页</button>
+      <button type="button" onClick={() => onViewChange("logs")}>切换应用日志</button>
     </aside>
   ),
 }));
@@ -227,6 +238,7 @@ describe("ServiceConsole process shortcut coordination", () => {
     mocks.notify.mockReset();
     mocks.installMcp.mockReset();
     mocks.refreshMcp.mockReset();
+    mocks.reportClientError.mockClear();
     mocks.appUpdateStatus = null;
     mocks.mcpStatus = null;
   });
@@ -339,5 +351,27 @@ describe("ServiceConsole process shortcut coordination", () => {
       "可粘贴到 Codex 配置或终端中使用。",
       "success",
     );
+  });
+
+  it("opens the diagnostic view and records UI failures without replacing toast feedback", async () => {
+    const addListener = vi.spyOn(window, "addEventListener");
+    const removeListener = vi.spyOn(window, "removeEventListener");
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard failed"));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const { unmount } = render(<ServiceConsole />);
+    fireEvent.click(screen.getByRole("button", { name: "切换设置页" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制 MCP 配置" }));
+    await waitFor(() => expect(mocks.reportClientError).toHaveBeenCalledWith("ui.error", "复制 MCP 配置失败：clipboard failed"));
+    expect(mocks.notify).toHaveBeenCalledWith("复制 MCP 配置失败", "clipboard failed", "error");
+    fireEvent.click(screen.getByRole("button", { name: "切换应用日志" }));
+    expect(screen.getByText("应用诊断视图")).toBeTruthy();
+    const event = new ErrorEvent("error", { message: "runtime error", error: new Error("runtime error") });
+    const handler = addListener.mock.calls.find(([name]) => name === "error")?.[1] as EventListener;
+    handler(event);
+    expect(mocks.reportClientError).toHaveBeenCalledWith("ui.unhandled_error", expect.stringContaining("runtime error"));
+    unmount();
+    expect(removeListener).toHaveBeenCalledWith("error", handler);
+    addListener.mockRestore();
+    removeListener.mockRestore();
   });
 });

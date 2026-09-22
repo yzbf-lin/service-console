@@ -5,6 +5,9 @@ use axum::{
 };
 use serde_json::json;
 
+#[derive(Clone)]
+pub(crate) struct ApiFailureDetail(pub String);
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("{0}")]
@@ -39,6 +42,7 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        let detail = self.to_string();
         let status = match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
@@ -46,7 +50,9 @@ impl IntoResponse for AppError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Io(_) | Self::Json(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, Json(json!({ "detail": self.to_string() }))).into_response()
+        let mut response = (status, Json(json!({ "detail": detail }))).into_response();
+        response.extensions_mut().insert(ApiFailureDetail(detail));
+        response
     }
 }
 

@@ -154,6 +154,16 @@ Follow the operating system or select a persistent light or dark theme. The same
 installed version, checks for signed updates, and guides download and restart. Optional Supabase
 connection settings remain separate from the local Rust/Axum controller and are not required locally.
 
+### Application diagnostics
+
+Open **Application logs** from the lower navigation rail to inspect lifecycle events, key API operations,
+and UI errors separately from managed-service output. Filter by severity, search, pause or refresh, and
+copy the filtered results. The viewer shows the latest 500 entries including rotated history, polls every
+two seconds, and preserves your reading position when scrolled away from the bottom. API diagnostics
+include status, duration, and failure details without recording request bodies or authentication headers;
+repeated errors are rate-limited. Logs live at `~/.service-console/logs/service-console.log` by default,
+with a 1 MiB file limit and two rotated backups. Review paths and business details before sharing logs.
+
 ### Appearance
 
 The dashboard is a statically exported Next.js application. Its reusable components follow

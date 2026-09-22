@@ -28,6 +28,7 @@ describe("SidebarNav information architecture", () => {
     expect(within(primary as HTMLElement).queryByRole("button", { name: /^设置/ })).toBeNull();
 
     expect(within(secondary as HTMLElement).getByRole("button", { name: /^设置/ })).toBeTruthy();
+    expect(within(secondary as HTMLElement).getByRole("button", { name: "应用日志" })).toBeTruthy();
     expect(within(secondary as HTMLElement).queryByRole("button", { name: /^服务控制/ })).toBeNull();
     expect(within(secondary as HTMLElement).queryByRole("button", { name: /^端口进程/ })).toBeNull();
     expect(within(secondary as HTMLElement).queryByRole("button", { name: /^Jenkins/ })).toBeNull();
@@ -40,6 +41,15 @@ describe("SidebarNav information architecture", () => {
     fireEvent.click(screen.getByRole("button", { name: /^设置/ }));
     expect(onViewChange).toHaveBeenCalledOnce();
     expect(onViewChange).toHaveBeenCalledWith("settings");
+  });
+
+  it("opens application diagnostics from the utility section", () => {
+    const onViewChange = vi.fn();
+    render(<SidebarNav activeView="logs" onViewChange={onViewChange} />);
+    const button = screen.getByRole("button", { name: "应用日志" });
+    expect(button.getAttribute("aria-current")).toBe("page");
+    fireEvent.click(button);
+    expect(onViewChange).toHaveBeenCalledWith("logs");
   });
 
   it("marks Settings when an application update is available", () => {
