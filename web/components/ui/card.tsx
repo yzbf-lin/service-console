@@ -8,7 +8,7 @@ const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElemen
       ref={ref}
       data-slot="card"
       className={cn(
-        "flex flex-col gap-4 rounded-lg border border-border bg-card py-4 text-card-foreground shadow-sm",
+        "flex flex-col gap-(--card-spacing) overflow-hidden rounded-xl bg-card py-(--card-spacing) text-sm text-card-foreground ring-1 ring-foreground/10 [--card-spacing:--spacing(4)]",
         className,
       )}
       {...props}
@@ -25,7 +25,7 @@ const CardHeader = React.forwardRef<
     ref={ref}
     data-slot="card-header"
     className={cn(
-      "grid auto-rows-min grid-rows-[auto_auto] items-start gap-1 px-4 has-data-[slot=card-action]:grid-cols-[1fr_auto]",
+      "grid auto-rows-min grid-rows-[auto_auto] items-start gap-1 rounded-t-xl px-(--card-spacing) has-data-[slot=card-action]:grid-cols-[1fr_auto]",
       className,
     )}
     {...props}
@@ -40,7 +40,7 @@ const CardTitle = React.forwardRef<
   <h3
     ref={ref}
     data-slot="card-title"
-    className={cn("leading-none font-semibold", className)}
+    className={cn("text-base leading-snug font-medium", className)}
     {...props}
   />
 ));
@@ -79,7 +79,7 @@ const CardContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDi
     <div
       ref={ref}
       data-slot="card-content"
-      className={cn("px-4", className)}
+      className={cn("px-(--card-spacing)", className)}
       {...props}
     />
   ),
@@ -91,7 +91,10 @@ const CardFooter = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
     <div
       ref={ref}
       data-slot="card-footer"
-      className={cn("flex items-center px-4", className)}
+      className={cn(
+        "flex items-center rounded-b-xl border-t bg-muted/50 p-(--card-spacing)",
+        className,
+      )}
       {...props}
     />
   ),

@@ -105,7 +105,10 @@ vi.mock("@/components/topbar", () => ({
 }));
 vi.mock("@/components/toast-provider", () => ({
   ToastProvider: ({ children }: { children: ReactNode }) => children,
-  useToast: () => ({ notify: mocks.notify }),
+}));
+vi.mock("@/stores/toast-store", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/stores/toast-store")>(),
+  useNotify: () => mocks.notify,
 }));
 vi.mock("@/hooks/use-hash-view", async () => {
   const { useState } = await import("react");

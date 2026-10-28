@@ -55,11 +55,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  ResizableGroup,
+  ResizableHandle,
+  ResizablePanel,
+} from "@/components/ui/resizable";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { JenkinsInstanceDialog, type JenkinsInstanceDialogMode } from "@/components/jenkins-instance-dialog";
 import { XtermLogViewer } from "@/components/xterm-log-viewer";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { cn } from "@/lib/cn";
 import type { ServiceConsoleApiClient } from "@/lib/api-client";
 import { resolveJenkinsBuildUrl } from "@/lib/jenkins";
@@ -532,17 +538,8 @@ function JenkinsStageCard({ stage, index, ...context }: {
   );
 }
 
-function useNarrowJenkinsLayout(): boolean {
-  const [narrow, setNarrow] = useState(false);
-  useEffect(() => {
-    const media = window.matchMedia("(max-width: 980px)");
-    const update = () => setNarrow(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
-  return narrow;
-}
+/** Below this width the three Jenkins panes become a single tabbed pane. */
+const NARROW_JENKINS_LAYOUT = "(max-width: 980px)";
 
 function connectionCopy(state: ConnectionViewState | undefined): string {
   if (!state || state.status === "unknown") return "未检测";
@@ -747,7 +744,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   const [logError, setLogError] = useState("");
   const [logTruncated, setLogTruncated] = useState(false);
 
-  const narrow = useNarrowJenkinsLayout();
+  const narrow = useMediaQuery(NARROW_JENKINS_LAYOUT);
   const [mobilePane, setMobilePane] = useState<MobilePane>("jobs");
   const activeInstanceIdRef = useRef(activeInstanceId);
   const selectedJobNameRef = useRef(selectedJobName);
@@ -1496,7 +1493,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   };
 
   const jobsPanel = (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r bg-[var(--sidebar)]" aria-label="Jenkins 实例与任务">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-sidebar" aria-label="Jenkins 实例与任务">
       <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b px-2.5">
         <div className="flex min-w-0 items-center gap-2">
           <Server className="size-3.5 shrink-0 text-primary" />
@@ -1544,8 +1541,8 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
           );
         })}
         {instancesLoaded && !instances.length ? (
-          <button className="grid w-full place-items-center rounded-lg border border-dashed px-3 py-5 text-center text-[10px] text-muted-foreground hover:bg-accent/40" type="button" onClick={() => setDialog({ mode: "create", source: null })}>
-            <Plus className="mb-1 size-4" /><span>添加第一个 Jenkins 实例</span>
+          <button className="grid w-full place-items-center rounded-lg border border-dashed px-3 py-5 text-center text-[10px] text-muted-foreground outline-none transition-colors hover:bg-accent/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/70" type="button" onClick={() => setDialog({ mode: "create", source: null })}>
+            <Plus className="mb-1 size-4" aria-hidden="true" /><span>添加第一个 Jenkins 实例</span>
           </button>
         ) : null}
       </div>
@@ -1582,7 +1579,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
   );
 
   const activityPanel = (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r bg-card" aria-label="Jenkins 活动任务">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-card" aria-label="Jenkins 活动任务">
       <header className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b px-3 py-1.5">
         <div className="min-w-0">
           <h2 className="truncate text-[12px] font-semibold">{jobDetail?.fullName || selectedJobName || "选择一个任务"}</h2>
@@ -1716,12 +1713,45 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
             ["jobs", "实例 / Job"],
             ["activity", "活动任务"],
             ["logs", "详情 / 日志"],
-          ] as const).map(([id, label]) => <button key={id} type="button" className={cn("rounded-md text-[10px] text-muted-foreground", mobilePane === id && "bg-accent font-semibold text-foreground")} aria-current={mobilePane === id ? "page" : undefined} onClick={() => setMobilePane(id)}>{label}</button>)}
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={cn(
+                "rounded-md text-[10px] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/70",
+                mobilePane === id && "bg-accent font-semibold text-accent-foreground",
+              )}
+              aria-current={mobilePane === id ? "page" : undefined}
+              onClick={() => setMobilePane(id)}
+            >
+              {label}
+            </button>
+          ))}
         </nav>
       ) : null}
-      <div className={cn("min-h-0 flex-1", narrow ? "flex" : "grid grid-cols-[minmax(220px,260px)_minmax(260px,340px)_minmax(360px,1fr)]")}>
-        {narrow ? mobilePane === "jobs" ? jobsPanel : mobilePane === "activity" ? activityPanel : logPanel : <>{jobsPanel}{activityPanel}{logPanel}</>}
-      </div>
+      {narrow ? (
+        <div className="flex min-h-0 flex-1">
+          {mobilePane === "jobs" ? jobsPanel : mobilePane === "activity" ? activityPanel : logPanel}
+        </div>
+      ) : (
+        <ResizableGroup
+          id="jenkins-pane-layout"
+          className="min-h-0 flex-1"
+          orientation="horizontal"
+        >
+          <ResizablePanel id="jenkins-jobs" defaultSize={240} minSize={220} maxSize={340}>
+            {jobsPanel}
+          </ResizablePanel>
+          <ResizableHandle id="jenkins-jobs-resize" aria-label="调整 Jenkins 实例栏宽度" />
+          <ResizablePanel id="jenkins-activity" defaultSize={300} minSize={260} maxSize={420}>
+            {activityPanel}
+          </ResizablePanel>
+          <ResizableHandle id="jenkins-activity-resize" aria-label="调整 Jenkins 活动栏宽度" />
+          <ResizablePanel id="jenkins-logs" minSize={360}>
+            {logPanel}
+          </ResizablePanel>
+        </ResizableGroup>
+      )}
 
       {dialog ? (
         <JenkinsInstanceDialog
@@ -1739,7 +1769,7 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader><AlertDialogTitle>删除 Jenkins“{deleteTarget?.name}”</AlertDialogTitle><AlertDialogDescription>将删除本地实例配置及其安全存储的 Token，不会删除 Jenkins 服务器上的任务或构建记录。</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void confirmDelete()}>删除实例</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void confirmDelete()}>删除实例</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
@@ -1829,11 +1859,11 @@ export function JenkinsView({ active, api, refreshSignal, theme, onError, onSucc
       </Dialog>
 
       <AlertDialog open={Boolean(stopTarget)} onOpenChange={(open) => !open && !busyAction && setStopTarget(null)}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>停止构建 #{stopTarget?.number}</AlertDialogTitle><AlertDialogDescription>Jenkins 会向正在运行的构建发送停止请求，当前执行步骤可能需要短暂时间才能退出。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void confirmStop()}>停止构建</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>停止构建 #{stopTarget?.number}</AlertDialogTitle><AlertDialogDescription>Jenkins 会向正在运行的构建发送停止请求，当前执行步骤可能需要短暂时间才能退出。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void confirmStop()}>停止构建</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
 
       <AlertDialog open={Boolean(cancelTarget)} onOpenChange={(open) => !open && !busyAction && setCancelTarget(null)}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>取消队列 #{cancelTarget?.id}</AlertDialogTitle><AlertDialogDescription>任务“{cancelTarget?.taskFullName || cancelTarget?.taskName}”将从 Jenkins 构建队列中移除。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>返回</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void confirmCancelQueue()}>取消排队</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>取消队列 #{cancelTarget?.id}</AlertDialogTitle><AlertDialogDescription>任务“{cancelTarget?.taskFullName || cancelTarget?.taskName}”将从 Jenkins 构建队列中移除。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>返回</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void confirmCancelQueue()}>取消排队</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
     </main>
   );

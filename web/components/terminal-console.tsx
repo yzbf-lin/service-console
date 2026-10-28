@@ -320,9 +320,9 @@ export function TerminalConsole({
               }}
             />
             <span className="min-w-10 text-center text-[10px] text-slate-400" aria-live="polite">{searchStatus}</span>
-            <button className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white" type="button" aria-label="上一个匹配项" onClick={() => runSearch(false)}><ChevronUp className="size-3.5" /></button>
-            <button className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white" type="button" aria-label="下一个匹配项" onClick={() => runSearch(true)}><ChevronDown className="size-3.5" /></button>
-            <button className="rounded p-1 text-slate-400 hover:bg-white/10 hover:text-white" type="button" aria-label="关闭搜索" onClick={closeSearch}><X className="size-3.5" /></button>
+            <button className="grid size-6 place-items-center rounded-md text-slate-400 outline-none transition-colors hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring/60" type="button" aria-label="上一个匹配项" onClick={() => runSearch(false)}><ChevronUp className="size-3.5" aria-hidden="true" /></button>
+            <button className="grid size-6 place-items-center rounded-md text-slate-400 outline-none transition-colors hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring/60" type="button" aria-label="下一个匹配项" onClick={() => runSearch(true)}><ChevronDown className="size-3.5" aria-hidden="true" /></button>
+            <button className="grid size-6 place-items-center rounded-md text-slate-400 outline-none transition-colors hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-ring/60" type="button" aria-label="关闭搜索" onClick={closeSearch}><X className="size-3.5" aria-hidden="true" /></button>
           </div>
         ) : null}
 

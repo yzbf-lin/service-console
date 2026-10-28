@@ -69,14 +69,56 @@ function pointAt(element: HTMLElement) {
   });
 }
 
-function dragServiceTo(container: HTMLElement, service: string, target: HTMLElement, clientY = 1) {
-  const handle = container.querySelector<HTMLElement>(`[data-service-drag-handle="${service}"]`);
+const POINTER = { button: 0, buttons: 1, isPrimary: true, pointerId: 1 } as const;
 
+function handleOf(container: HTMLElement, service: string) {
+  const handle = container.querySelector<HTMLElement>(`[data-service-drag-handle="${service}"]`);
   expect(handle).not.toBeNull();
+  return handle as HTMLElement;
+}
+
+function stubRect(element: HTMLElement) {
+  element.getBoundingClientRect = () => ({
+    bottom: 100,
+    height: 100,
+    left: 0,
+    right: 100,
+    top: 0,
+    width: 100,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  });
+}
+
+/**
+ * dnd-kit arms a drag only once the pointer travels past its 4px activation distance, and the move
+ * that crosses that threshold starts the drag instead of reporting a position — so the drop target
+ * is only known from the third move onwards.
+ */
+function startDrag(handle: HTMLElement, clientY: number) {
+  fireEvent.pointerDown(handle, { ...POINTER, clientX: 0, clientY: 0 });
+  fireEvent.pointerMove(document, { ...POINTER, clientX: 1, clientY: 1 });
+  fireEvent.pointerMove(document, { ...POINTER, clientX: 5, clientY: 5 });
+  fireEvent.pointerMove(document, { ...POINTER, clientX: 10, clientY });
+}
+
+function endDrag(clientY: number) {
+  fireEvent.pointerUp(document, { ...POINTER, clientX: 10, clientY });
+}
+
+async function dragServiceTo(
+  container: HTMLElement,
+  service: string,
+  target: HTMLElement,
+  clientY = 1,
+) {
+  const handle = handleOf(container, service);
   pointAt(target);
-  fireEvent.pointerDown(handle as HTMLElement, { button: 0, clientX: 0, clientY: 0, pointerId: 1 });
-  fireEvent.pointerMove(window, { clientX: 10, clientY, pointerId: 1 });
-  fireEvent.pointerUp(window, { clientX: 10, clientY, pointerId: 1 });
+  startDrag(handle, clientY);
+  endDrag(clientY);
+  // Let the awaited move (and its landing-ghost teardown) settle inside act.
+  await act(async () => {});
 }
 
 describe("ServiceListPanel", () => {
@@ -171,7 +213,7 @@ describe("ServiceListPanel", () => {
     expect(onGroupAction).toHaveBeenNthCalledWith(2, "后端", "stop");
   });
 
-  it("moves a service into a group by drag and drop", () => {
+  it("moves a service into a group by drag and drop", async () => {
     const onMoveService = vi.fn();
     const { container } = render(
       <ServiceListPanel
@@ -189,12 +231,12 @@ describe("ServiceListPanel", () => {
     );
     const target = screen.getByRole("region", { name: "后端" });
 
-    dragServiceTo(container, "api", target);
+    await dragServiceTo(container, "api", target);
 
     expect(onMoveService).toHaveBeenCalledWith("api", "后端", 0);
   });
 
-  it("moves a service back and forth between different groups", () => {
+  it("moves a service back and forth between different groups", async () => {
     const onMoveService = vi.fn();
 
     function Harness() {
@@ -228,16 +270,16 @@ describe("ServiceListPanel", () => {
 
     expect(backend.querySelector('[data-service="api"]')).not.toBeNull();
     expect(worker).not.toBeNull();
-    dragServiceTo(container, "api", worker as HTMLElement);
+    await dragServiceTo(container, "api", worker as HTMLElement);
     expect(tasks.querySelector('[data-service="api"]')).not.toBeNull();
 
-    dragServiceTo(container, "api", backend);
+    await dragServiceTo(container, "api", backend);
     expect(backend.querySelector('[data-service="api"]')).not.toBeNull();
     expect(onMoveService).toHaveBeenNthCalledWith(1, "api", "任务", 1);
     expect(onMoveService).toHaveBeenNthCalledWith(2, "api", "后端", 0);
   });
 
-  it("shows an animated landing placeholder and persists same-group ordering", () => {
+  it("shows an animated landing placeholder and persists same-group ordering", async () => {
     const onMoveService = vi.fn();
     const { container } = render(
       <ServiceListPanel
@@ -262,29 +304,20 @@ describe("ServiceListPanel", () => {
     expect(renderedOrder).toEqual(["first", "second", "third"]);
 
     const source = container.querySelector<HTMLElement>('[data-service-drag-handle="third"]');
-    const target = container.querySelector<HTMLElement>('[data-service="first"]')?.parentElement;
+    const target = container.querySelector<HTMLElement>('[data-service-drop-item="first"]');
+    expect(source).not.toBeNull();
     expect(target).not.toBeNull();
-    (target as HTMLElement).getBoundingClientRect = () => ({
-      bottom: 100,
-      height: 100,
-      left: 0,
-      right: 100,
-      top: 0,
-      width: 100,
-      x: 0,
-      y: 0,
-      toJSON: () => ({}),
-    });
-
+    stubRect(target as HTMLElement);
     pointAt(target as HTMLElement);
-    fireEvent.pointerDown(source as HTMLElement, { button: 0, clientX: 0, clientY: 0, pointerId: 2 });
-    fireEvent.pointerMove(window, { clientX: 10, clientY: 10, pointerId: 2 });
+
+    startDrag(source as HTMLElement, 10);
 
     const placeholder = screen.getByLabelText("third 的预计落点");
     expect(placeholder.hasAttribute("data-service-drop-preview")).toBe(true);
     expect(placeholder.compareDocumentPosition(target as HTMLElement) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
-    fireEvent.pointerUp(window, { clientX: 10, clientY: 10, pointerId: 2 });
+    endDrag(10);
+    await act(async () => {});
     expect(onMoveService).toHaveBeenCalledWith("third", "后端", 0);
   });
 
@@ -314,22 +347,11 @@ describe("ServiceListPanel", () => {
     const target = container.querySelector<HTMLElement>('[data-service-drop-item="first"]');
     expect(source).not.toBeNull();
     expect(target).not.toBeNull();
-    (target as HTMLElement).getBoundingClientRect = () => ({
-      bottom: 100,
-      height: 100,
-      left: 0,
-      right: 100,
-      top: 0,
-      width: 100,
-      x: 0,
-      y: 0,
-      toJSON: () => ({}),
-    });
-
+    stubRect(target as HTMLElement);
     pointAt(target as HTMLElement);
-    fireEvent.pointerDown(source as HTMLElement, { button: 0, clientX: 0, clientY: 0, pointerId: 3 });
-    fireEvent.pointerMove(window, { clientX: 10, clientY: 10, pointerId: 3 });
-    fireEvent.pointerUp(window, { clientX: 10, clientY: 10, pointerId: 3 });
+
+    startDrag(source as HTMLElement, 10);
+    endDrag(10);
 
     expect(screen.getByLabelText("second 的预计落点")).not.toBeNull();
     expect(onMoveService).toHaveBeenCalledWith("second", "后端", 0);

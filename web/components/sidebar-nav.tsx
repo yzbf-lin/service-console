@@ -77,7 +77,7 @@ function NavigationButton({
           <span className="relative z-[1] hidden leading-none max-[767px]:block">{label}</span>
           {showUpdateIndicator ? (
             <span
-              className="absolute top-1 right-1 size-1.5 rounded-full bg-destructive shadow-[0_0_0_2px_var(--sidebar)] max-[767px]:shadow-[0_0_0_2px_var(--card)]"
+              className="absolute top-1 right-1 size-1.5 rounded-full bg-destructive ring-2 ring-sidebar max-[767px]:ring-card"
               data-update-indicator
               aria-hidden="true"
             />
@@ -98,9 +98,9 @@ export function SidebarNav({ activeView, updateAvailable = false, onViewChange }
       <LayoutGroup id={navigationId}>
         <aside
           className={cn(
-            "flex min-h-0 flex-col border-r bg-[var(--sidebar)]",
+            "flex min-h-0 flex-col border-r bg-sidebar",
             "max-[767px]:fixed max-[767px]:inset-x-1.5 max-[767px]:bottom-[max(6px,env(safe-area-inset-bottom))] max-[767px]:z-50",
-            "max-[767px]:h-[54px] max-[767px]:flex-row max-[767px]:rounded-lg max-[767px]:border max-[767px]:bg-card/95 max-[767px]:p-1 max-[767px]:shadow-[var(--shadow-menu)] max-[767px]:backdrop-blur-xl",
+            "max-[767px]:h-[54px] max-[767px]:flex-row max-[767px]:rounded-lg max-[767px]:border max-[767px]:bg-card/95 max-[767px]:p-1 max-[767px]:shadow-lg max-[767px]:backdrop-blur-xl",
           )}
           aria-label="主功能"
           data-rail="icon-only"

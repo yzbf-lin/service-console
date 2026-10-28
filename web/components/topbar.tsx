@@ -81,7 +81,7 @@ export function Topbar({
     : context.description;
 
   return (
-    <header className="service-topbar z-40 grid h-12 min-h-12 items-center border-b bg-[var(--toolbar)]">
+    <header className="service-topbar z-40 grid h-12 min-h-12 items-center border-b bg-card">
       <div className="service-brand flex h-full min-w-0 items-center gap-2 border-r px-3" aria-label="Service Console">
         <span className="grid size-7 shrink-0 place-items-center rounded-lg border border-black/10 bg-[#f7f8fa] shadow-sm">
           <Image className="size-5 object-contain" src={productLogo} alt="" aria-hidden="true" />

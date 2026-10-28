@@ -27,10 +27,10 @@ import { PortsView, type ProcessImportHint } from "@/components/ports-view";
 import { AppLogsView } from "@/components/app-logs-view";
 import { JenkinsView } from "@/components/jenkins-view";
 import { ServiceControlView } from "@/components/service-control-view";
-import { ServiceFormDialog, type ServiceFormMode } from "@/components/service-form-dialog";
+import { ServiceFormDialog } from "@/components/service-form-dialog";
 import { SettingsView } from "@/components/settings-view";
 import { SidebarNav } from "@/components/sidebar-nav";
-import { ToastProvider, useToast } from "@/components/toast-provider";
+import { ToastProvider } from "@/components/toast-provider";
 import { Topbar } from "@/components/topbar";
 import { WorkspaceTransition } from "@/components/workspace-transition";
 import { useAppUpdate } from "@/hooks/use-app-update";
@@ -45,8 +45,9 @@ import type {
   ServiceAction,
   ServiceCreateInput,
   ServiceUpdateInput,
-  ViewId,
 } from "@/lib/types";
+import { useConsoleUiStore } from "@/stores/console-ui-store";
+import { useNotify } from "@/stores/toast-store";
 
 function isProcessPermissionError(error: unknown): boolean {
   return error instanceof ApiError && (
@@ -82,26 +83,42 @@ function permissionLimitedProcess(
 }
 
 function ServiceConsoleContent() {
-  const { notify } = useToast();
+  const notify = useNotify();
   const { activeView, setActiveView } = useHashView();
   const [token] = useState(() => (
     typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("token") || ""
   ));
-  const [refreshing, setRefreshing] = useState(false);
-  const [portRefreshSignal, setPortRefreshSignal] = useState(0);
-  const [jenkinsRefreshSignal, setJenkinsRefreshSignal] = useState(0);
-  const [logRefreshSignal, setLogRefreshSignal] = useState(0);
-  const [formOpen, setFormOpen] = useState(false);
-  const [formMode, setFormMode] = useState<ServiceFormMode>("create");
-  const [formSource, setFormSource] = useState<NormalizedService | null>(null);
-  const [formProcessSource, setFormProcessSource] = useState<NormalizedProcessCandidate | null>(null);
-  const [formSubmitting, setFormSubmitting] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<NormalizedService | null>(null);
-  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
-  const [groupName, setGroupName] = useState("");
-  const [groupError, setGroupError] = useState("");
-  const [groupSubmitting, setGroupSubmitting] = useState(false);
-  const [deleteGroupTarget, setDeleteGroupTarget] = useState<string | null>(null);
+
+  const refreshing = useConsoleUiStore((state) => state.refreshing);
+  const portRefreshSignal = useConsoleUiStore((state) => state.portRefreshSignal);
+  const jenkinsRefreshSignal = useConsoleUiStore((state) => state.jenkinsRefreshSignal);
+  const logRefreshSignal = useConsoleUiStore((state) => state.logRefreshSignal);
+  const setRefreshing = useConsoleUiStore((state) => state.setRefreshing);
+  const bumpRefreshSignal = useConsoleUiStore((state) => state.bumpRefreshSignal);
+
+  const formOpen = useConsoleUiStore((state) => state.formOpen);
+  const formMode = useConsoleUiStore((state) => state.formMode);
+  const formSource = useConsoleUiStore((state) => state.formSource);
+  const formProcessSource = useConsoleUiStore((state) => state.formProcessSource);
+  const formSubmitting = useConsoleUiStore((state) => state.formSubmitting);
+  const openFormState = useConsoleUiStore((state) => state.openForm);
+  const closeForm = useConsoleUiStore((state) => state.closeForm);
+  const setFormSubmitting = useConsoleUiStore((state) => state.setFormSubmitting);
+
+  const deleteTarget = useConsoleUiStore((state) => state.deleteTarget);
+  const setDeleteTarget = useConsoleUiStore((state) => state.setDeleteTarget);
+  const groupDialogOpen = useConsoleUiStore((state) => state.groupDialogOpen);
+  const groupName = useConsoleUiStore((state) => state.groupName);
+  const groupError = useConsoleUiStore((state) => state.groupError);
+  const groupSubmitting = useConsoleUiStore((state) => state.groupSubmitting);
+  const openGroupDialog = useConsoleUiStore((state) => state.openGroupDialog);
+  const closeGroupDialog = useConsoleUiStore((state) => state.closeGroupDialog);
+  const setGroupName = useConsoleUiStore((state) => state.setGroupName);
+  const setGroupError = useConsoleUiStore((state) => state.setGroupError);
+  const setGroupSubmitting = useConsoleUiStore((state) => state.setGroupSubmitting);
+  const deleteGroupTarget = useConsoleUiStore((state) => state.deleteGroupTarget);
+  const setDeleteGroupTarget = useConsoleUiStore((state) => state.setDeleteGroupTarget);
+
   const processImportRequestId = useRef(0);
   const notifiedUpdateVersionsRef = useRef(new Set<string>());
   const diagnosticApi = useMemo(() => createApiClient({ token }), [token]);
@@ -177,13 +194,13 @@ function ServiceConsoleContent() {
     cancelProcessImport();
   }, [activeView, cancelProcessImport]);
 
-  const openForm = useCallback((mode: ServiceFormMode, service: NormalizedService | null = null) => {
+  const openForm = useCallback((
+    mode: "create" | "edit" | "copy",
+    service: NormalizedService | null = null,
+  ) => {
     cancelProcessImport();
-    setFormMode(mode);
-    setFormSource(service);
-    setFormProcessSource(null);
-    setFormOpen(true);
-  }, [cancelProcessImport]);
+    openFormState(mode, service);
+  }, [cancelProcessImport, openFormState]);
 
   const openProcessForm = useCallback(async (processHint: ProcessImportHint) => {
     const requestId = ++processImportRequestId.current;
@@ -193,32 +210,27 @@ function ServiceConsoleContent() {
       if (process.managedService) {
         throw new Error(`该进程已由服务 ${process.managedService} 管理`);
       }
-      setFormMode("create");
-      setFormSource(null);
-      setFormProcessSource(process);
-      setFormOpen(true);
+      openFormState("create", null, process);
     } catch (error) {
       if (requestId !== processImportRequestId.current) return;
       if (isProcessPermissionError(error)) {
-        setFormMode("create");
-        setFormSource(null);
-        setFormProcessSource(permissionLimitedProcess(processHint));
-        setFormOpen(true);
+        openFormState("create", null, permissionLimitedProcess(processHint));
         return;
       }
       throw error;
     }
-  }, [serviceState.api]);
+  }, [openFormState, serviceState.api]);
 
-  const changeView = useCallback((view: ViewId) => {
+  const changeView = useCallback((view: Parameters<typeof setActiveView>[0]) => {
     cancelProcessImport();
     setActiveView(view);
   }, [cancelProcessImport, setActiveView]);
 
   const changeFormOpen = useCallback((nextOpen: boolean) => {
     if (!nextOpen) cancelProcessImport();
-    setFormOpen(nextOpen);
-  }, [cancelProcessImport]);
+    if (nextOpen) return;
+    closeForm();
+  }, [cancelProcessImport, closeForm]);
 
   const copyMcpConfig = useCallback(async (config: string) => {
     try {
@@ -248,7 +260,7 @@ function ServiceConsoleContent() {
     } catch (error) {
       showError("服务操作失败", error instanceof Error ? error.message : String(error));
     }
-  }, [notify, openForm, serviceState, showError]);
+  }, [notify, openForm, serviceState, setDeleteTarget, showError]);
 
   const submitServiceForm = useCallback(async (input: ServiceCreateInput | ServiceUpdateInput) => {
     setFormSubmitting(true);
@@ -260,11 +272,11 @@ function ServiceConsoleContent() {
         const created = await serviceState.createService(input as ServiceCreateInput);
         showSuccess(formMode === "copy" ? "服务副本已创建" : "服务已添加", created.name);
       }
-      setFormOpen(false);
+      closeForm();
     } finally {
       setFormSubmitting(false);
     }
-  }, [formMode, formSource, serviceState, showSuccess]);
+  }, [closeForm, formMode, formSource, serviceState, setFormSubmitting, showSuccess]);
 
   const confirmDelete = useCallback(async () => {
     const service = deleteTarget;
@@ -276,7 +288,7 @@ function ServiceConsoleContent() {
     } catch (error) {
       showError("删除服务失败", error instanceof Error ? error.message : String(error));
     }
-  }, [deleteTarget, serviceState, showError, showSuccess]);
+  }, [deleteTarget, serviceState, setDeleteTarget, showError, showSuccess]);
 
   const createGroup = useCallback(async () => {
     const name = groupName.trim();
@@ -292,15 +304,14 @@ function ServiceConsoleContent() {
     setGroupError("");
     try {
       await serviceState.createGroup(name);
-      setGroupDialogOpen(false);
-      setGroupName("");
+      closeGroupDialog();
       showSuccess("分组已创建", name);
     } catch (error) {
       setGroupError(error instanceof Error ? error.message : String(error));
     } finally {
       setGroupSubmitting(false);
     }
-  }, [groupName, serviceState, showSuccess]);
+  }, [closeGroupDialog, groupName, serviceState, setGroupError, setGroupSubmitting, showSuccess]);
 
   const moveServiceToGroup = useCallback(async (service: string, group: string | null, position: number) => {
     try {
@@ -338,19 +349,13 @@ function ServiceConsoleContent() {
     } catch (error) {
       showError("删除分组失败", error instanceof Error ? error.message : String(error));
     }
-  }, [deleteGroupTarget, serviceState, showError, showSuccess]);
+  }, [deleteGroupTarget, serviceState, setDeleteGroupTarget, showError, showSuccess]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      if (activeView === "ports") {
-        setPortRefreshSignal((value) => value + 1);
-        await serviceState.checkHealth();
-      } else if (activeView === "jenkins") {
-        setJenkinsRefreshSignal((value) => value + 1);
-        await serviceState.checkHealth();
-      } else if (activeView === "logs") {
-        setLogRefreshSignal((value) => value + 1);
+      if (activeView === "ports" || activeView === "jenkins" || activeView === "logs") {
+        bumpRefreshSignal(activeView);
         await serviceState.checkHealth();
       } else {
         await Promise.all([serviceState.loadServices(), serviceState.checkHealth()]);
@@ -358,7 +363,7 @@ function ServiceConsoleContent() {
     } finally {
       setRefreshing(false);
     }
-  }, [activeView, serviceState]);
+  }, [activeView, bumpRefreshSignal, serviceState, setRefreshing]);
 
   const existingNames = useMemo(() => serviceState.services.map((service) => service.name), [serviceState.services]);
   const runningCount = useMemo(
@@ -427,11 +432,7 @@ function ServiceConsoleContent() {
         onSelect={serviceState.selectService}
         onAction={(name, action) => void handleServiceAction(name, action)}
         onAddService={() => openForm("create")}
-        onCreateGroup={() => {
-          setGroupName("");
-          setGroupError("");
-          setGroupDialogOpen(true);
-        }}
+        onCreateGroup={openGroupDialog}
         onDeleteGroup={setDeleteGroupTarget}
         onMoveService={moveServiceToGroup}
         onGroupAction={(group, action) => void runGroupAction(group, action)}
@@ -485,7 +486,7 @@ function ServiceConsoleContent() {
           />
         ) : null}
 
-        <Dialog open={groupDialogOpen} onOpenChange={(open) => !groupSubmitting && setGroupDialogOpen(open)}>
+        <Dialog open={groupDialogOpen} onOpenChange={(open) => !groupSubmitting && (open ? openGroupDialog() : closeGroupDialog())}>
           <DialogContent className="max-w-sm">
             <form onSubmit={(event) => { event.preventDefault(); void createGroup(); }}>
               <DialogHeader>
@@ -497,7 +498,7 @@ function ServiceConsoleContent() {
                 {groupError ? <p className="mt-2 text-xs text-destructive" role="alert">{groupError}</p> : null}
               </div>
               <DialogFooter>
-                <Button type="button" variant="outline" disabled={groupSubmitting} onClick={() => setGroupDialogOpen(false)}>取消</Button>
+                <Button type="button" variant="outline" disabled={groupSubmitting} onClick={closeGroupDialog}>取消</Button>
                 <Button type="submit" disabled={groupSubmitting}>{groupSubmitting ? "创建中…" : "创建分组"}</Button>
               </DialogFooter>
             </form>
@@ -514,7 +515,7 @@ function ServiceConsoleContent() {
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>取消</AlertDialogCancel>
-              <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void confirmDelete()}>删除服务</AlertDialogAction>
+              <AlertDialogAction variant="destructive" onClick={() => void confirmDelete()}>删除服务</AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
@@ -529,7 +530,7 @@ function ServiceConsoleContent() {
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>取消</AlertDialogCancel>
-              <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void confirmDeleteGroup()}>删除分组</AlertDialogAction>
+              <AlertDialogAction variant="destructive" onClick={() => void confirmDeleteGroup()}>删除分组</AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>

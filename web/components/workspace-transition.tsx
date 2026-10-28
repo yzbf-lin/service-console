@@ -33,7 +33,7 @@ function WorkspaceFrame({ children, view }: { children: ReactNode; view: ViewId 
 export function WorkspaceTransition({ view, children }: { view: ViewId; children: ReactNode }) {
   return (
     <div className="service-console-stage">
-      {/* The glass surface stays still. Only view changes animate, never log/metric updates. */}
+      {/* The view frame stays still. Only view changes animate, never log/metric updates. */}
       <AnimatePresence initial={false}>
         <WorkspaceFrame key={view} view={view}>{children}</WorkspaceFrame>
       </AnimatePresence>

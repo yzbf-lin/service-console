@@ -57,8 +57,9 @@ requiring Docker or another container runtime.
   definitions from restored `uv`/`pnpm` commands and working directories, with safe manual fallback
   when Windows denies access to complete metadata.
 - Use the same controller through the desktop app, Web UI, CLI, TUI, HTTP, or WebSocket.
-- Use a compact Next.js dashboard built with React, TypeScript, Tailwind CSS, shadcn/ui, Radix UI,
-  Motion, and Lucide React, with persistent light and dark themes.
+- Use a compact Next.js dashboard built with React, TypeScript, Tailwind CSS, shadcn/ui (Nova),
+  Radix UI, Motion, Lucide React, react-resizable-panels, dnd-kit, and Zustand, with persistent
+  system, light, and dark themes.
 - Keep desktop automation private with a random loopback port, temporary bearer token, and a `0600`
   runtime descriptor.
 - Let Codex and other AI clients configure and operate services through the bundled stdio MCP bridge.
@@ -166,12 +167,24 @@ with a 1 MiB file limit and two rotated backups. Review paths and business detai
 
 ### Appearance
 
-The dashboard is a statically exported Next.js application. Its reusable components follow
-shadcn/ui conventions, use Radix UI accessibility primitives, Tailwind CSS design tokens, Motion
-interactions, and Lucide React icons. Use the sun/moon button in the top bar to switch themes without reloading. The first
-visit follows the operating-system color scheme; an explicit choice is saved in the controller data
-directory as `ui-preferences.json`, so it survives desktop restarts and random loopback ports. The
-selected palette also updates the xterm.js log console and browser theme-color metadata.
+The dashboard is a statically exported Next.js application. Its reusable components follow the
+shadcn/ui Nova preset: neutral grayscale surfaces, hairline `ring-foreground/10` outlines, a
+`0.625rem` radius scale, and compact control heights. Radix UI supplies the accessibility
+primitives, Tailwind CSS the design tokens, Motion the enter/exit transitions, and Lucide React the
+icons. Workspace panes use react-resizable-panels, service reordering uses dnd-kit, and client state
+lives in Zustand stores. Smaller radii, compact spacing, and stable hit targets keep the workspace
+dense without reducing usability.
+
+Use the sun/moon button in the top bar to switch themes without reloading, or choose the system
+appearance in Settings. The first visit follows the operating-system color scheme; an explicit choice
+is saved in the controller data directory as `ui-preferences.json`, so it survives desktop restarts
+and random loopback ports. The selected palette updates the xterm.js log console, browser theme-color
+metadata, and the native macOS titlebar. System appearance changes also propagate while the system
+preference is active.
+
+View changes, navigation selection, dialogs, menus, and tooltips have separate enter and exit
+transitions. Live log and metric updates do not replay a page transition or reset scrolling. Spatial
+movement and scaling are removed when the operating system requests reduced motion.
 
 On desktop, the left rail is a fixed icon-only tool window bar inspired by JetBrains IDEs. Hover an icon
 or move keyboard focus to it to reveal its destination name. Service cards, filters, and **Add** stay in

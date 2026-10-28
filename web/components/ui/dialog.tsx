@@ -1,5 +1,7 @@
 import * as React from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
+import { X } from "lucide-react";
+import { motion } from "motion/react";
 
 import { cn } from "../../lib/cn";
 
@@ -8,19 +10,27 @@ const DialogTrigger = DialogPrimitive.Trigger;
 const DialogPortal = DialogPrimitive.Portal;
 const DialogClose = DialogPrimitive.Close;
 
+/**
+ * Nova replaces the CSS `animate-in` utilities with Motion. Radix mounts the
+ * portal only while the dialog is open, so the spring runs on mount and a
+ * closed dialog leaves the DOM immediately (no lingering exit frames).
+ */
 const DialogOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Overlay
-    ref={ref}
-    data-slot="dialog-overlay"
-    className={cn(
-      "fixed inset-0 z-50 bg-black/55 backdrop-blur-[2px]",
-      className,
-    )}
-    {...props}
-  />
+  <DialogPrimitive.Overlay ref={ref} asChild {...props}>
+    <motion.div
+      data-slot="dialog-overlay"
+      className={cn(
+        "fixed inset-0 z-50 bg-black/10 supports-backdrop-filter:backdrop-blur-xs",
+        className,
+      )}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.12, ease: "easeOut" }}
+    />
+  </DialogPrimitive.Overlay>
 ));
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
@@ -34,34 +44,28 @@ const DialogContent = React.forwardRef<
 >(({ children, className, showCloseButton = true, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
-    <DialogPrimitive.Content
-      ref={ref}
-      data-slot="dialog-content"
-      className={cn(
-        "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-lg border border-border bg-background p-6 text-foreground shadow-xl outline-none focus-visible:ring-2 focus-visible:ring-ring/80",
-        className,
-      )}
-      {...props}
-    >
-      {children}
-      {showCloseButton ? (
-        <DialogPrimitive.Close
-          data-slot="dialog-close"
-          className="absolute top-4 right-4 inline-flex size-8 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/80 disabled:pointer-events-none"
-          aria-label="关闭"
-        >
-          <svg
-            aria-hidden="true"
-            className="size-4"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth="2"
+    <DialogPrimitive.Content ref={ref} asChild {...props}>
+      <motion.div
+        data-slot="dialog-content"
+        className={cn(
+          "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 outline-none",
+          className,
+        )}
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.7 }}
+      >
+        {children}
+        {showCloseButton ? (
+          <DialogPrimitive.Close
+            data-slot="dialog-close"
+            className="absolute top-2 right-2 inline-flex size-7 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none"
+            aria-label="关闭"
           >
-            <path strokeLinecap="round" d="M6 6l12 12M18 6 6 18" />
-          </svg>
-        </DialogPrimitive.Close>
-      ) : null}
+            <X className="size-4" />
+          </DialogPrimitive.Close>
+        ) : null}
+      </motion.div>
     </DialogPrimitive.Content>
   </DialogPortal>
 ));
@@ -80,7 +84,7 @@ const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
   <div
     data-slot="dialog-footer"
     className={cn(
-      "flex flex-col-reverse gap-2 pt-2 sm:flex-row sm:justify-end",
+      "-mx-4 -mb-4 flex flex-col-reverse gap-2 rounded-b-xl border-t bg-muted/50 p-4 sm:flex-row sm:justify-end",
       className,
     )}
     {...props}
@@ -95,7 +99,7 @@ const DialogTitle = React.forwardRef<
   <DialogPrimitive.Title
     ref={ref}
     data-slot="dialog-title"
-    className={cn("text-lg leading-none font-semibold", className)}
+    className={cn("text-base leading-none font-medium", className)}
     {...props}
   />
 ));

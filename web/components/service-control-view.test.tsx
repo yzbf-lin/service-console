@@ -41,7 +41,9 @@ describe("ServiceControlView layout", () => {
 
     const view = screen.getByRole("main", { name: "服务控制" });
     const serviceList = within(view).getByTestId("service-list-panel");
-    expect(serviceList.parentElement).toBe(view);
+    expect(view.contains(serviceList)).toBe(true);
+    expect(serviceList.closest("[data-panel]")?.id).toBe("service-list");
+    expect(serviceList.closest("[data-group]")?.id).toBe("service-control-layout");
     fireEvent.click(within(serviceList).getByRole("button", { name: "服务列表添加" }));
     expect(onAddService).toHaveBeenCalledOnce();
   });

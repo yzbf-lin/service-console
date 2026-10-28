@@ -38,7 +38,7 @@ const ScrollArea = React.forwardRef<
         tabIndex={0}
         {...viewportProps}
         className={cn(
-          "size-full rounded-[inherit] outline-none transition-[color,box-shadow] focus-visible:ring-2 focus-visible:ring-ring/80",
+          "size-full rounded-[inherit] outline-none transition-[color,box-shadow] focus-visible:ring-3 focus-visible:ring-ring/50",
           viewportClassName,
         )}
       >
@@ -60,7 +60,7 @@ const ScrollBar = React.forwardRef<
     data-slot="scroll-area-scrollbar"
     orientation={orientation}
     className={cn(
-      "flex touch-none p-px transition-colors select-none data-[orientation=horizontal]:h-2.5 data-[orientation=horizontal]:flex-col data-[orientation=vertical]:h-full data-[orientation=vertical]:w-2.5",
+      "flex touch-none p-px transition-colors select-none data-[orientation=horizontal]:h-2.5 data-[orientation=horizontal]:flex-col data-[orientation=horizontal]:border-t data-[orientation=horizontal]:border-t-transparent data-[orientation=vertical]:h-full data-[orientation=vertical]:w-2.5 data-[orientation=vertical]:border-l data-[orientation=vertical]:border-l-transparent",
       className,
     )}
     {...props}

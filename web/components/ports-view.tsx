@@ -408,7 +408,7 @@ export function PortsView({ api, active, onError, onSuccess, onImportProcess, re
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              variant="destructive"
               onClick={() => {
                 const group = target;
                 setTarget(null);
@@ -436,7 +436,7 @@ export function PortsView({ api, active, onError, onSuccess, onImportProcess, re
           <AlertDialogFooter>
             <AlertDialogCancel>保留进程</AlertDialogCancel>
             <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              variant="destructive"
               onClick={() => {
                 const group = forceTarget;
                 setForceTarget(null);

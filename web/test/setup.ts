@@ -1,8 +1,15 @@
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 
+import { resetConsoleUiStore } from "@/stores/console-ui-store";
+import { resetServiceStore } from "@/stores/service-store";
+import { useToastStore } from "@/stores/toast-store";
+
 afterEach(() => {
   cleanup();
+  useToastStore.getState().reset();
+  resetServiceStore();
+  resetConsoleUiStore();
 });
 
 if (!window.matchMedia) {
@@ -37,4 +44,13 @@ if (!HTMLElement.prototype.hasPointerCapture) {
 
 if (!HTMLElement.prototype.scrollIntoView) {
   HTMLElement.prototype.scrollIntoView = () => undefined;
+}
+
+// jsdom does not implement hit testing, which dnd-kit drag targets rely on.
+if (!document.elementFromPoint) {
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    writable: true,
+    value: () => null,
+  });
 }

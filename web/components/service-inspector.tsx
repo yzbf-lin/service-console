@@ -27,6 +27,7 @@ import { cn } from "@/lib/cn";
 interface ServiceInspectorProps {
   service: NormalizedService | null;
   busy: boolean;
+  className?: string;
   onAction: (action: ServiceAction) => void;
 }
 
@@ -54,9 +55,12 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <h3 className="mb-1 text-[10px] font-semibold tracking-wide text-muted-foreground">{children}</h3>;
 }
 
-export function ServiceInspector({ service, busy, onAction }: ServiceInspectorProps) {
+export function ServiceInspector({ service, busy, className, onAction }: ServiceInspectorProps) {
   return (
-    <aside className="service-inspector flex min-h-0 flex-col border-l bg-[var(--inspector)]" aria-label="服务详情">
+    <aside
+      className={cn("flex min-h-0 min-w-0 flex-col overflow-hidden bg-sidebar", className)}
+      aria-label="服务详情"
+    >
       <header className="flex h-11 shrink-0 items-center justify-between border-b px-3">
         <h2 className="text-[12px] font-semibold">详情</h2>
         {service ? (

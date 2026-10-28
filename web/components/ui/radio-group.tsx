@@ -24,22 +24,21 @@ const RadioGroupItem = React.forwardRef<
     ref={ref}
     data-slot="radio-group-item"
     className={cn(
-      "aspect-square size-4 shrink-0 rounded-full border border-input bg-background text-primary outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/80 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive/20",
+      "aspect-square size-4 shrink-0 rounded-full border border-input outline-none transition-[color,box-shadow]",
+      "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50",
+      "aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40",
+      "disabled:cursor-not-allowed disabled:opacity-50",
+      "data-[state=checked]:border-primary data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground",
+      "dark:bg-input/30",
       className,
     )}
     {...props}
   >
     <RadioGroupPrimitive.Indicator
       data-slot="radio-group-indicator"
-      className="flex items-center justify-center"
+      className="flex size-4 items-center justify-center"
     >
-      <svg
-        aria-hidden="true"
-        className="size-2 fill-current"
-        viewBox="0 0 8 8"
-      >
-        <circle cx="4" cy="4" r="4" />
-      </svg>
+      <span className="absolute top-1/2 left-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary-foreground" />
     </RadioGroupPrimitive.Indicator>
   </RadioGroupPrimitive.Item>
 ));
