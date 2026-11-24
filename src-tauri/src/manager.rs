@@ -1156,8 +1156,10 @@ fn configure_process_group(command: &mut Command) {
 
 #[cfg(windows)]
 fn configure_process_group(command: &mut Command) {
-    use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
+    };
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_SUSPENDED);
 }
 
 #[cfg(unix)]
@@ -1177,8 +1179,13 @@ fn terminate_group(pid: u32, force: bool) -> AppResult<()> {
 
 #[cfg(windows)]
 fn terminate_group(pid: u32, force: bool) -> AppResult<()> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
     let mut command = std::process::Command::new("taskkill");
-    command.args(["/PID", &pid.to_string(), "/T"]);
+    command
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(["/PID", &pid.to_string(), "/T"]);
     if force {
         command.arg("/F");
     }

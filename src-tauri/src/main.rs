@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 fn main() {
     if let Some(exit_code) = service_console::update_helper::run_from_args() {
         std::process::exit(exit_code);

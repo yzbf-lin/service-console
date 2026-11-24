@@ -102,6 +102,8 @@ impl McpIntegration {
 
     fn command(&self, executable: &Path) -> Command {
         let mut command = Command::new(executable);
+        #[cfg(windows)]
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         command.envs(&self.command_environment);
         command
     }

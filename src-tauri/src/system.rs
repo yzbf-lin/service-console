@@ -1203,8 +1203,13 @@ fn signal_process(pid: u32, force: bool) -> AppResult<()> {
 
 #[cfg(windows)]
 fn signal_process(pid: u32, force: bool) -> AppResult<()> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
     let mut command = std::process::Command::new("taskkill");
-    command.args(["/PID", &pid.to_string()]);
+    command
+        .creation_flags(CREATE_NO_WINDOW)
+        .args(["/PID", &pid.to_string()]);
     if force {
         command.arg("/F");
     }
