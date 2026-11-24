@@ -318,6 +318,12 @@ fn guardian_executable() -> AppResult<PathBuf> {
     candidates
         .into_iter()
         .find(|path| path.is_file())
+        .or_else(|| {
+            // Cargo exposes this path to integration tests regardless of their build directory.
+            std::env::var_os("CARGO_BIN_EXE_service-console-guardian")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute() && path.is_file())
+        })
         .ok_or_else(|| {
             AppError::Internal("service-console guardian executable was not found".into())
         })
